@@ -28,7 +28,6 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 
 chrono = { workspace = true }
-uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
@@ -37,10 +36,6 @@ url = { workspace = true }
 
 # sha256 content hashes for archived metadata snapshots.
 sha2 = { workspace = true }
-
-# Our own pure scoring library. The enricher computes scores as a scheduled
-# batch step and writes them to the `scores` table for the API to serve.
-scoring = { path = "../scoring" }
 
 [dev-dependencies]
 # Local mock HTTP server so observation tests never touch the network.

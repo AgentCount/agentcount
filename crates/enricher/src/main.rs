@@ -1,31 +1,29 @@
-//! # enricher — add off-chain reality to on-chain agents
+//! # enricher — add observed reality to on-chain agents
 //!
-//! The indexer tells us an agent *exists*. The enricher tells us whether it's
-//! *real*: does its endpoint respond, does it serve a valid agent-card, and —
-//! most importantly — does it look like one honest actor or one node in a farm
-//! of coordinated sock-puppets? As the final step of each pass it also runs the
-//! pure [`scoring`] library over every agent and stores the results.
+//! The indexer tells us an agent *exists*. The enricher records what it *does*:
+//! one guarded fetch per agent yields the liveness outcome (an HTTP 402 counts
+//! as alive — that's the x402 "payable" signal) AND an archived metadata
+//! snapshot, then coordination flags are raised with concrete evidence.
 //!
-//! One "pass" does four things, then sleeps and repeats: (1) load agents due for
-//! enrichment, (2) probe endpoints + fetch metadata with bounded concurrency,
-//! (3) detect Sybil clusters across the whole agent graph, and (4) score every
-//! agent and persist the scores.
+//! One "pass" does three things, then sleeps and repeats: (1) load agents due
+//! for observation, (2) observe each endpoint once with bounded concurrency
+//! and append the results to history, (3) detect coordination flags across
+//! the whole agent set and persist them append-only.
 //!
 //! ## Rust concepts this crate is here to teach
 //!
-//! * **Bounded concurrency** — probing thousands of endpoints one-at-a-time is
-//!   slow, but all-at-once would hammer the network and get you rate-limited.
-//!   `buffer_unordered(n)` keeps at most `n` probes in flight at once.
-//! * **Per-item errors that don't abort the batch** — one dead endpoint is data,
-//!   not a fatal error, so we capture each probe's `Result` instead of `?`-ing.
-//! * **Calling a sibling crate** — `scoring::score(&view)` is an ordinary
-//!   function call into our pure library; no I/O crosses that boundary.
+//! * **Bounded concurrency** — observing thousands of endpoints one-at-a-time
+//!   is slow, but all-at-once would hammer the network and get you rate-limited.
+//!   `buffer_unordered(n)` keeps at most `n` observations in flight at once.
+//! * **Failures as data, not errors** — a dead endpoint isn't an `Err` to
+//!   bubble; it's an outcome we record. `observe()` is infallible by design.
+//! * **Pure core, async shell** — flag heuristics live in a pure function
+//!   (`flags::detect_flags`), unit-tested without a database.
 
 mod flags;
 mod metadata;
 mod netguard;
 mod observe;
-mod scoring_step;
 mod store;
 
 use std::time::Duration;
@@ -121,10 +119,6 @@ async fn run_pass(db: &store::Db, concurrency: usize) -> anyhow::Result<()> {
     let flags = flags::detect(db).await?;
     tracing::info!("detected {} flags", flags.len());
     db.upsert_flags(&flags).await?;
-
-    // 5. Score every agent from freshly-enriched data and store the results.
-    let scored = scoring_step::score_all(db).await?;
-    tracing::info!("scored {scored} agents");
 
     Ok(())
 }

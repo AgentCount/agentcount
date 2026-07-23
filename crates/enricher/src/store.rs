@@ -1,5 +1,5 @@
-//! Database access for the enricher: read agents, write enrichment, clusters,
-//! and scores. All SQL lives here so the rest of the crate reads like a story.
+//! Database access for the enricher: read agents, append observations, upsert
+//! flags. All SQL lives here so the rest of the crate reads like a story.
 //!
 //! ## A note on runtime vs. compile-time-checked queries
 //!
@@ -28,31 +28,6 @@ use crate::metadata::AgentStub;
 #[derive(Clone)]
 pub struct Db {
     pub(crate) pool: PgPool,
-}
-
-/// One per-agent aggregate row for scoring (see `load_score_inputs`).
-#[derive(Debug, sqlx::FromRow)]
-pub struct ScoreInputRow {
-    pub chain: String,
-    pub agent_id: i64,
-    pub first_seen: chrono::DateTime<chrono::Utc>,
-    pub last_activity: chrono::DateTime<chrono::Utc>,
-    pub suspicion: f64,
-    pub distinct_counterparties: i64,
-    pub total_payment_value: f64,
-    pub active_days: i64,
-    pub probe_count: i64,
-    pub probe_successes: i64,
-    pub cluster_size: i64,
-}
-
-/// One raw feedback edge (used to reconstruct the reputation graph in Rust).
-#[derive(Debug, sqlx::FromRow)]
-pub struct FeedbackRow {
-    pub chain: String,
-    pub from_agent_id: i64,
-    pub to_agent_id: i64,
-    pub score: i16,
 }
 
 impl Db {
@@ -266,88 +241,6 @@ impl Db {
         Ok(())
     }
 
-    /// Load one aggregate row per agent, joining in economic activity, probe
-    /// history, and cluster size. `LEFT JOIN` + `COALESCE` means agents with no
-    /// activity still get a row (with zeros), rather than being dropped.
-    pub async fn load_score_inputs(&self) -> Result<Vec<ScoreInputRow>> {
-        let rows = sqlx::query_as::<_, ScoreInputRow>(
-            "SELECT \
-                a.chain AS chain, \
-                a.agent_id AS agent_id, \
-                a.registered_at AS first_seen, \
-                COALESCE(ea.last_activity, a.registered_at) AS last_activity, \
-                a.suspicion AS suspicion, \
-                COALESCE(ea.distinct_counterparties, 0) AS distinct_counterparties, \
-                COALESCE(ea.total_payment_value, 0.0) AS total_payment_value, \
-                COALESCE(ea.active_days, 0) AS active_days, \
-                COALESCE(ph.probe_count, 0) AS probe_count, \
-                COALESCE(ph.probe_successes, 0) AS probe_successes, \
-                COALESCE(cl.cluster_size, 1) AS cluster_size \
-             FROM agents a \
-             LEFT JOIN ( \
-                SELECT chain, agent_id, \
-                    count(DISTINCT counterparty) AS distinct_counterparties, \
-                    sum(value)::double precision AS total_payment_value, \
-                    count(DISTINCT date(occurred_at)) AS active_days, \
-                    max(occurred_at) AS last_activity \
-                FROM economic_activity GROUP BY chain, agent_id \
-             ) ea ON ea.chain = a.chain AND ea.agent_id = a.agent_id \
-             LEFT JOIN ( \
-                SELECT chain, agent_id, \
-                    count(*) AS probe_count, \
-                    count(*) FILTER (WHERE outcome = 'healthy') AS probe_successes \
-                FROM probe_history GROUP BY chain, agent_id \
-             ) ph ON ph.chain = a.chain AND ph.agent_id = a.agent_id \
-             LEFT JOIN ( \
-                SELECT cm.chain, cm.agent_id, c2.cnt AS cluster_size \
-                FROM cluster_members cm \
-                JOIN ( \
-                    SELECT cluster_id, count(*) AS cnt \
-                    FROM cluster_members GROUP BY cluster_id \
-                ) c2 ON c2.cluster_id = cm.cluster_id \
-             ) cl ON cl.chain = a.chain AND cl.agent_id = a.agent_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("loading score inputs")?;
-        Ok(rows)
-    }
-
-    /// Load all feedback rows for reputation scoring.
-    pub async fn load_feedback_rows(&self) -> Result<Vec<FeedbackRow>> {
-        let rows = sqlx::query_as::<_, FeedbackRow>(
-            "SELECT chain, from_agent_id, to_agent_id, score FROM feedback",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("loading feedback rows")?;
-        Ok(rows)
-    }
-
-    /// Append a freshly-computed score for each agent (history is kept; the API
-    /// reads the latest row per agent).
-    pub async fn write_scores(&self, scores: &[(AgentKey, scoring::TrustScore)]) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        for (key, s) in scores {
-            sqlx::query(
-                "INSERT INTO scores \
-                    (chain, agent_id, payment, liveness, age, reputation, sybil_penalty, final_score) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            )
-            .bind(&key.chain)
-            .bind(key.agent_id)
-            .bind(s.payment)
-            .bind(s.liveness)
-            .bind(s.age)
-            .bind(s.reputation)
-            .bind(s.sybil_penalty)
-            .bind(s.final_score)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
