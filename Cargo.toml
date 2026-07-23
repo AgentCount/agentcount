@@ -30,7 +30,6 @@ resolver = "3"
 members = [
     "crates/indexer",
     "crates/enricher",
-    "crates/scoring",
     "crates/facts",
     "crates/api",
 ]
