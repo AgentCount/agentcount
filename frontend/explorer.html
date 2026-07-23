@@ -1,15 +1,15 @@
-{# explorer.html — the landing page leaderboard.
-   Rendered by routes::pages::explorer using the `ExplorerPage` struct. Every
-   value is pre-formatted in Rust, so this file only uses {{ }}, for, and if. #}
+{# explorer.html — the agent directory. No ranking: ranking is a judgment,
+   and we publish measurements. Ordering is stated explicitly. #}
 {% extends "base.html" %}
 
-{% block title %}Ledgerscope — Agent Trust Explorer{% endblock %}
+{% block title %}Ledgerscope — Agent Facts Explorer{% endblock %}
 
 {% block content %}
-<h1>Agent Trust Explorer</h1>
+<h1>Agent Facts Explorer</h1>
 <p class="lede">
-    Every agent registered under ERC-8004 on Ethereum and Base, scored by a
-    methodology that discounts manufactured reputation.
+    Every agent registered under ERC-8004, with independently verified facts:
+    endpoint liveness, metadata status, and evidence-backed flags. We publish
+    measurements, not judgments. Sorted by registration date, newest first.
 </p>
 
 <table class="leaderboard">
@@ -17,14 +17,15 @@
         <tr>
             <th>Agent</th>
             <th>Chain</th>
-            <th>Status</th>
-            <th>Trust score</th>
+            <th>Endpoint</th>
+            <th>Registered</th>
+            <th>Flags</th>
         </tr>
     </thead>
     <tbody>
         {% for agent in agents %}
         <tr>
-            <td><a href="/agent/{{ agent.agent_id }}">{{ agent.domain }}</a></td>
+            <td><a href="/agent/{{ agent.chain }}/{{ agent.agent_id }}">{{ agent.domain }}</a></td>
             <td>{{ agent.chain }}</td>
             <td>
                 {% if agent.is_alive %}
@@ -33,7 +34,8 @@
                     <span class="dot dot-dead" title="endpoint unreachable">●</span> down
                 {% endif %}
             </td>
-            <td class="score">{{ agent.final_pct }}%</td>
+            <td>{{ agent.registered }}</td>
+            <td>{% if agent.flag_count > 0 %}⚑ {{ agent.flag_count }}{% else %}—{% endif %}</td>
         </tr>
         {% endfor %}
     </tbody>

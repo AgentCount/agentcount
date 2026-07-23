@@ -103,9 +103,12 @@ wiremock = "0.6"
 # bounded amount of concurrency (fast, but not a thundering herd).
 futures = "0.3"
 
-# A small tower "service" layer for axum. We use its `ServeDir` to serve the
-# static stylesheet from the `frontend/` directory.
-tower-http = { version = "0.6", features = ["fs"] }
+# tower middleware for axum. `ServeDir` serves the static stylesheet; the
+# timeout layer caps request time on the public API; the concurrency limit
+# (from `tower` itself) caps total in-flight requests — crude but effective
+# hardening for a free public endpoint.
+tower-http = { version = "0.6", features = ["fs", "timeout"] }
+tower = { version = "0.5", features = ["limit"] }
 
 # Error handling, two complementary tools:
 #   thiserror → define precise, typed error enums (best for LIBRARY crates like

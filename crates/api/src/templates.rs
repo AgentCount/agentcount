@@ -1,70 +1,62 @@
 //! askama template structs — the bridge between Rust data and HTML files.
 //!
-//! askama works like serde-in-reverse for HTML: you write a normal Rust struct,
-//! tag it with `#[template(path = "...")]` pointing at a file under the templates
-//! directory, and `#[derive(Template)]` generates a `.render()` method at COMPILE
-//! time. The struct's fields become the variables the template can reference. A
-//! typo in `{{ agent.nmae }}` fails the build, not the page load.
-//!
-//! Design choice: we keep the *templates* dumb and do all formatting HERE, in
-//! Rust. Each field is either a ready-to-print `String`/number or a `bool` for an
-//! `{% if %}`. That means the `.html` files only ever use `{{ field }}`,
-//! `{% for %}`, and `{% if %}` — no template-language filters to get wrong — and
-//! all the logic stays in code you can unit-test.
-//!
-//! The template *files* live in `frontend/` (see `askama.toml`), keeping HTML out
-//! of the Rust source tree.
+//! Same design rule as ever: templates stay dumb — every field is
+//! display-ready, all formatting happens in Rust. The `.html` files only use
+//! `{{ }}`, `{% for %}`, and `{% if %}`, and all the logic stays in code you
+//! can unit-test. A typo in a template variable fails the BUILD, not the page.
 
 use askama::Template;
 
-/// Data for the explorer landing page (`/`): a leaderboard of scored agents.
+/// Data for the explorer landing page (`/`): a directory of agents.
 #[derive(Template)]
 #[template(path = "explorer.html")]
 pub struct ExplorerPage {
-    /// Rows already sorted by final score descending.
+    /// Ordering is EXPLICIT and shown to the reader ("newest first") — there
+    /// is deliberately no ranking; ranking is a judgment.
     pub agents: Vec<AgentRow>,
 }
 
-/// One line in the leaderboard table. All display-ready.
+/// One line in the directory table. All display-ready.
 pub struct AgentRow {
     pub agent_id: i64,
-    pub domain: String,
     pub chain: String,
-    /// Final trust score as a whole-number percentage (e.g. 73).
-    pub final_pct: i64,
-    /// Whether the endpoint was alive at last probe — drives a status dot.
+    pub domain: String,
+    /// Whether the endpoint answered at the last observation — drives a status dot.
     pub is_alive: bool,
+    /// e.g. "2026-05-03"
+    pub registered: String,
+    pub flag_count: i64,
 }
 
-/// Data for one agent's detail page (`/agent/{id}`): the full score breakdown.
+/// Data for one agent's detail page (`/agent/{chain}/{id}`): facts + flags.
 #[derive(Template)]
 #[template(path = "agent.html")]
 pub struct AgentDetailPage {
     pub agent_id: i64,
-    pub domain: String,
     pub chain: String,
-    // Every sub-score pre-formatted as a whole-number percentage, used both as
-    // the label text and as the CSS bar width.
-    pub final_pct: i64,
-    pub payment_pct: i64,
-    pub liveness_pct: i64,
-    pub age_pct: i64,
-    pub reputation_pct: i64,
-    pub sybil_pct: i64,
-    /// Show the Sybil warning box only when the agent is actually in a cluster.
-    pub in_cluster: bool,
-    pub cluster_size: i64,
-    pub suspicion_pct: i64,
+    pub domain: String,
+    pub address: String,
+    pub facts: Vec<FactRow>,
+    pub flags: Vec<FlagRow>,
 }
 
-/// Data for the methodology write-up (`/methodology`). The weights are formatted
-/// from the LIVE `scoring::ScoreWeights::default()` in the handler, so this page
-/// can never drift out of sync with the actual scoring code.
+/// One fact, pre-rendered: a label, a value sentence, and its evidence.
+pub struct FactRow {
+    pub label: String,
+    pub value: String,
+    pub evidence: String,
+}
+
+/// One flag, pre-rendered with its evidence summary.
+pub struct FlagRow {
+    pub label: String,
+    pub detail: String,
+    pub raised: String,
+}
+
+/// Data for the methodology write-up (`/methodology`). Static prose — the
+/// facts and flags it describes are defined in the `facts` crate and the
+/// enricher's flag producer.
 #[derive(Template)]
 #[template(path = "methodology.html")]
-pub struct MethodologyPage {
-    pub payment_w: String,
-    pub liveness_w: String,
-    pub age_w: String,
-    pub reputation_w: String,
-}
+pub struct MethodologyPage {}

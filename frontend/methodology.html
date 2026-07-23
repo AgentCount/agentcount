@@ -1,58 +1,72 @@
-{# methodology.html — how scores are computed.
-   Rendered by routes::pages::methodology using `MethodologyPage`. The weight
-   strings come straight from scoring::ScoreWeights::default(), so this page
-   always reflects the real configuration. #}
+{# methodology.html — what we measure and how. No formulas: there is no score. #}
 {% extends "base.html" %}
 
 {% block title %}Methodology — Ledgerscope{% endblock %}
 
 {% block content %}
-<h1>Scoring methodology</h1>
+<h1>Methodology</h1>
 
 <p>
-    A trust score blends four positive signals, then applies a Sybil penalty as a
-    multiplier. The penalty is the whole point: no amount of payment, liveness,
-    age, or reputation can rescue an agent that is clearly part of a coordinated
-    farm.
+    Ledgerscope publishes <strong>facts</strong> — evidence-backed, individually
+    checkable measurements — and <strong>flags</strong> — coordination signals
+    with the concrete evidence attached. We do not publish a trust score:
+    there is no observable ground truth to calibrate one against, so any
+    weighting would be aesthetic. Consumers apply their own thresholds.
 </p>
 
-<pre class="formula">
-raw   = w_pay·payment + w_live·liveness + w_age·age + w_rep·reputation
-final = raw · (1 − sybil_penalty)
-</pre>
-
-<h2>Weights</h2>
-<p>The current published weights (read straight from the running configuration):</p>
-<ul>
-    <li>Payment: {{ payment_w }}</li>
-    <li>Liveness: {{ liveness_w }}</li>
-    <li>Age: {{ age_w }}</li>
-    <li>Reputation: {{ reputation_w }}</li>
-</ul>
-
-<h2>The signals</h2>
+<h2>Facts we publish</h2>
 <dl>
-    <dt>Payment</dt>
-    <dd>Real economic activity, weighted by counterparty <em>diversity</em> and
-        log-scaled — many small payments from distinct wallets beat a few big
-        self-dealing ones.</dd>
+    <dt>Registered since</dt>
+    <dd>The registration event on each chain, with the transaction hash as evidence.</dd>
 
-    <dt>Reputation</dt>
-    <dd>Feedback attestations, each discounted by the attester's own trust and by
-        reciprocity, and combined as <em>quality × confidence</em> so a ring of
-        low-credibility accounts rating each other can't bootstrap itself.</dd>
+    <dt>Endpoint liveness</dt>
+    <dd>Raw probe counts over a 30-day window ("answered N of M probes"). An
+        HTTP 402 response counts as <em>alive</em> — for a payable (x402)
+        endpoint, "Payment Required" is a healthy answer.</dd>
 
-    <dt>Liveness</dt>
-    <dd>Whether the endpoint actually responds and serves a valid agent-card,
-        measured over repeated probes.</dd>
+    <dt>Payable endpoint</dt>
+    <dd>Whether the endpoint has answered HTTP 402 — the x402 payment signal.</dd>
 
-    <dt>Age</dt>
-    <dd>Sustained, spread-out activity — penalising the "born yesterday, 500
-        ratings by lunch" pattern.</dd>
+    <dt>Metadata status</dt>
+    <dd>Whether the registered domain serves an agent card: resolving, rotted
+        (unreachable for 7+ days, with the last archived snapshot as evidence),
+        or never resolved. Every fetch is archived — content rots; our archive
+        doesn't.</dd>
 
-    <dt>Sybil penalty</dt>
-    <dd>Derived from clustering agents by shared operator, synchronised
-        registration, and reciprocal-feedback density. Scales the whole score
-        down.</dd>
+    <dt>Attestations</dt>
+    <dd>Raw counts of on-chain feedback ("N recorded, M mutual"). Mutual pairs
+        are reported, not discounted — what mutuality means is your call.</dd>
+
+    <dt>Validation proofs</dt>
+    <dd>Present/absent counts — and "registry unavailable" where a chain has no
+        Validation Registry, which is different from having zero proofs.</dd>
 </dl>
+
+<h2>Flags</h2>
+<dl>
+    <dt>Shared operator</dt>
+    <dd>The same wallet address controls multiple agents. Evidence: the address
+        and the peer agents.</dd>
+
+    <dt>Synchronized registration</dt>
+    <dd>Five or more agents registered within a tight window (gaps under two
+        minutes, window capped at one hour). Evidence: the window and the peers.</dd>
+
+    <dt>Reciprocal feedback</dt>
+    <dd>Mutual A↔B rating pairs — a pattern strangers rarely produce.
+        Evidence: the peer agents.</dd>
+</dl>
+
+<h2>Honest limitations</h2>
+<ul>
+    <li>Payment-related facts are tiered: our own test-purchase receipts
+        (coming) are verified settlements; third-party transfers are only ever
+        phrased as "N distinct addresses sent stablecoins" — never "N customers".</li>
+    <li>Flags are heuristics. Each carries its evidence precisely so you can
+        disagree with our reading of it.</li>
+    <li>Probes come from identifiable infrastructure; a motivated agent could
+        detect and special-case them. Our paid test purchases (coming) rotate
+        identities and randomize timing to make that hard — but not impossible,
+        and we won't pretend otherwise.</li>
+</ul>
 {% endblock %}

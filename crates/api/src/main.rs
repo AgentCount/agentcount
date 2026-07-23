@@ -1,9 +1,9 @@
-//! # api — serve the trust intelligence to the world
+//! # api — serve the facts to the world
 //!
 //! The public face of Ledgerscope. It exposes a free JSON API and a small
-//! server-rendered explorer website, reading everything from Postgres (which the
-//! indexer and enricher populate). It computes nothing heavy on the request path
-//! — the enricher already scored every agent — so handlers are simple reads.
+//! server-rendered explorer website, reading everything from Postgres (which
+//! the indexer and enricher populate). It computes nothing heavy on the request
+//! path — facts are assembled from pre-aggregated observations.
 //!
 //! ## Rust concepts this crate is here to teach
 //!
@@ -17,6 +17,7 @@
 //!   a clean 500 instead of a crashed process.
 
 mod error;
+mod facts_view;
 mod routes;
 mod templates;
 
@@ -35,6 +36,15 @@ pub struct AppState {
     pub db: sqlx::PgPool,
 }
 
+/// `GET /healthz` — proves the process is up AND can reach Postgres. This is
+/// liveness for OUR service; a supervisor or uptime monitor hits it.
+async fn healthz(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<&'static str, error::ApiError> {
+    sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.db).await?;
+    Ok("ok")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -51,19 +61,27 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Build the router. Each `.route(path, get(handler))` wires a URL to a
     //    handler; `.with_state(state)` makes `AppState` reachable from all of
-    //    them via the `State` extractor. Note axum 0.8's `{id}` path syntax.
+    //    them via the `State` extractor. Note axum 0.8's `{param}` path syntax.
     let app = Router::new()
-        // JSON API
+        // JSON API — chain is part of every identity path.
         .route("/api/agents", get(routes::agents::list))
-        .route("/api/agents/{id}", get(routes::agents::get_one))
-        .route("/api/agents/{id}/score", get(routes::agents::get_score))
+        .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
+        .route("/api/agents/{chain}/{id}/facts", get(routes::agents::get_facts))
         .route("/api/stats", get(routes::stats::summary))
         // Server-rendered HTML pages
         .route("/", get(routes::pages::explorer))
-        .route("/agent/{id}", get(routes::pages::agent_detail))
+        .route("/agent/{chain}/{id}", get(routes::pages::agent_detail))
         .route("/methodology", get(routes::pages::methodology))
+        .route("/healthz", get(healthz))
         // Static files (the stylesheet) served straight from the frontend dir.
         .nest_service("/static", ServeDir::new("frontend"))
+        // Crude but effective public-endpoint hardening: cap request time and
+        // total in-flight requests. Per-IP rate limiting is a fast-follow.
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(10),
+        ))
+        .layer(tower::limit::ConcurrencyLimitLayer::new(256))
         .with_state(state);
 
     // 3. Bind a TCP port and serve until the process stops.

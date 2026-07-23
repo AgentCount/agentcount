@@ -1,51 +1,40 @@
-{# agent.html — one agent's full trust-score breakdown.
-   Rendered by routes::pages::agent_detail using `AgentDetailPage`. All numbers
-   are pre-formatted whole-number percentages. #}
+{# agent.html — one agent's facts and flags, each with its evidence.
+   Rendered by routes::pages::agent_detail using `AgentDetailPage`. Every
+   value arrives pre-formatted; this file only lays them out. #}
 {% extends "base.html" %}
 
-{% block title %}Agent {{ agent_id }} — Ledgerscope{% endblock %}
+{% block title %}Agent {{ agent_id }} on {{ chain }} — Ledgerscope{% endblock %}
 
 {% block content %}
 <h1>{{ domain }}</h1>
-<p class="subtle">Agent #{{ agent_id }} on {{ chain }}</p>
+<p class="subtle">Agent #{{ agent_id }} on {{ chain }} · {{ address }}</p>
 
-<section class="score-card">
-    <div class="final-score">
-        <span class="big">{{ final_pct }}%</span>
-        <span class="label">overall trust</span>
-    </div>
-
-    <ul class="breakdown">
-        <li>
-            <span class="name">Payment</span>
-            <span class="bar"><span style="width: {{ payment_pct }}%"></span></span>
-            <span class="val">{{ payment_pct }}%</span>
-        </li>
-        <li>
-            <span class="name">Liveness</span>
-            <span class="bar"><span style="width: {{ liveness_pct }}%"></span></span>
-            <span class="val">{{ liveness_pct }}%</span>
-        </li>
-        <li>
-            <span class="name">Age</span>
-            <span class="bar"><span style="width: {{ age_pct }}%"></span></span>
-            <span class="val">{{ age_pct }}%</span>
-        </li>
-        <li>
-            <span class="name">Reputation</span>
-            <span class="bar"><span style="width: {{ reputation_pct }}%"></span></span>
-            <span class="val">{{ reputation_pct }}%</span>
-        </li>
-    </ul>
-
-    {# The Sybil penalty is shown separately because it's a MULTIPLIER, not an
-       additive signal. Only surface it when the agent is actually clustered. #}
-    {% if in_cluster %}
-    <div class="sybil-warning">
-        ⚠ This agent is in a cluster of {{ cluster_size }} coordinated-looking
-        agents (suspicion {{ suspicion_pct }}%). Its score was discounted by a
-        Sybil penalty of {{ sybil_pct }}%.
-    </div>
-    {% endif %}
+<section class="facts">
+    <h2>Facts</h2>
+    <dl>
+        {% for fact in facts %}
+        <dt>{{ fact.label }}</dt>
+        <dd>
+            {{ fact.value }}
+            {% if !fact.evidence.is_empty() %}
+            <span class="evidence">evidence: {{ fact.evidence }}</span>
+            {% endif %}
+        </dd>
+        {% endfor %}
+    </dl>
 </section>
+
+{% if !flags.is_empty() %}
+<section class="flags">
+    <h2>Flags</h2>
+    <ul>
+        {% for flag in flags %}
+        <li>
+            <strong>⚑ {{ flag.label }}</strong> — {{ flag.detail }}
+            <span class="subtle">(raised {{ flag.raised }})</span>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
 {% endblock %}

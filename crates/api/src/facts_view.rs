@@ -1,0 +1,213 @@
+//! Assemble the published facts for one agent: SQL aggregates in, evidence-
+//! carrying `facts::Fact` values out. This is the ONLY place API queries meet
+//! the pure facts crate — pages and JSON routes both call `assemble` so the
+//! site can never disagree with the API.
+
+use chrono::{Duration, Utc};
+use serde::Serialize;
+use sqlx::PgPool;
+
+/// The probe window facts are computed over.
+const LIVENESS_WINDOW_DAYS: i64 = 30;
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AgentSummary {
+    pub chain: String,
+    pub agent_id: i64,
+    pub domain: String,
+    pub address: String,
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+    pub endpoint_alive: bool,
+    pub flag_count: i64,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct FlagView {
+    pub kind: String,
+    pub evidence: serde_json::Value,
+    pub raised_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentFacts {
+    pub summary: AgentSummary,
+    pub facts: Vec<facts::Fact>,
+    pub flags: Vec<FlagView>,
+}
+
+pub async fn assemble(
+    pool: &PgPool,
+    chain: &str,
+    agent_id: i64,
+) -> Result<Option<AgentFacts>, sqlx::Error> {
+    // Identity + registration. Chain is ALWAYS part of the lookup — agent #7
+    // on Base and agent #7 on Ethereum are different agents.
+    #[derive(sqlx::FromRow)]
+    struct AgentRow {
+        chain: String,
+        agent_id: i64,
+        domain: String,
+        address: String,
+        registered_at: chrono::DateTime<chrono::Utc>,
+        registered_tx: String,
+        endpoint_alive: bool,
+    }
+    let Some(agent) = sqlx::query_as::<_, AgentRow>(
+        "SELECT a.chain, a.agent_id, a.domain, a.address_norm AS address, \
+                a.registered_at, a.registered_tx, \
+                COALESCE(e.endpoint_healthy, false) AS endpoint_alive \
+         FROM agents a \
+         LEFT JOIN agent_enrichment e ON e.chain = a.chain AND e.agent_id = a.agent_id \
+         WHERE a.chain = $1 AND a.agent_id = $2",
+    )
+    .bind(chain)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let now = Utc::now();
+    let window_from = now - Duration::days(LIVENESS_WINDOW_DAYS);
+
+    #[derive(sqlx::FromRow)]
+    struct Probes {
+        probes: i64,
+        alive: i64,
+        payment_required: i64,
+    }
+    let p = sqlx::query_as::<_, Probes>(
+        "SELECT count(*) AS probes, \
+                count(*) FILTER (WHERE outcome IN ('healthy','payment_required')) AS alive, \
+                count(*) FILTER (WHERE outcome = 'payment_required') AS payment_required \
+         FROM probe_history WHERE chain = $1 AND agent_id = $2 AND probed_at >= $3",
+    )
+    .bind(chain)
+    .bind(agent_id)
+    .bind(window_from)
+    .fetch_one(pool)
+    .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct Snaps {
+        total: i64,
+        last_ok_at: Option<chrono::DateTime<chrono::Utc>>,
+        last_ok_snapshot_id: Option<i64>,
+        last_attempt_at: Option<chrono::DateTime<chrono::Utc>>,
+    }
+    let s = sqlx::query_as::<_, Snaps>(
+        "SELECT count(*) AS total, \
+                max(fetched_at) FILTER (WHERE body IS NOT NULL) AS last_ok_at, \
+                (SELECT id FROM metadata_snapshots \
+                 WHERE chain = $1 AND agent_id = $2 AND body IS NOT NULL \
+                 ORDER BY fetched_at DESC LIMIT 1) AS last_ok_snapshot_id, \
+                max(fetched_at) AS last_attempt_at \
+         FROM metadata_snapshots WHERE chain = $1 AND agent_id = $2",
+    )
+    .bind(chain)
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct Attest {
+        total: i64,
+        mutual: i64,
+    }
+    let a = sqlx::query_as::<_, Attest>(
+        "SELECT count(*) AS total, \
+                count(*) FILTER (WHERE EXISTS ( \
+                    SELECT 1 FROM feedback r \
+                    WHERE r.chain = f.chain AND r.from_agent_id = f.to_agent_id \
+                      AND r.to_agent_id = f.from_agent_id)) AS mutual \
+         FROM feedback f WHERE f.chain = $1 AND f.to_agent_id = $2",
+    )
+    .bind(chain)
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct Vals {
+        registry_available: bool,
+        passed: i64,
+        failed: i64,
+    }
+    let v = sqlx::query_as::<_, Vals>(
+        "SELECT COALESCE((SELECT validation_registry IS NOT NULL FROM chains WHERE chain = $1), false) AS registry_available, \
+                count(*) FILTER (WHERE passed) AS passed, \
+                count(*) FILTER (WHERE NOT passed) AS failed \
+         FROM validations WHERE chain = $1 AND subject_id = $2",
+    )
+    .bind(chain)
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await?;
+
+    let flags = sqlx::query_as::<_, FlagView>(
+        "SELECT kind, evidence, raised_at FROM flags \
+         WHERE chain = $1 AND agent_id = $2 ORDER BY raised_at DESC",
+    )
+    .bind(chain)
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await?;
+
+    // SQL aggregates → pure derivations. The facts crate owns the phrasing.
+    let probe_stats = facts::ProbeStats {
+        from: window_from,
+        to: now,
+        probes: p.probes,
+        alive: p.alive,
+        payment_required: p.payment_required,
+    };
+    let mut fact_list = vec![
+        facts::registered_since(&facts::Registration {
+            chain: agent.chain.clone(),
+            registered_at: agent.registered_at,
+            tx_hash: agent.registered_tx.clone(),
+        }),
+        facts::endpoint_liveness(&probe_stats),
+        facts::metadata_status(
+            &facts::SnapshotStats {
+                total: s.total,
+                last_ok_at: s.last_ok_at,
+                last_ok_snapshot_id: s.last_ok_snapshot_id,
+                last_attempt_at: s.last_attempt_at,
+            },
+            now,
+        ),
+        facts::attestations(
+            &facts::AttestationStats { total: a.total, mutual: a.mutual },
+            &agent.chain,
+            now,
+        ),
+        facts::validations(
+            &facts::ValidationStats {
+                registry_available: v.registry_available,
+                passed: v.passed,
+                failed: v.failed,
+            },
+            &agent.chain,
+            now,
+        ),
+    ];
+    if let Some(payable) = facts::payable_endpoint(&probe_stats) {
+        fact_list.push(payable);
+    }
+
+    Ok(Some(AgentFacts {
+        summary: AgentSummary {
+            chain: agent.chain,
+            agent_id: agent.agent_id,
+            domain: agent.domain,
+            address: agent.address,
+            registered_at: agent.registered_at,
+            endpoint_alive: agent.endpoint_alive,
+            flag_count: flags.len() as i64,
+        },
+        facts: fact_list,
+        flags,
+    }))
+}

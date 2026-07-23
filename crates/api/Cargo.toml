@@ -13,8 +13,10 @@ tokio = { workspace = true }
 # The web framework.
 axum = { workspace = true }
 
-# Serves the static stylesheet from ../../frontend via ServeDir.
+# Serves the static stylesheet from ../../frontend via ServeDir; timeout layer
+# for the public API. `tower` provides the in-flight concurrency limit.
 tower-http = { workspace = true }
+tower = { workspace = true }
 
 # Postgres reads.
 sqlx = { workspace = true }
@@ -31,7 +33,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# A path dependency on our own library crate. The API uses it as the single
-# source of truth for the published weights shown on the methodology page, and
-# reuses its `TrustScore` type for the score JSON endpoint.
-scoring = { path = "../scoring" }
+# A path dependency on our own pure library. The API assembles SQL aggregates
+# into its input structs and lets it decide the phrasing of every published
+# fact — the one place a measurement becomes a claim.
+facts = { path = "../facts" }
