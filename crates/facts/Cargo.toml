@@ -1,0 +1,12 @@
+[package]
+name = "facts"
+version = "0.1.0"
+edition = "2024"
+
+# Pure library: measurements in, evidence-carrying facts out. No I/O, no
+# clock reads — "now" is always a parameter, so derivation is deterministic
+# and the published methodology is reproducible.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

@@ -31,6 +31,7 @@ members = [
     "crates/indexer",
     "crates/enricher",
     "crates/scoring",
+    "crates/facts",
     "crates/api",
 ]
 
