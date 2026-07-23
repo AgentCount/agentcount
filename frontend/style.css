@@ -51,31 +51,21 @@ body {
 
 a { color: var(--accent); }
 
-/* Leaderboard table */
+/* Agent directory table */
 .leaderboard { width: 100%; border-collapse: collapse; margin-top: 1.5rem; }
 .leaderboard th, .leaderboard td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #262a33; }
 .leaderboard th { color: var(--muted); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.leaderboard .score { font-variant-numeric: tabular-nums; font-weight: 700; }
 
 .dot { font-size: 0.7rem; }
 .dot-live { color: var(--live); }
 .dot-dead { color: var(--dead); }
 
-/* Score card on the agent detail page */
-.score-card { background: var(--panel); border-radius: 12px; padding: 1.5rem; margin-top: 1.5rem; }
-.final-score { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; }
-.final-score .big { font-size: 3rem; font-weight: 800; }
-.final-score .label { color: var(--muted); }
-
-.breakdown { list-style: none; margin: 0; padding: 0; }
-.breakdown li { display: grid; grid-template-columns: 7rem 1fr 3rem; align-items: center; gap: 0.75rem; margin: 0.4rem 0; }
-.breakdown .name { color: var(--muted); }
-.breakdown .bar { background: #262a33; border-radius: 6px; height: 10px; overflow: hidden; }
-.breakdown .bar > span { display: block; height: 100%; background: var(--accent); }
-.breakdown .val { text-align: right; font-variant-numeric: tabular-nums; }
-
-.sybil-warning { margin-top: 1.25rem; padding: 0.75rem 1rem; border-radius: 8px; background: rgba(210,153,34,0.12); border: 1px solid var(--warn); color: #f0d68a; }
-
-.formula { background: var(--panel); padding: 1rem; border-radius: 8px; overflow-x: auto; }
+/* Facts and flags on the agent detail page */
+.facts, .flags { background: var(--panel); border-radius: 12px; padding: 1.5rem; margin-top: 1.5rem; }
+.facts dt { color: var(--muted); font-weight: 600; margin-top: 0.75rem; }
+.facts dd { margin: 0.15rem 0 0 0; }
+.facts .evidence { display: block; color: var(--muted); font-size: 0.85rem; }
+.flags ul { list-style: none; margin: 0; padding: 0; }
+.flags li { margin: 0.6rem 0; padding: 0.6rem 0.9rem; border-radius: 8px; background: rgba(210,153,34,0.12); border: 1px solid var(--warn); }
 
 .site-footer { max-width: 900px; margin: 3rem auto 2rem; padding: 1rem 1.5rem 0; border-top: 1px solid #262a33; color: var(--muted); font-size: 0.9rem; }

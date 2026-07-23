@@ -1,27 +1,29 @@
 # Ledgerscope
 
-A Rust service that watches the on-chain agent economy and turns raw registry
-data into **trust intelligence**. It indexes every agent registered under
-ERC-8004 on Ethereum and Base, enriches each with payment history and endpoint
-liveness, scores them with a published methodology that discounts manufactured
-reputation, and serves it all as a public explorer website plus a free JSON API.
+A Rust service that watches the on-chain agent economy and establishes **facts**
+about every agent registered under ERC-8004 — through direct observation, with
+evidence attached to every claim. It indexes registrations across chains,
+observes each agent's endpoint over time (an HTTP 402 counts as alive — that's
+the x402 "payable" signal), archives metadata snapshots as they rot, and raises
+evidence-backed **flags** for coordination patterns.
 
-The launch artifact is a research post quantifying *how much of on-chain agent
-reputation is fake*.
+There is deliberately **no trust score**: with no observable ground truth to
+calibrate weights against, any 0–100 number would be aesthetic. We publish
+measurements, not judgments — consumers apply their own thresholds.
 
-> ### ⚠️ This repository is a TEACHING SKELETON
->
-> It is built to be **read and then filled in by hand**, as a way to learn Rust
-> on a real, non-toy architecture. Function bodies are `todo!()`. It is not
-> wired to compile green yet — you add dependencies and implementations as you
-> go, letting the compiler guide you. Comments explain the Rust-specific *why*,
-> aimed at an experienced engineer who is new to Rust.
+The launch artifact is a research post quantifying *how much on-chain agent
+registry activity is manufactured*.
+
+> The code doubles as a Rust-learning vehicle: comments explain the
+> Rust-specific *why*, aimed at an experienced engineer who is new to Rust.
 
 ## The shape of the thing
 
 Four crates in one Cargo workspace. Postgres is the only shared state — the
 binaries never talk to each other directly, so a bug in one stage can never
-corrupt another.
+corrupt another. Observation tables are **append-only**: probes, metadata
+snapshots, and flag events are history we never rewrite (the longitudinal
+record is the moat).
 
 ```
              ┌───────────┐      ┌────────────┐      ┌───────────┐
@@ -30,34 +32,24 @@ corrupt another.
                                    ▲      │                ▲
                                    │      ▼                │
                                 ┌────────────┐         ┌──────────┐
-                                │  enricher  │         │ scoring  │ (pure lib,
+                                │  enricher  │         │  facts   │ (pure lib,
                                 └────────────┘         └──────────┘  no I/O)
 ```
 
-| Crate                | Kind    | Job                                                        |
-|----------------------|---------|------------------------------------------------------------|
-| `crates/indexer`     | binary  | Ingest ERC-8004 registry events from Ethereum + Base.      |
-| `crates/enricher`    | binary  | Probe endpoints, fetch metadata, cluster for Sybil rings.  |
-| `crates/scoring`     | library | Pure trust-scoring functions. No I/O, fully unit-testable. |
-| `crates/api`         | binary  | axum web server: JSON API + server-rendered explorer.      |
-| `migrations/`        | —       | sqlx SQL migrations (the database schema).                 |
-| `frontend/`          | —       | askama HTML templates + a little CSS.                      |
+| Crate                | Kind    | Job                                                              |
+|----------------------|---------|------------------------------------------------------------------|
+| `crates/indexer`     | binary  | Ingest ERC-8004 registry events from every enabled chain.        |
+| `crates/enricher`    | binary  | Observe endpoints (SSRF-guarded, one fetch per agent), archive metadata snapshots, raise coordination flags with evidence. |
+| `crates/facts`       | library | Pure fact derivation: measurements in, evidence-carrying facts out. |
+| `crates/api`         | binary  | axum web server: JSON facts API + server-rendered explorer.      |
+| `migrations/`        | —       | sqlx SQL migrations (the database schema).                       |
+| `frontend/`          | —       | askama HTML templates + a little CSS.                            |
+| `scripts/`           | —       | `seed_chains.sql` — the chains (and registry addresses) to index. |
 
-## Suggested order to fill it in
-
-Learn from the inside out — start where there's no I/O to distract you:
-
-1. **`scoring`** — pure functions and tests. No async, no network, no database.
-   The best place to get comfortable with Rust's types and ownership.
-2. **`migrations`** — write the SQL, run it against a local Postgres.
-3. **`indexer`** — your first taste of async + alloy. Get one event decoding.
-4. **`enricher`** — HTTP with reqwest, then the clustering logic.
-5. **`api`** — tie it together and see it in a browser.
-
-## Getting a database up (for when you reach step 2)
+## Getting a database up
 
 ```sh
-# one-liner local Postgres via Docker
+# one-liner local Postgres via Docker (or use a native install)
 docker run --name ledgerscope-db -e POSTGRES_PASSWORD=dev \
   -e POSTGRES_DB=ledgerscope -p 5432:5432 -d postgres:16
 
@@ -67,21 +59,30 @@ cargo install sqlx-cli          # provides `sqlx migrate`
 sqlx migrate run                # applies everything in migrations/
 ```
 
-`DATABASE_URL` matters even at *compile* time: sqlx's checked-query macros talk
-to that database during `cargo build` to verify your SQL.
+## Seeding chains (required before indexing)
+
+Chains are **data**, not code. Edit `scripts/seed_chains.sql` with the real
+ERC-8004 registry addresses (CREATE2 → identical across chains) and the Base
+deploy block, then:
+
+```sh
+psql "$DATABASE_URL" -f scripts/seed_chains.sql
+```
+
+The indexer refuses to run a chain whose identity registry is the zero
+address, so a forgotten edit fails loudly instead of indexing nothing. Also
+verify the `sol!` event signatures in `crates/indexer/src/bindings.rs` against
+the deployed registry ABIs — a mismatch decodes silently to nothing.
 
 ## Environment variables
 
-The binaries read config from the environment at startup. Put these in a `.env`
-file (git-ignored) and load it with `set -a; source .env; set +a` before running:
-
-| Variable            | Used by            | What it is                                            |
-|---------------------|--------------------|-------------------------------------------------------|
-| `DATABASE_URL`      | all + compile time | Postgres connection string (see above).               |
-| `ETHEREUM_RPC_URL`  | indexer            | JSON-RPC endpoint for Ethereum mainnet.               |
-| `BASE_RPC_URL`      | indexer            | JSON-RPC endpoint for Base.                           |
-| `PROBE_CONCURRENCY` | enricher           | How many endpoints to probe at once (default 32).     |
-| `RUST_LOG`          | all                | Log verbosity, e.g. `indexer=info,enricher=debug`.    |
+| Variable            | Used by            | What it is                                              |
+|---------------------|--------------------|---------------------------------------------------------|
+| `DATABASE_URL`      | all                | Postgres connection string (see above).                 |
+| `RPC_URL_<CHAIN>`   | indexer            | JSON-RPC endpoint per enabled chain row, e.g. `RPC_URL_BASE`. |
+| `PROBE_CONCURRENCY` | enricher           | How many endpoints to observe at once (default 32).     |
+| `ENRICH_INTERVAL_SECS` | enricher        | Seconds between enrichment passes (default 300).        |
+| `RUST_LOG`          | all                | Log verbosity, e.g. `indexer=info,enricher=debug`.      |
 
 Use your own RPC provider keys (Alchemy, Infura, a self-hosted node…). Public
 endpoints work for experimenting but rate-limit quickly.
@@ -90,7 +91,9 @@ endpoints work for experimenting but rate-limit quickly.
 
 ```sh
 cargo check                 # fast type-check of the whole workspace
-cargo run -p indexer        # run one binary
-cargo test  -p scoring      # test one crate
-cargo doc --open            # render these comments as browsable docs
+cargo test                  # unit tests + sqlx tests (needs DATABASE_URL)
+cargo run -p indexer        # follow chains (needs seeded chains + RPC URLs)
+cargo run -p enricher       # observe agents, raise flags
+cargo run -p api            # serve http://localhost:8080
+cargo doc --open            # render the teaching comments as browsable docs
 ```
