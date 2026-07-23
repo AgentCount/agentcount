@@ -1,0 +1,28 @@
+# The `enricher` crate is a BINARY. It reads the agents the indexer discovered
+# and adds the off-chain and derived context the scorer needs: is the endpoint
+# alive? what does its agent-card say? is it part of a Sybil cluster?
+
+[package]
+name = "enricher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+
+# The HTTP client used to fetch agent-card metadata and probe endpoints.
+reqwest = { workspace = true }
+
+# Postgres reads (agents) and writes (enrichment, clusters).
+sqlx = { workspace = true }
+
+# Parse the JSON agent-card documents we fetch.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Binary → anyhow for easy error bubbling.
+anyhow = { workspace = true }
+
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

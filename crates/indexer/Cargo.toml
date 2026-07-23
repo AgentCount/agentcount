@@ -1,0 +1,33 @@
+# The `indexer` crate is a BINARY (it has src/main.rs with an entry point).
+# Its job: follow Ethereum and Base, decode ERC-8004 registry events, and write
+# them into Postgres continuously.
+
+[package]
+name = "indexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The async runtime. `main` will be `async`, driven by tokio.
+tokio = { workspace = true }
+
+# Ethereum access: RPC providers, log filters, and the `sol!` macro that turns
+# ERC-8004's Solidity event signatures into typed Rust.
+alloy = { workspace = true }
+
+# Postgres writes.
+sqlx = { workspace = true }
+
+# For decoding RPC/JSON payloads and stashing raw event data as jsonb.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Binaries want easy, context-rich error bubbling, so we reach for anyhow here
+# rather than defining a typed error enum. (Libraries → thiserror; binaries →
+# anyhow. That split is worth internalising.)
+anyhow = { workspace = true }
+
+# Timestamps for event rows, and structured logging so you can watch ingestion.
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

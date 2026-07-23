@@ -1,0 +1,7 @@
+# Rust build output — big, regenerable, never committed.
+/target
+
+# Local environment: secrets, RPC keys, DATABASE_URL. Never commit this.
+.env
+
+/docs

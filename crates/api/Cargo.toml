@@ -1,0 +1,35 @@
+# The `api` crate is a BINARY: the axum web server. It's the only crate the
+# outside world talks to. It reads from Postgres, calls the `scoring` library to
+# compute trust scores, and serves both a JSON API and server-rendered HTML.
+
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+
+# The web framework.
+axum = { workspace = true }
+
+# Postgres reads.
+sqlx = { workspace = true }
+
+# JSON request/response bodies.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Server-rendered HTML templates (files live in ../../frontend).
+askama = { workspace = true }
+
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# THE INTERESTING ONE: a path dependency on our own library crate. This is how
+# one workspace crate uses another — the `api` binary calls `scoring::score(...)`
+# directly, as an ordinary Rust function, no network hop. Cargo resolves the
+# path relative to this Cargo.toml.
+scoring = { path = "../scoring" }

@@ -1,0 +1,49 @@
+{# explorer.html — the landing page leaderboard.
+   Rendered by routes::pages::explorer using the `ExplorerPage` struct in
+   templates.rs. The fields referenced here (agents, agent_id, domain, …) MUST
+   match that struct — askama checks it at compile time. #}
+{% extends "base.html" %}
+
+{% block title %}Ledgerscope — Agent Trust Explorer{% endblock %}
+
+{% block content %}
+<h1>Agent Trust Explorer</h1>
+<p class="lede">
+    Every agent registered under ERC-8004 on Ethereum and Base, scored by a
+    methodology that discounts manufactured reputation.
+</p>
+
+<table class="leaderboard">
+    <thead>
+        <tr>
+            <th>Agent</th>
+            <th>Chain</th>
+            <th>Status</th>
+            <th>Trust score</th>
+        </tr>
+    </thead>
+    <tbody>
+        {# Loop over the Vec<AgentRow> the handler passed in. If it's empty, the
+           `else` branch of the for-loop renders instead — a handy askama feature. #}
+        {% for agent in agents %}
+        <tr>
+            <td><a href="/agent/{{ agent.agent_id }}">{{ agent.domain }}</a></td>
+            <td>{{ agent.chain }}</td>
+            <td>
+                {# A conditional renders a green/grey status dot. #}
+                {% if agent.is_alive %}
+                    <span class="dot dot-live" title="endpoint responded">●</span> live
+                {% else %}
+                    <span class="dot dot-dead" title="endpoint unreachable">●</span> down
+                {% endif %}
+            </td>
+            {# `{{ x * 100.0 }}` works because askama evaluates simple Rust
+               expressions; format as a percentage for readability. #}
+            <td class="score">{{ "{:.0}"|format(agent.final_score * 100.0) }}%</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">No agents indexed yet.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

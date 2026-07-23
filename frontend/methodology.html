@@ -1,0 +1,58 @@
+{# methodology.html — the human-readable explanation of how scores are computed.
+   Rendered by routes::pages::methodology using `MethodologyPage`, which carries
+   the live `scoring::ScoreWeights`. Printing the weights from the struct (rather
+   than hard-coding them in prose) guarantees this page can never drift out of
+   sync with the actual scoring code. #}
+{% extends "base.html" %}
+
+{% block title %}Methodology — Ledgerscope{% endblock %}
+
+{% block content %}
+<h1>Scoring methodology</h1>
+
+<p>
+    A trust score blends four positive signals, then applies a Sybil penalty as a
+    multiplier. The penalty is the whole point: no amount of payment, liveness,
+    age, or reputation can rescue an agent that is clearly part of a coordinated
+    farm.
+</p>
+
+<pre class="formula">
+raw   = w_pay·payment + w_live·liveness + w_age·age + w_rep·reputation
+final = raw · (1 − sybil_penalty)
+</pre>
+
+<h2>Weights</h2>
+<p>The current published weights (read straight from the running configuration):</p>
+<ul>
+    <li>Payment: {{ "{:.2}"|format(weights.payment) }}</li>
+    <li>Liveness: {{ "{:.2}"|format(weights.liveness) }}</li>
+    <li>Age: {{ "{:.2}"|format(weights.age) }}</li>
+    <li>Reputation: {{ "{:.2}"|format(weights.reputation) }}</li>
+</ul>
+
+<h2>The signals</h2>
+<dl>
+    <dt>Payment</dt>
+    <dd>Real economic activity, weighted by counterparty <em>diversity</em> and
+        log-scaled — many small payments from distinct wallets beat a few big
+        self-dealing ones.</dd>
+
+    <dt>Reputation</dt>
+    <dd>Feedback attestations, each discounted by the attester's own trust and by
+        reciprocity, so a ring of agents rating each other can't bootstrap itself.</dd>
+
+    <dt>Liveness</dt>
+    <dd>Whether the endpoint actually responds and serves a valid agent-card,
+        measured over repeated probes.</dd>
+
+    <dt>Age</dt>
+    <dd>Sustained, spread-out activity — penalising the "born yesterday, 500
+        ratings by lunch" pattern.</dd>
+
+    <dt>Sybil penalty</dt>
+    <dd>Derived from clustering agents by shared funding, shared operator,
+        synchronised registration, and reciprocal-feedback density. Scales the
+        whole score down.</dd>
+</dl>
+{% endblock %}

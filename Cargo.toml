@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ledgerscope — Cargo WORKSPACE root
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# In Rust, a "crate" is one compilable unit (a library or a binary). A
+# "workspace" is a bag of related crates that share ONE build output directory
+# (`target/`) and ONE lockfile (`Cargo.lock`). Real Rust projects are almost
+# always workspaces — so we start as one on day one.
+#
+# This particular file is a *virtual* workspace root: notice there is no
+# `[package]` section, so the root itself is not a crate. Its only job is to
+# name the members and to declare shared dependency versions in one place.
+#
+# Handy commands once you start filling things in:
+#   cargo build                 # build every member
+#   cargo run -p indexer        # run one specific binary (-p = "package")
+#   cargo test -p scoring       # test one specific crate
+#   cargo check                 # type-check without producing binaries (fast)
+
+[workspace]
+# `resolver = "3"` is the dependency-feature resolver that ships with the 2024
+# edition. Always set it explicitly in a workspace; the default here would
+# otherwise fall back to an older, dumber resolver.
+resolver = "3"
+
+# The four crates that make up Ledgerscope. Each path is a directory containing
+# its own `Cargo.toml`. Data flows indexer → (Postgres) → enricher → scoring →
+# api, but note the members are listed alphabetically — Cargo does not care
+# about order, it works out the real build order from the dependency graph.
+members = [
+    "crates/indexer",
+    "crates/enricher",
+    "crates/scoring",
+    "crates/api",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [workspace.dependencies] — declare a version ONCE, inherit it everywhere.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Each member crate writes `tokio = { workspace = true }` instead of repeating a
+# version number. That guarantees every crate links the exact same version of
+# every library (no accidental "two versions of serde" bloat) and gives you a
+# single place to bump versions.
+#
+# NOTE: this project is a TEACHING SKELETON. The versions below are plausible
+# but are not pinned/verified to compile — when you start filling in bodies,
+# run `cargo update` and adjust as the compiler complains. That first round of
+# "fighting the resolver" is itself part of learning Rust's ecosystem.
+[workspace.dependencies]
+
+# The async runtime. Nothing async runs without an executor to drive it, and
+# tokio is the de-facto one. `features = ["full"]` pulls in the whole toolbox
+# (multi-threaded scheduler, timers, TCP, process, etc.) — fine while learning;
+# trim it later for faster builds.
+tokio = { version = "1", features = ["full"] }
+
+# The modern Ethereum library (successor to ethers-rs). Gives us JSON-RPC
+# clients, ABI encoding/decoding, and the `sol!` macro that turns a Solidity
+# signature into a typed Rust struct at compile time.
+alloy = { version = "1.0", features = ["full"] }
+
+# Postgres access with COMPILE-TIME-CHECKED SQL. `sqlx::query!` actually talks
+# to your database at build time to verify the SQL and infer result types, so a
+# typo'd column name becomes a compiler error, not a 2am pager alert.
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",   # use tokio as sqlx's async runtime
+    "postgres",        # the Postgres driver
+    "macros",          # the query!/query_as! compile-time-checked macros
+    "chrono",          # map SQL timestamps to chrono types
+    "uuid",            # map SQL uuid to the uuid crate
+    "json",            # map SQL jsonb <-> serde_json::Value
+] }
+
+# The web framework, from the tokio team. Route handlers are just async
+# functions; "extractors" (function arguments) are how you pull data out of a
+# request. It teaches Rust traits by osmosis.
+axum = "0.8"
+
+# Serialization / deserialization. Used absolutely everywhere: decoding RPC
+# JSON, parsing agent metadata files, encoding API responses. `derive` gives us
+# the `#[derive(Serialize, Deserialize)]` attribute.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP client. The enricher uses it to fetch agent metadata and to probe
+# whether an agent's endpoint is alive.
+reqwest = { version = "0.12", features = ["json"] }
+
+# Error handling, two complementary tools:
+#   thiserror → define precise, typed error enums (best for LIBRARY crates like
+#               `scoring`, where callers want to match on the error kind).
+#   anyhow    → one catch-all error type with easy `?` bubbling and context
+#               (best for BINARY crates, where you mostly just want to log and
+#               exit). We'll use each where it fits.
+thiserror = "2"
+anyhow = "1"
+
+# Compile-time HTML templates. The template files live in `frontend/` and
+# askama generates a Rust struct method that renders them, so a typo in a
+# template variable is — you guessed it — a compiler error.
+askama = "0.13"
+
+# Small shared helpers used across crates.
+chrono = { version = "0.4", features = ["serde"] }   # dates/times
+uuid = { version = "1", features = ["v4", "serde"] } # ids
+tracing = "0.1"                                       # structured logging
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

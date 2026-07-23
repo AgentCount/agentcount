@@ -1,0 +1,81 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   style.css — a small, dependency-free stylesheet for the explorer.
+
+   This file is a plain static asset. To serve it, the `api` crate mounts a
+   static route — the usual approach with axum is the `tower-http` crate:
+
+       use tower_http::services::ServeDir;
+       let app = Router::new()
+           // ...your routes...
+           .nest_service("/static", ServeDir::new("frontend"));
+
+   That maps GET /static/style.css → frontend/style.css. Add `tower-http` (with
+   its "fs" feature) to api/Cargo.toml when you wire this up. Kept deliberately
+   plain — the Rust is the point, not the CSS.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --text: #e6e6e6;
+    --muted: #9aa0aa;
+    --accent: #5b9dff;
+    --live: #3fb950;
+    --dead: #6e7681;
+    --warn: #d29922;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+}
+
+.site-header {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #262a33;
+}
+.site-header .brand { font-weight: 700; font-size: 1.2rem; color: var(--text); text-decoration: none; }
+.site-header nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
+.site-header nav a:hover { color: var(--text); }
+
+.content { max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; }
+.lede { color: var(--muted); font-size: 1.1rem; }
+.subtle { color: var(--muted); }
+
+a { color: var(--accent); }
+
+/* Leaderboard table */
+.leaderboard { width: 100%; border-collapse: collapse; margin-top: 1.5rem; }
+.leaderboard th, .leaderboard td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #262a33; }
+.leaderboard th { color: var(--muted); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.leaderboard .score { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+.dot { font-size: 0.7rem; }
+.dot-live { color: var(--live); }
+.dot-dead { color: var(--dead); }
+
+/* Score card on the agent detail page */
+.score-card { background: var(--panel); border-radius: 12px; padding: 1.5rem; margin-top: 1.5rem; }
+.final-score { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; }
+.final-score .big { font-size: 3rem; font-weight: 800; }
+.final-score .label { color: var(--muted); }
+
+.breakdown { list-style: none; margin: 0; padding: 0; }
+.breakdown li { display: grid; grid-template-columns: 7rem 1fr 3rem; align-items: center; gap: 0.75rem; margin: 0.4rem 0; }
+.breakdown .name { color: var(--muted); }
+.breakdown .bar { background: #262a33; border-radius: 6px; height: 10px; overflow: hidden; }
+.breakdown .bar > span { display: block; height: 100%; background: var(--accent); }
+.breakdown .val { text-align: right; font-variant-numeric: tabular-nums; }
+
+.sybil-warning { margin-top: 1.25rem; padding: 0.75rem 1rem; border-radius: 8px; background: rgba(210,153,34,0.12); border: 1px solid var(--warn); color: #f0d68a; }
+
+.formula { background: var(--panel); padding: 1rem; border-radius: 8px; overflow-x: auto; }
+
+.site-footer { max-width: 900px; margin: 3rem auto 2rem; padding: 1rem 1.5rem 0; border-top: 1px solid #262a33; color: var(--muted); font-size: 0.9rem; }

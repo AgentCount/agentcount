@@ -1,0 +1,46 @@
+{# ─────────────────────────────────────────────────────────────────────────────
+   base.html — the shared page shell every other template extends.
+
+   This is askama's template-inheritance feature (borrowed from Jinja/Django):
+   the base defines the overall HTML skeleton and marks {% block %} holes; each
+   child template ({% extends "base.html" %}) fills those holes. It keeps the
+   header, footer, and <head> in ONE place.
+
+   Syntax cheatsheet for reading these files:
+     {{ value }}         → print a Rust field/expression (HTML-escaped by default)
+     {% if cond %}…{% endif %}     → conditional
+     {% for x in xs %}…{% endfor %} → loop
+     {% block name %}…{% endblock %} → a hole a child can override
+     {# … #}             → a comment (not rendered), like this one
+   ───────────────────────────────────────────────────────────────────────────── #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {# Each page sets its own <title> by overriding this block. #}
+    <title>{% block title %}Ledgerscope{% endblock %}</title>
+    {# The stylesheet is served as a static file by the api crate (see the note
+       in style.css about wiring up a static route). #}
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="site-header">
+        <a href="/" class="brand">Ledgerscope</a>
+        <nav>
+            <a href="/">Explorer</a>
+            <a href="/methodology">Methodology</a>
+            <a href="/api/stats">API</a>
+        </nav>
+    </header>
+
+    <main class="content">
+        {# THE hole every page fills with its own content. #}
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <p>Ledgerscope — open-source trust intelligence for the on-chain agent economy.</p>
+    </footer>
+</body>
+</html>

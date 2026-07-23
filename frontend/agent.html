@@ -1,0 +1,56 @@
+{# agent.html — one agent's full trust-score breakdown.
+   Rendered by routes::pages::agent_detail using `AgentDetailPage`. Note it holds
+   a real `scoring::TrustScore` (the field `score`), so this page and the JSON API
+   render the exact same numbers — they literally share the library type. #}
+{% extends "base.html" %}
+
+{% block title %}Agent {{ agent_id }} — Ledgerscope{% endblock %}
+
+{% block content %}
+<h1>{{ domain }}</h1>
+<p class="subtle">Agent #{{ agent_id }} on {{ chain }}</p>
+
+<section class="score-card">
+    <div class="final-score">
+        <span class="big">{{ "{:.0}"|format(score.final_score * 100.0) }}%</span>
+        <span class="label">overall trust</span>
+    </div>
+
+    {# The breakdown makes the methodology transparent: a visitor can see which
+       signals lifted or sank the score. Each bar's width is the sub-score. #}
+    <ul class="breakdown">
+        <li>
+            <span class="name">Payment</span>
+            <span class="bar"><span style="width: {{ "{:.0}"|format(score.payment * 100.0) }}%"></span></span>
+            <span class="val">{{ "{:.0}"|format(score.payment * 100.0) }}%</span>
+        </li>
+        <li>
+            <span class="name">Liveness</span>
+            <span class="bar"><span style="width: {{ "{:.0}"|format(score.liveness * 100.0) }}%"></span></span>
+            <span class="val">{{ "{:.0}"|format(score.liveness * 100.0) }}%</span>
+        </li>
+        <li>
+            <span class="name">Age</span>
+            <span class="bar"><span style="width: {{ "{:.0}"|format(score.age * 100.0) }}%"></span></span>
+            <span class="val">{{ "{:.0}"|format(score.age * 100.0) }}%</span>
+        </li>
+        <li>
+            <span class="name">Reputation</span>
+            <span class="bar"><span style="width: {{ "{:.0}"|format(score.reputation * 100.0) }}%"></span></span>
+            <span class="val">{{ "{:.0}"|format(score.reputation * 100.0) }}%</span>
+        </li>
+    </ul>
+
+    {# The Sybil penalty is shown separately because it's a MULTIPLIER, not an
+       additive signal — it scales everything else down. Only surface the warning
+       when the agent is actually part of a flagged cluster. #}
+    {% if cluster_size > 1 %}
+    <div class="sybil-warning">
+        ⚠ This agent is in a cluster of {{ cluster_size }} coordinated-looking
+        agents (suspicion {{ "{:.0}"|format(suspicion * 100.0) }}%). Its score was
+        discounted by a Sybil penalty of
+        {{ "{:.0}"|format(score.sybil_penalty * 100.0) }}%.
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
