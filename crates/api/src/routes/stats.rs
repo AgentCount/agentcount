@@ -1,8 +1,7 @@
-//! The aggregate statistics endpoint — your launch-post headline number lives here.
+//! The aggregate statistics endpoint — the research post's headline number.
 //!
-//! `GET /api/stats` returns the top-line figures that make the research post:
-//! how many agents exist, and — the punchline — what fraction of on-chain agent
-//! reputation is manufactured. This is the single endpoint the blog post quotes.
+//! `GET /api/stats` returns the top-line figures: how many agents exist, and —
+//! the punchline — what fraction of on-chain agent reputation is manufactured.
 
 use axum::extract::State;
 use axum::Json;
@@ -15,25 +14,55 @@ use crate::AppState;
 #[derive(Debug, Serialize)]
 pub struct Stats {
     /// Total agents indexed across all chains.
-    pub total_agents: u64,
+    pub total_agents: i64,
     /// How many are in a flagged Sybil cluster.
-    pub agents_in_clusters: u64,
-    /// The headline: fraction of total *reputation* (feedback weight) that
-    /// belongs to clustered/penalised agents. This is "how much is fake".
+    pub agents_in_clusters: i64,
+    /// How many had a live endpoint at last probe.
+    pub live_agents: i64,
+    /// The headline: fraction of feedback edges whose target is a clustered
+    /// (manufactured-looking) agent. A rough "how much reputation is fake".
     pub fake_reputation_fraction: f64,
-    /// How many agents had a live endpoint at last probe — a reality check on
-    /// how much of the registered population actually functions.
-    pub live_agents: u64,
 }
 
-/// `GET /api/stats` — compute and return the aggregates.
+/// `GET /api/stats` — a handful of aggregate queries assembled into `Stats`.
 ///
-/// A handler that needs only the database: one `State` argument in, `Json` out.
+/// `query_scalar` is the shortcut for a query that returns a single column/value.
 pub async fn summary(State(state): State<AppState>) -> ApiResult<Json<Stats>> {
-    // Sketch: a handful of aggregate SQL queries (COUNT, SUM over feedback weight
-    // partitioned by whether the target agent is clustered), assembled into a
-    // `Stats`. Consider caching this — it's read constantly by the landing page
-    // and changes slowly.
-    let _ = state;
-    todo!("run the aggregate queries and assemble a Stats value")
+    let total_agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents")
+        .fetch_one(&state.db)
+        .await?;
+
+    let agents_in_clusters: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT DISTINCT chain, agent_id FROM cluster_members) t",
+    )
+    .fetch_one(&state.db)
+    .await?;
+
+    let live_agents: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM agent_enrichment WHERE endpoint_healthy")
+            .fetch_one(&state.db)
+            .await?;
+
+    // Fraction of all feedback that points at a clustered agent. `NULLIF(..,0)`
+    // avoids a divide-by-zero when there's no feedback yet; `COALESCE(..,0.0)`
+    // then turns the resulting NULL back into 0.
+    let fake_reputation_fraction: f64 = sqlx::query_scalar(
+        "SELECT COALESCE( \
+            (SELECT count(*) FROM feedback f \
+             WHERE EXISTS ( \
+                SELECT 1 FROM cluster_members cm \
+                WHERE cm.chain = f.chain AND cm.agent_id = f.to_agent_id \
+             ))::double precision \
+            / NULLIF((SELECT count(*) FROM feedback), 0), \
+         0.0)",
+    )
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(Stats {
+        total_agents,
+        agents_in_clusters,
+        live_agents,
+        fake_reputation_fraction,
+    }))
 }

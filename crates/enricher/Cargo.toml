@@ -1,6 +1,7 @@
 # The `enricher` crate is a BINARY. It reads the agents the indexer discovered
 # and adds the off-chain and derived context the scorer needs: is the endpoint
-# alive? what does its agent-card say? is it part of a Sybil cluster?
+# alive? what does its agent-card say? is it part of a Sybil cluster? As the last
+# step of a pass it also computes and stores each agent's trust score.
 
 [package]
 name = "enricher"
@@ -13,7 +14,10 @@ tokio = { workspace = true }
 # The HTTP client used to fetch agent-card metadata and probe endpoints.
 reqwest = { workspace = true }
 
-# Postgres reads (agents) and writes (enrichment, clusters).
+# Bounded-concurrency probing (buffer_unordered).
+futures = { workspace = true }
+
+# Postgres reads (agents) and writes (enrichment, clusters, scores).
 sqlx = { workspace = true }
 
 # Parse the JSON agent-card documents we fetch.
@@ -24,5 +28,10 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 
 chrono = { workspace = true }
+uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Our own pure scoring library. The enricher computes scores as a scheduled
+# batch step and writes them to the `scores` table for the API to serve.
+scoring = { path = "../scoring" }

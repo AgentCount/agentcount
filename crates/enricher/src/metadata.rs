@@ -11,63 +11,76 @@
 //! ignored; missing optional fields become `None`. If the JSON's types don't
 //! match our struct, we get a clean error instead of a landmine.
 
-use anyhow::Result;
-use serde::Deserialize;
+use std::time::Duration;
 
-/// The subset of an agent-card we care about. Add fields as your needs grow;
-/// serde ignores any JSON keys not mentioned here.
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+/// The lightweight view of an agent that enrichment works from — just enough to
+/// know where to fetch its card. Built from a database row in `store.rs`.
 ///
-/// `Option<T>` fields are ones that might be absent — serde fills them with
-/// `None` rather than failing, which is exactly what you want for optional
-/// metadata.
-#[derive(Debug, Clone, Deserialize)]
+/// It derives `sqlx::FromRow` so a `SELECT chain, agent_id, domain ...` maps
+/// straight into it, and `Clone` so the concurrent probe stage can move a copy
+/// into each async job.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AgentStub {
+    pub chain: String,
+    /// Postgres `BIGINT` is a signed 64-bit int, so it maps to `i64` (not `u64`).
+    /// We convert to `u64` only at the edge where we hand data to `scoring`.
+    pub agent_id: i64,
+    /// The domain the agent registered on-chain, e.g. "acme-agent.example".
+    pub domain: String,
+}
+
+/// The subset of an agent-card we care about. `#[derive(Serialize)]` too, so we
+/// can store the parsed card back into Postgres as JSONB. serde ignores any JSON
+/// keys not mentioned here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCard {
     /// Human-readable name the agent advertises.
     pub name: Option<String>,
     /// A description / capabilities blurb.
     pub description: Option<String>,
-    /// The endpoint the agent actually serves requests from. This is what
-    /// `liveness::probe` will hit.
+    /// The endpoint the agent actually serves requests from.
     pub endpoint: Option<String>,
     /// Anything else in the document, kept verbatim so we don't lose data we
-    /// haven't modelled yet. `serde_json::Value` is a "parsed but untyped" JSON
-    /// blob — the escape hatch for schema you don't fully know.
+    /// haven't modelled yet. `#[serde(flatten)]` folds all un-named keys in here.
     #[serde(flatten)]
     pub extra: serde_json::Value,
 }
 
-/// The `AgentStub` is the little bit of on-chain info we already have about an
-/// agent (from the indexer) — enough to know where to fetch its card from.
-/// Defined here as a placeholder; in the real code it'll come from `store.rs`.
-pub struct AgentStub {
-    pub agent_id: u64,
-    /// The domain the agent registered on-chain, e.g. "acme-agent.example".
-    pub domain: String,
+/// The conventional well-known path for an agent-card. Adjust to match the
+/// ERC-8004 spec's actual path if it differs.
+fn card_url(domain: &str) -> String {
+    format!("https://{domain}/.well-known/agent.json")
 }
 
 /// Fetch and parse the agent-card for one agent.
 ///
-/// Returns `Result<AgentCard>`; the caller decides whether a failure means
-/// "endpoint down" (data!) or something to retry. We do NOT `?`-abort the whole
-/// enrichment pass on one bad fetch.
+/// Returns `Result<AgentCard>`; the caller (in `main.rs`) keeps the whole
+/// `Result` rather than `?`-ing it, so a failed fetch becomes "no valid card /
+/// endpoint down" data instead of aborting the batch.
 pub async fn fetch_agent_card(agent: &AgentStub) -> Result<AgentCard> {
-    // Convention for where the card lives — adjust to the ERC-8004 spec's actual
-    // well-known path:
-    //     let url = format!("https://{}/.well-known/agent.json", agent.domain);
-    //
-    // reqwest + serde in three lines. `.json::<AgentCard>()` both reads the body
-    // and deserializes it into our struct in one step:
-    //     let client = reqwest::Client::new();
-    //     let card = client.get(&url)
-    //         .timeout(std::time::Duration::from_secs(10)) // never hang forever
-    //         .send().await?
-    //         .error_for_status()?      // turn 404/500 into an Err
-    //         .json::<AgentCard>().await?;
-    //     Ok(card)
-    //
-    // Give the client a short timeout: a dead agent must fail fast, not stall the
-    // whole batch.
+    let url = card_url(&agent.domain);
 
-    let _ = agent;
-    todo!("GET https://{{domain}}/.well-known/agent.json and deserialize into AgentCard")
+    // A short, hard timeout is essential: a dead agent must fail fast, not stall
+    // the whole batch. Building one client per call is fine here; for high volume
+    // you'd build it once and share it.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("building HTTP client")?;
+
+    let card = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("requesting {url}"))?
+        .error_for_status() // turn 4xx/5xx into an Err
+        .with_context(|| format!("bad status from {url}"))?
+        .json::<AgentCard>() // read body AND deserialize in one step
+        .await
+        .with_context(|| format!("parsing agent-card from {url}"))?;
+
+    Ok(card)
 }

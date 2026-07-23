@@ -87,6 +87,15 @@ serde_json = "1"
 # whether an agent's endpoint is alive.
 reqwest = { version = "0.12", features = ["json"] }
 
+# Combinators for working with many futures at once. The enricher uses
+# `futures::stream::StreamExt::buffer_unordered` to probe many endpoints with a
+# bounded amount of concurrency (fast, but not a thundering herd).
+futures = "0.3"
+
+# A small tower "service" layer for axum. We use its `ServeDir` to serve the
+# static stylesheet from the `frontend/` directory.
+tower-http = { version = "0.6", features = ["fs"] }
+
 # Error handling, two complementary tools:
 #   thiserror → define precise, typed error enums (best for LIBRARY crates like
 #               `scoring`, where callers want to match on the error kind).

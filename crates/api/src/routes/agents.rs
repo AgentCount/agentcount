@@ -2,7 +2,8 @@
 //!
 //! Three handlers, each an `async fn`. Read them as: "the arguments say what I
 //! need from the request; the return type says what I give back." That symmetry
-//! is the whole mental model for axum handlers.
+//! is the whole mental model for axum handlers. All three just read Postgres —
+//! the enricher already did the scoring.
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -12,86 +13,122 @@ use crate::error::{ApiError, ApiResult};
 use crate::AppState;
 
 /// Query-string parameters for the list endpoint, e.g.
-/// `/api/agents?chain=base&limit=50&sort=score`.
-///
-/// axum's `Query` extractor uses serde to parse these off the URL into this
-/// struct. `Option`/`#[serde(default)]` fields make each parameter optional.
+/// `/api/agents?chain=base&limit=50`. axum's `Query` extractor uses serde to
+/// parse these off the URL. Optional/defaulted fields make each one optional.
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
     /// Filter by chain ("ethereum" / "base"). `None` = all chains.
     pub chain: Option<String>,
     /// Max rows to return. Defaulted so a missing `limit` doesn't mean "no cap".
     #[serde(default = "default_limit")]
-    pub limit: u32,
+    pub limit: i64,
 }
 
-fn default_limit() -> u32 {
+fn default_limit() -> i64 {
     100
 }
 
-/// One agent as returned by the list endpoint. `#[derive(Serialize)]` is what
-/// lets `Json(..)` turn a `Vec<AgentSummary>` into a JSON array.
-#[derive(Debug, Serialize)]
+/// One agent as returned by the list/get endpoints. `FromRow` maps a DB row into
+/// it; `Serialize` turns it into JSON. The column names in the SQL are aliased to
+/// match these field names.
+#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct AgentSummary {
-    pub agent_id: u64,
     pub chain: String,
+    pub agent_id: i64,
     pub domain: String,
     pub final_score: f64,
 }
 
-/// `GET /api/agents` — list agents, filtered and sorted.
+/// `GET /api/agents` — list agents, newest-score-first, filtered and limited.
 ///
-/// Reading the signature: we take shared `State` (to reach the db) and the parsed
-/// `Query` params; we return `ApiResult<Json<...>>` so we can `?` on failures and
-/// hand back JSON on success. axum wraps the `Vec` in a JSON response with the
-/// right content-type automatically.
+/// The subquery uses Postgres's `DISTINCT ON` to pick the most recent score row
+/// per agent, then the outer query sorts those by score and applies the limit.
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AgentSummary>>> {
-    // Sketch:
-    //   * Build a query that optionally filters by `params.chain` and orders by
-    //     the latest final_score, LIMIT `params.limit`.
-    //   * Map rows into `AgentSummary`.
-    //   * `Ok(Json(rows))`
-    //
-    // The `?` on a query would convert a `sqlx::Error` into an `ApiError` via the
-    // `From` impl sketched in error.rs — that's the payoff of centralising errors.
-    let _ = (state, params);
-    todo!("query agents (filtered/sorted/limited) and return them as JSON")
+    let rows = sqlx::query_as::<_, AgentSummary>(
+        "SELECT latest.chain, latest.agent_id, latest.domain, latest.final_score \
+         FROM ( \
+            SELECT DISTINCT ON (s.chain, s.agent_id) \
+                s.chain, s.agent_id, a.domain, s.final_score, s.computed_at \
+            FROM scores s \
+            JOIN agents a ON a.chain = s.chain AND a.agent_id = s.agent_id \
+            ORDER BY s.chain, s.agent_id, s.computed_at DESC \
+         ) latest \
+         WHERE ($2::text IS NULL OR latest.chain = $2) \
+         ORDER BY latest.final_score DESC \
+         LIMIT $1",
+    )
+    .bind(params.limit)
+    .bind(&params.chain)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(rows))
 }
 
-/// `GET /api/agents/{id}` — one agent with its enrichment.
+/// `GET /api/agents/{id}` — one agent with its latest final score.
 ///
-/// The `Path(agent_id)` extractor pulls `{id}` out of the URL and parses it into
-/// a `u64`. If it isn't a valid number, axum rejects the request before your
-/// handler even runs — invalid input can't reach your logic.
+/// `Path(agent_id)` pulls `{id}` out of the URL and parses it into an `i64`; if
+/// it isn't a valid number, axum rejects the request before this runs.
+/// `fetch_optional` returns `Option`, and `ok_or` turns `None` into a 404.
 pub async fn get_one(
     State(state): State<AppState>,
-    Path(agent_id): Path<u64>,
+    Path(agent_id): Path<i64>,
 ) -> ApiResult<Json<AgentSummary>> {
-    // Fetch the agent; if the query finds no row, return `ApiError::NotFound`
-    // (the `From<sqlx::Error>` impl maps `RowNotFound` → 404 for you).
-    let _ = (state, agent_id);
-    todo!("fetch one agent by id or return ApiError::NotFound")
+    let row = sqlx::query_as::<_, AgentSummary>(
+        "SELECT a.chain, a.agent_id, a.domain, \
+            COALESCE(( \
+                SELECT s.final_score FROM scores s \
+                WHERE s.chain = a.chain AND s.agent_id = a.agent_id \
+                ORDER BY s.computed_at DESC LIMIT 1 \
+            ), 0.0) AS final_score \
+         FROM agents a WHERE a.agent_id = $1 LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(row))
 }
 
 /// `GET /api/agents/{id}/score` — the full trust-score breakdown.
 ///
-/// This is the handler that actually calls the `scoring` library: it assembles
-/// an `AgentView` from the database, then hands it to `scoring::score`. Note how
-/// the pure library and the I/O live cleanly on opposite sides of this call.
+/// We serve the latest *stored* score (the enricher computes and persists these
+/// on a schedule). We reconstruct the `scoring::TrustScore` type and return it,
+/// so the API and the scoring library agree on the shape by construction.
 pub async fn get_score(
     State(state): State<AppState>,
-    Path(agent_id): Path<u64>,
+    Path(agent_id): Path<i64>,
 ) -> ApiResult<Json<scoring::TrustScore>> {
-    // Sketch:
-    //   1. Load everything the scorer needs from Postgres and pack it into a
-    //      `scoring::AgentView` (payments, probes, feedback edges, cluster info).
-    //   2. `let score = scoring::score(&view)?;`  // pure call, no I/O
-    //   3. `Ok(Json(score))`
-    //
-    // If assembling the view finds no such agent → `ApiError::NotFound`.
-    let _ = (state, agent_id);
-    todo!("assemble a scoring::AgentView from the db, call scoring::score, return JSON")
+    // A local row struct to receive the columns, then map into the library type.
+    #[derive(sqlx::FromRow)]
+    struct ScoreRow {
+        payment: f64,
+        liveness: f64,
+        age: f64,
+        reputation: f64,
+        sybil_penalty: f64,
+        final_score: f64,
+    }
+
+    let row = sqlx::query_as::<_, ScoreRow>(
+        "SELECT payment, liveness, age, reputation, sybil_penalty, final_score \
+         FROM scores WHERE agent_id = $1 ORDER BY computed_at DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(scoring::TrustScore {
+        payment: row.payment,
+        liveness: row.liveness,
+        age: row.age,
+        reputation: row.reputation,
+        sybil_penalty: row.sybil_penalty,
+        final_score: row.final_score,
+    }))
 }

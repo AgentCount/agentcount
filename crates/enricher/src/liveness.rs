@@ -11,6 +11,8 @@
 //! response but garbage body? A small enum captures the distinction so we can
 //! store and reason about *why* something was unreachable.
 
+use std::time::{Duration, Instant};
+
 use crate::metadata::AgentStub;
 
 /// The outcome of a single probe. Richer than a `bool`, and `match`-friendly.
@@ -18,10 +20,12 @@ use crate::metadata::AgentStub;
 pub enum ProbeOutcome {
     /// Endpoint responded, and the response looked like a valid agent-card.
     Healthy { latency_ms: u64 },
-    /// Responded, but the body wasn't the valid agent-card we expected.
-    RespondedButInvalid { status: u16 },
-    /// Returned an HTTP error status (4xx/5xx).
-    HttpError { status: u16 },
+    /// Returned an HTTP error status (4xx/5xx). We keep the `status` for logging
+    /// and debugging even though the DB only stores the coarse outcome label.
+    HttpError {
+        #[allow(dead_code)]
+        status: u16,
+    },
     /// Never responded in time.
     Timeout,
     /// Couldn't even connect (DNS failure, connection refused, TLS error…).
@@ -34,40 +38,64 @@ impl ProbeOutcome {
     /// `true`. Centralising the definition here keeps "what counts as up"
     /// consistent everywhere.
     pub fn is_success(&self) -> bool {
-        // `matches!` is a compact macro for "does this value match this pattern?"
-        // — cleaner than a full `match` when you only care about one arm.
         matches!(self, ProbeOutcome::Healthy { .. })
+    }
+
+    /// A short, stable label stored in the `probe_history.outcome` column. Using
+    /// a method (rather than scattering string literals) keeps the DB values and
+    /// the enum in lockstep.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ProbeOutcome::Healthy { .. } => "healthy",
+            ProbeOutcome::HttpError { .. } => "http_error",
+            ProbeOutcome::Timeout => "timeout",
+            ProbeOutcome::Unreachable => "unreachable",
+        }
+    }
+
+    /// The measured latency in milliseconds, if the probe succeeded. Stored in
+    /// the nullable `latency_ms` column — `None` becomes SQL `NULL`.
+    pub fn latency_ms(&self) -> Option<i32> {
+        match self {
+            ProbeOutcome::Healthy { latency_ms } => Some(*latency_ms as i32),
+            _ => None,
+        }
     }
 }
 
 /// Probe one agent's endpoint once and classify the result.
 ///
-/// Note the return type is `ProbeOutcome`, not `Result<ProbeOutcome>`: a
-/// failure to connect isn't an *error* to this function — it's the answer. We
-/// deliberately convert network errors into `Unreachable`/`Timeout` variants so
-/// the caller never has to `?` and can just record whatever came back.
+/// Note the return type is `ProbeOutcome`, not `Result<ProbeOutcome>`: a failure
+/// to connect isn't an *error* to this function — it's the answer. We convert
+/// network errors into `Unreachable`/`Timeout` variants at this boundary so the
+/// caller never has to `?` and can just record whatever came back.
 pub async fn probe(agent: &AgentStub) -> ProbeOutcome {
-    // Sketch:
-    //     let url = format!("https://{}/.well-known/agent.json", agent.domain);
-    //     let client = reqwest::Client::new();
-    //     let start = std::time::Instant::now();  // monotonic timer, fine to use
-    //     match client.get(&url)
-    //         .timeout(std::time::Duration::from_secs(10))
-    //         .send().await
-    //     {
-    //         Ok(resp) if resp.status().is_success() => {
-    //             // Optionally validate the body is a real agent-card here.
-    //             ProbeOutcome::Healthy { latency_ms: start.elapsed().as_millis() as u64 }
-    //         }
-    //         Ok(resp) => ProbeOutcome::HttpError { status: resp.status().as_u16() },
-    //         Err(e) if e.is_timeout() => ProbeOutcome::Timeout,
-    //         Err(_) => ProbeOutcome::Unreachable,
-    //     }
-    //
-    // See how the `match` turns every possible network result into one of our
-    // outcome variants? That's the pattern: convert messy external errors into a
-    // tidy domain enum right at the boundary.
+    let url = format!("https://{}/.well-known/agent.json", agent.domain);
 
-    let _ = agent;
-    todo!("HTTP-probe the endpoint and classify the result into a ProbeOutcome")
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        // If we can't even build a client, treat it as unreachable rather than
+        // panicking — the daemon must keep running.
+        Err(_) => return ProbeOutcome::Unreachable,
+    };
+
+    // `Instant::now()` is a monotonic timer (unlike a wall clock), the right tool
+    // for measuring an elapsed duration.
+    let start = Instant::now();
+
+    // This `match` is the heart of the boundary: every possible network result is
+    // funnelled into exactly one tidy domain variant.
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => ProbeOutcome::Healthy {
+            latency_ms: start.elapsed().as_millis() as u64,
+        },
+        Ok(resp) => ProbeOutcome::HttpError {
+            status: resp.status().as_u16(),
+        },
+        Err(e) if e.is_timeout() => ProbeOutcome::Timeout,
+        Err(_) => ProbeOutcome::Unreachable,
+    }
 }

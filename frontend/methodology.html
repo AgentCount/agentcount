@@ -1,8 +1,7 @@
-{# methodology.html — the human-readable explanation of how scores are computed.
-   Rendered by routes::pages::methodology using `MethodologyPage`, which carries
-   the live `scoring::ScoreWeights`. Printing the weights from the struct (rather
-   than hard-coding them in prose) guarantees this page can never drift out of
-   sync with the actual scoring code. #}
+{# methodology.html — how scores are computed.
+   Rendered by routes::pages::methodology using `MethodologyPage`. The weight
+   strings come straight from scoring::ScoreWeights::default(), so this page
+   always reflects the real configuration. #}
 {% extends "base.html" %}
 
 {% block title %}Methodology — Ledgerscope{% endblock %}
@@ -25,10 +24,10 @@ final = raw · (1 − sybil_penalty)
 <h2>Weights</h2>
 <p>The current published weights (read straight from the running configuration):</p>
 <ul>
-    <li>Payment: {{ "{:.2}"|format(weights.payment) }}</li>
-    <li>Liveness: {{ "{:.2}"|format(weights.liveness) }}</li>
-    <li>Age: {{ "{:.2}"|format(weights.age) }}</li>
-    <li>Reputation: {{ "{:.2}"|format(weights.reputation) }}</li>
+    <li>Payment: {{ payment_w }}</li>
+    <li>Liveness: {{ liveness_w }}</li>
+    <li>Age: {{ age_w }}</li>
+    <li>Reputation: {{ reputation_w }}</li>
 </ul>
 
 <h2>The signals</h2>
@@ -40,7 +39,8 @@ final = raw · (1 − sybil_penalty)
 
     <dt>Reputation</dt>
     <dd>Feedback attestations, each discounted by the attester's own trust and by
-        reciprocity, so a ring of agents rating each other can't bootstrap itself.</dd>
+        reciprocity, and combined as <em>quality × confidence</em> so a ring of
+        low-credibility accounts rating each other can't bootstrap itself.</dd>
 
     <dt>Liveness</dt>
     <dd>Whether the endpoint actually responds and serves a valid agent-card,
@@ -51,8 +51,8 @@ final = raw · (1 − sybil_penalty)
         ratings by lunch" pattern.</dd>
 
     <dt>Sybil penalty</dt>
-    <dd>Derived from clustering agents by shared funding, shared operator,
-        synchronised registration, and reciprocal-feedback density. Scales the
-        whole score down.</dd>
+    <dd>Derived from clustering agents by shared operator, synchronised
+        registration, and reciprocal-feedback density. Scales the whole score
+        down.</dd>
 </dl>
 {% endblock %}

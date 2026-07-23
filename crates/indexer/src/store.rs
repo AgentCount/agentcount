@@ -1,102 +1,167 @@
 //! All the database code the indexer needs, in one place.
 //!
-//! Keeping SQL isolated in a `store` module (rather than scattering queries
-//! through the ingest loop) means the loop reads like a story — "load cursor,
-//! fetch, decode, write batch" — and every query lives somewhere you can find.
+//! Keeping SQL isolated here means the ingest loop reads like a story and every
+//! query lives somewhere you can find. Like the other crates we use sqlx's
+//! *runtime* queries so the crate compiles without a live database (see the note
+//! in `enricher/src/store.rs` for how to switch to compile-time-checked macros).
 //!
-//! Rust concept spotlight: **the connection pool as shared state.** A
-//! `sqlx::PgPool` manages a set of reusable connections. It's designed to be
-//! cloned cheaply and shared across tasks — internally it's reference-counted,
-//! so `db.clone()` shares the same underlying pool rather than opening new
-//! connections. That's how both chain loops write through one pool safely.
+//! Rust concept spotlight: **the connection pool as cheap-to-clone shared
+//! state.** A `PgPool` is reference-counted internally, so `db.clone()` (done in
+//! `main` to give each chain loop its own handle) shares one pool rather than
+//! opening new connections.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 
-use crate::bindings::{RawLog, RegistryEvent};
+use crate::bindings::{IndexedLog, RegistryEvent};
 
-/// A thin wrapper around the sqlx pool.
-///
-/// We could pass `PgPool` around directly, but wrapping it in our own `Db` type
-/// lets us hang exactly the methods we want off it and keeps call sites tidy.
-/// The `#[derive(Clone)]` makes `db.clone()` work; it's cheap because the inner
-/// pool is itself cheap to clone.
+/// If we've never indexed a chain before, start here. In production set this to
+/// each registry's deployment block so you don't rescan the whole chain.
+const DEFAULT_START_BLOCK: i64 = 0;
+
+/// Thin, cloneable wrapper over the pool.
 #[derive(Clone)]
 pub struct Db {
-    // The real field:
-    //     pool: sqlx::PgPool,
-    pool: PoolPlaceholder,
-}
-
-/// Open a Postgres connection pool.
-///
-/// Called once at startup; the resulting `Db` is cloned to each chain loop.
-pub async fn connect(database_url: &str) -> Result<Db> {
-    // With sqlx:
-    //     let pool = sqlx::postgres::PgPoolOptions::new()
-    //         .max_connections(5)
-    //         .connect(database_url)
-    //         .await?;
-    //     Ok(Db { pool })
-    let _ = database_url;
-    todo!("open a PgPool and wrap it in Db")
+    pool: PgPool,
 }
 
 impl Db {
-    /// Return the block number to resume indexing from for a given chain.
-    ///
-    /// Reads the `indexer_cursor` table. If there's no row yet (first run), fall
-    /// back to a configured deployment block so we don't scan the whole chain.
-    pub async fn load_cursor(&self, chain: &str) -> Result<u64> {
-        // sqlx's `query_scalar!` checks this SQL against your real database at
-        // COMPILE time and infers that the result is an `i64`. A typo in the
-        // column name fails `cargo build`, not production.
-        //
-        //     let row: Option<i64> = sqlx::query_scalar!(
-        //         "SELECT last_block FROM indexer_cursor WHERE chain = $1",
-        //         chain
-        //     )
-        //     .fetch_optional(&self.pool)   // `Option`: there may be no row yet
-        //     .await?;
-        //     Ok(row.map(|b| b as u64).unwrap_or(DEPLOY_BLOCK))
-        let _ = chain;
-        todo!("SELECT last_block FROM indexer_cursor, defaulting on first run")
+    /// Open a Postgres connection pool. Called once at startup; cloned per chain.
+    pub async fn connect(database_url: &str) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await
+            .context("connecting to Postgres")?;
+        Ok(Self { pool })
     }
 
-    /// Persist one batch atomically: raw logs, decoded events, and the new cursor
-    /// value — all in a single transaction.
-    ///
-    /// Atomicity matters: if we saved events but the process died before moving
-    /// the cursor, we'd double-write them next time; if we moved the cursor but
-    /// died before saving events, we'd lose them forever. A transaction makes the
-    /// whole batch all-or-nothing.
+    /// The block number to resume indexing from for a chain. Falls back to
+    /// [`DEFAULT_START_BLOCK`] on the very first run (no cursor row yet).
+    pub async fn load_cursor(&self, chain: &str) -> Result<u64> {
+        let last: Option<i64> =
+            sqlx::query_scalar("SELECT last_block FROM indexer_cursor WHERE chain = $1")
+                .bind(chain)
+                .fetch_optional(&self.pool)
+                .await
+                .context("loading cursor")?;
+        Ok(last.unwrap_or(DEFAULT_START_BLOCK) as u64)
+    }
+
+    /// Persist one batch atomically: raw logs, decoded rows, and the new cursor —
+    /// all in a single transaction. Atomicity matters: advancing the cursor past
+    /// events we didn't save (or vice-versa) would corrupt the pipeline. All-or-
+    /// nothing removes that whole class of bug.
     pub async fn write_batch(
         &self,
         chain: &str,
-        raw_logs: &[RawLog],
-        events: &[RegistryEvent],
+        logs: &[IndexedLog],
         new_cursor: u64,
     ) -> Result<()> {
-        // Sketch:
-        //     let mut tx = self.pool.begin().await?;      // BEGIN
-        //     for log in raw_logs { /* INSERT INTO raw_events ... */ }
-        //     for ev in events {
-        //         // A `match` on the event enum routes each variant to the right
-        //         // table (agents / feedback / validations). The compiler makes
-        //         // sure you handle every variant.
-        //         match ev {
-        //             RegistryEvent::AgentRegistered { .. } => { /* upsert agents */ }
-        //             RegistryEvent::FeedbackGiven    { .. } => { /* insert feedback */ }
-        //             RegistryEvent::ValidationRecorded { .. } => { /* insert validations */ }
-        //         }
-        //     }
-        //     // UPSERT the cursor to `new_cursor`.
-        //     tx.commit().await?;                          // COMMIT (or rollback on drop)
-        //     Ok(())
-        let _ = (chain, raw_logs, events, new_cursor);
-        todo!("write raw_events + decoded rows + cursor in one transaction")
+        let mut tx = self.pool.begin().await?;
+
+        for il in logs {
+            // Audit log. `ON CONFLICT DO NOTHING` on (chain, tx_hash, log_index)
+            // makes re-indexing a range harmless (idempotent inserts).
+            sqlx::query(
+                "INSERT INTO raw_events \
+                    (chain, contract, event_name, block, tx_hash, log_index, payload) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 ON CONFLICT (chain, tx_hash, log_index) DO NOTHING",
+            )
+            .bind(&il.chain)
+            .bind(&il.contract)
+            .bind(il.event_name)
+            .bind(il.block)
+            .bind(&il.tx_hash)
+            .bind(il.log_index)
+            .bind(&il.payload)
+            .execute(&mut *tx)
+            .await?;
+
+            // Route each decoded event to its typed table. The `match` is
+            // exhaustive: add a variant to `RegistryEvent` and the compiler makes
+            // you handle it here.
+            match &il.event {
+                RegistryEvent::AgentRegistered {
+                    agent_id,
+                    domain,
+                    agent_address,
+                } => {
+                    sqlx::query(
+                        "INSERT INTO agents \
+                            (chain, agent_id, address, domain, registered_block, registered_at, registered_tx) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                         ON CONFLICT (chain, agent_id) DO NOTHING",
+                    )
+                    .bind(&il.chain)
+                    .bind(*agent_id as i64)
+                    .bind(agent_address)
+                    .bind(domain)
+                    .bind(il.block)
+                    .bind(il.timestamp)
+                    .bind(&il.tx_hash)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                RegistryEvent::FeedbackGiven {
+                    from_agent_id,
+                    to_agent_id,
+                    score,
+                } => {
+                    sqlx::query(
+                        "INSERT INTO feedback \
+                            (chain, from_agent_id, to_agent_id, score, block, tx_hash, created_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                         ON CONFLICT (chain, tx_hash, from_agent_id, to_agent_id) DO NOTHING",
+                    )
+                    .bind(&il.chain)
+                    .bind(*from_agent_id as i64)
+                    .bind(*to_agent_id as i64)
+                    .bind(*score as i16)
+                    .bind(il.block)
+                    .bind(&il.tx_hash)
+                    .bind(il.timestamp)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                RegistryEvent::ValidationRecorded {
+                    validator_id,
+                    subject_id,
+                    passed,
+                } => {
+                    sqlx::query(
+                        "INSERT INTO validations \
+                            (chain, validator_id, subject_id, passed, block, tx_hash, created_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                         ON CONFLICT (chain, tx_hash, validator_id, subject_id) DO NOTHING",
+                    )
+                    .bind(&il.chain)
+                    .bind(*validator_id as i64)
+                    .bind(*subject_id as i64)
+                    .bind(*passed)
+                    .bind(il.block)
+                    .bind(&il.tx_hash)
+                    .bind(il.timestamp)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+
+        // Move the cursor forward. One row per chain, upserted.
+        sqlx::query(
+            "INSERT INTO indexer_cursor (chain, last_block, updated_at) \
+             VALUES ($1, $2, now()) \
+             ON CONFLICT (chain) DO UPDATE SET last_block = EXCLUDED.last_block, updated_at = now()",
+        )
+        .bind(chain)
+        .bind(new_cursor as i64)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
     }
 }
-
-/// Placeholder for `sqlx::PgPool`. Delete once sqlx is wired in.
-#[derive(Clone)]
-struct PoolPlaceholder;
