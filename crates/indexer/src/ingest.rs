@@ -21,7 +21,7 @@
 
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::bindings::{self, IndexedLog};
 use crate::chains::Chain;
@@ -71,14 +71,39 @@ pub async fn run(chain: Chain, db: Db) -> Result<()> {
             .to_block(to_block);
         let logs = chain.provider.get_logs(&filter).await?;
 
-        // 4. Decode. `filter_map` keeps only the logs we recognise (the `Some`s),
+        // 4. Fetch the real header for every distinct block that produced a
+        //    log. eth_getLogs doesn't reliably include timestamps; the header
+        //    is the ground truth, and registered_at/created_at must be block
+        //    time, never wall-clock — a "now" fallback would poison the
+        //    longitudinal record. One RPC per distinct block, cached per batch.
+        let mut headers: std::collections::HashMap<u64, (chrono::DateTime<chrono::Utc>, String)> =
+            std::collections::HashMap::new();
+        for number in logs.iter().filter_map(|l| l.block_number) {
+            if headers.contains_key(&number) {
+                continue;
+            }
+            let block = chain
+                .provider
+                .get_block_by_number(number.into())
+                .await?
+                .with_context(|| format!("{name}: block {number} not found for its own logs"))?;
+            let ts = chrono::DateTime::from_timestamp(block.header.timestamp as i64, 0)
+                .with_context(|| format!("{name}: block {number} has invalid timestamp"))?;
+            headers.insert(number, (ts, block.header.hash.to_string().to_lowercase()));
+        }
+
+        // 5. Decode. `filter_map` keeps only the logs we recognise (the `Some`s),
         //    discarding the rest — a very common iterator idiom.
         let indexed: Vec<IndexedLog> = logs
             .iter()
-            .filter_map(|log| bindings::index_log(&name, log))
+            .filter_map(|log| {
+                let number = log.block_number?;
+                let (ts, hash) = headers.get(&number)?;
+                bindings::index_log(&name, log, *ts, hash)
+            })
             .collect();
 
-        // 5. Persist raw logs + decoded rows + the new cursor, atomically.
+        // 6. Persist raw logs + decoded rows + the new cursor, atomically.
         db.write_batch(&name, &indexed, to_block).await?;
 
         tracing::info!(

@@ -60,6 +60,15 @@ pub enum RegistryEvent {
     },
 }
 
+/// The single place an on-chain address becomes a stored string. Lowercase by
+/// contract with the schema (agents.address is documented lowercase, and
+/// agents.address_norm enforces it as a backstop). alloy's `Display` renders
+/// EIP-55 checksummed (mixed-case) hex — writing that would fragment every
+/// string-equality join on address.
+pub fn addr_lower(a: &alloy::primitives::Address) -> String {
+    format!("{a:?}").to_lowercase() // Debug prints full 0x-prefixed hex
+}
+
 /// A decoded event bundled with the on-chain provenance the store needs to write
 /// it: which block/tx it came from, when, and the raw payload for the audit log.
 pub struct IndexedLog {
@@ -68,6 +77,7 @@ pub struct IndexedLog {
     pub event_name: &'static str,
     pub block: i64,
     pub tx_hash: String,
+    pub block_hash: String,
     pub log_index: i32,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     /// A JSON snapshot of the decoded fields, stored in `raw_events.payload`.
@@ -75,26 +85,26 @@ pub struct IndexedLog {
     pub event: RegistryEvent,
 }
 
-/// Turn one raw RPC log into an [`IndexedLog`], or `None` if it isn't an event we
-/// recognise or is missing the block/tx metadata we require.
+/// Turn one raw RPC log into an [`IndexedLog`]. The timestamp and block hash
+/// come from the block HEADER the caller fetched — eth_getLogs responses do
+/// not reliably carry timestamps, and falling back to "now" would poison the
+/// longitudinal record with ingestion-time dates.
 ///
 /// `Option` is Rust's null-free "maybe a value": callers `filter_map` over a
 /// batch of logs and the `None`s simply drop out.
-pub fn index_log(chain: &str, log: &alloy::rpc::types::Log) -> Option<IndexedLog> {
+pub fn index_log(
+    chain: &str,
+    log: &alloy::rpc::types::Log,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    block_hash: &str,
+) -> Option<IndexedLog> {
     // These are `Option`s on the RPC log (a pending log has no block yet). The
     // `?` operator short-circuits to `None` if any is missing — we only index
     // fully-confirmed logs.
     let block = log.block_number? as i64;
-    let tx_hash = log.transaction_hash?.to_string();
+    let tx_hash = log.transaction_hash?.to_string().to_lowercase();
     let log_index = log.log_index? as i32;
-    let contract = log.address().to_string();
-
-    // Use the block timestamp if the RPC provided one; otherwise fall back to
-    // ingestion time (a wall-clock read, which is fine in a binary).
-    let timestamp = log
-        .block_timestamp
-        .and_then(|ts| chrono::DateTime::from_timestamp(ts as i64, 0))
-        .unwrap_or_else(chrono::Utc::now);
+    let contract = addr_lower(&log.address());
 
     let (event_name, payload, event) = decode(log)?;
 
@@ -104,6 +114,7 @@ pub fn index_log(chain: &str, log: &alloy::rpc::types::Log) -> Option<IndexedLog
         event_name,
         block,
         tx_hash,
+        block_hash: block_hash.to_string(),
         log_index,
         timestamp,
         payload,
@@ -121,7 +132,7 @@ fn decode(
         let d = ev.inner.data;
         let agent_id = d.agentId.to::<u64>();
         let domain = d.agentDomain;
-        let address = d.agentAddress.to_string();
+        let address = addr_lower(&d.agentAddress);
         let payload = serde_json::json!({
             "agent_id": agent_id, "domain": domain, "address": address,
         });
@@ -175,4 +186,19 @@ fn decode(
     }
 
     None // unrecognised topic → not one of ours
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    /// Addresses are STORED lowercase (schema contract, 0001:23). alloy's
+    /// Display renders EIP-55 checksummed (mixed-case) hex — writing that
+    /// fragments every string-equality join on address. One helper, one rule.
+    #[test]
+    fn addresses_are_normalised_to_lowercase() {
+        let a = address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
+        assert_eq!(addr_lower(&a), "0xd8da6bf26964af9d7eed9e03e53415d37aa96045");
+    }
 }

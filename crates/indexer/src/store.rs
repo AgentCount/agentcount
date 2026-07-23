@@ -76,8 +76,8 @@ impl Db {
             // makes re-indexing a range harmless (idempotent inserts).
             sqlx::query(
                 "INSERT INTO raw_events \
-                    (chain, contract, event_name, block, tx_hash, log_index, payload) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                    (chain, contract, event_name, block, tx_hash, block_hash, log_index, payload) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
                  ON CONFLICT (chain, tx_hash, log_index) DO NOTHING",
             )
             .bind(&il.chain)
@@ -85,6 +85,7 @@ impl Db {
             .bind(il.event_name)
             .bind(il.block)
             .bind(&il.tx_hash)
+            .bind(&il.block_hash)
             .bind(il.log_index)
             .bind(&il.payload)
             .execute(&mut *tx)
@@ -122,9 +123,9 @@ impl Db {
                 } => {
                     sqlx::query(
                         "INSERT INTO feedback \
-                            (chain, from_agent_id, to_agent_id, score, block, tx_hash, created_at) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7) \
-                         ON CONFLICT (chain, tx_hash, from_agent_id, to_agent_id) DO NOTHING",
+                            (chain, from_agent_id, to_agent_id, score, block, tx_hash, log_index, created_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                         ON CONFLICT (chain, tx_hash, log_index) DO NOTHING",
                     )
                     .bind(&il.chain)
                     .bind(*from_agent_id as i64)
@@ -132,6 +133,7 @@ impl Db {
                     .bind(*score as i16)
                     .bind(il.block)
                     .bind(&il.tx_hash)
+                    .bind(il.log_index)
                     .bind(il.timestamp)
                     .execute(&mut *tx)
                     .await?;
@@ -143,9 +145,9 @@ impl Db {
                 } => {
                     sqlx::query(
                         "INSERT INTO validations \
-                            (chain, validator_id, subject_id, passed, block, tx_hash, created_at) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7) \
-                         ON CONFLICT (chain, tx_hash, validator_id, subject_id) DO NOTHING",
+                            (chain, validator_id, subject_id, passed, block, tx_hash, log_index, created_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                         ON CONFLICT (chain, tx_hash, log_index) DO NOTHING",
                     )
                     .bind(&il.chain)
                     .bind(*validator_id as i64)
@@ -153,6 +155,7 @@ impl Db {
                     .bind(*passed)
                     .bind(il.block)
                     .bind(&il.tx_hash)
+                    .bind(il.log_index)
                     .bind(il.timestamp)
                     .execute(&mut *tx)
                     .await?;
