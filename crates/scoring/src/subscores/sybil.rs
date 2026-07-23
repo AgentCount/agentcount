@@ -28,42 +28,56 @@ use super::clamp01;
 
 /// Compute the Sybil penalty in `[0, 1]` (0 = no penalty, 1 = score wiped out).
 pub(crate) fn sybil_penalty(agent: &AgentView) -> f64 {
-    // The enricher already gave us two distilled signals on `agent.cluster`:
-    //   * `suspicion`   — how coordinated the cluster looks, in [0, 1]
-    //   * `cluster_size`— how many agents are in it (1 = effectively alone)
-    //
-    // Suggested recipe:
-    //
-    //     let c = &agent.cluster;
-    //
-    //     // A lone agent (size <= 1) can't be part of a ring — no penalty.
-    //     if c.cluster_size <= 1 {
-    //         return 0.0;
-    //     }
-    //
-    //     // Bigger clusters are more damning, but with diminishing effect, so a
-    //     // size-3 pair-plus-one isn't treated the same as a 200-strong farm:
-    //     let size_factor = 1.0 - 1.0 / (c.cluster_size as f64); // →1 as size grows
-    //
-    //     // The penalty is the coordination signal scaled by how large the ring
-    //     // is. Both must be present: a large but organic-looking group (low
-    //     // suspicion) is only mildly penalised.
-    //     clamp01(c.suspicion * size_factor)
+    let c = &agent.cluster;
 
-    let _ = clamp01;
-    let _ = agent;
-    todo!("map ClusterInfo (suspicion × size_factor) to a [0,1] penalty")
+    // A lone agent (or a "cluster" of one) can't be part of a ring — no penalty.
+    // This also stops a stray non-zero `suspicion` on a singleton from doing harm.
+    if c.cluster_size <= 1 {
+        return 0.0;
+    }
+
+    // Bigger clusters are more damning, but with diminishing effect: `1 - 1/size`
+    // rises from 0.5 (a pair) toward 1.0 (a large farm), so a suspicious pair
+    // isn't punished as hard as a suspicious swarm.
+    let size_factor = 1.0 - 1.0 / (c.cluster_size as f64);
+
+    // The penalty needs BOTH signals: a large but organic-looking group (low
+    // suspicion) is only mildly penalised, and a tiny group can't be penalised
+    // much no matter how suspicious. `.max(0.0)` guards a stray negative suspicion.
+    clamp01(c.suspicion.max(0.0) * size_factor)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::model::AgentView;
+
     #[test]
     fn lone_agent_has_no_penalty() {
-        todo!("cluster_size = 1 must yield sybil_penalty = 0.0");
+        let a = AgentView::sample(); // cluster_size = 1 by default
+        assert_eq!(sybil_penalty(&a), 0.0);
     }
 
     #[test]
     fn tight_large_cluster_is_heavily_penalised() {
-        todo!("suspicion ≈ 1.0 with a large cluster_size should approach 1.0");
+        let mut a = AgentView::sample();
+        a.cluster.cluster_size = 100;
+        a.cluster.suspicion = 1.0;
+        assert!(sybil_penalty(&a) > 0.9);
+    }
+
+    /// Size and suspicion are both required: max suspicion in a mere pair is far
+    /// gentler than the same suspicion across a large cluster.
+    #[test]
+    fn a_suspicious_pair_is_gentler_than_a_suspicious_swarm() {
+        let mut pair = AgentView::sample();
+        pair.cluster.cluster_size = 2;
+        pair.cluster.suspicion = 1.0;
+
+        let mut swarm = AgentView::sample();
+        swarm.cluster.cluster_size = 200;
+        swarm.cluster.suspicion = 1.0;
+
+        assert!(sybil_penalty(&pair) < sybil_penalty(&swarm));
     }
 }

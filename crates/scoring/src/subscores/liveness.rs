@@ -11,34 +11,41 @@ use super::clamp01;
 
 /// Compute the liveness sub-score in `[0, 1]`.
 pub(crate) fn liveness_score(agent: &AgentView) -> f64 {
-    // Simplest sensible version: the fraction of probes that succeeded *and*
-    // returned a valid agent-card.
-    //
-    //     if agent.probe_count == 0 {
-    //         return 0.0; // never successfully probed → treat as not-alive
-    //     }
-    //     let rate = agent.probe_successes as f64 / agent.probe_count as f64;
-    //     clamp01(rate)
-    //
-    // Note the `as f64` casts: `probe_successes` / `probe_count` are integers,
-    // and integer division would truncate (3/4 = 0). Casting to floating point
-    // first is required to get 0.75. Rust makes you write the cast explicitly —
-    // it never silently converts number types for you.
-    //
-    // Later refinements to consider:
-    //   * weight recent probes more than old ones (uptime *trend*)
-    //   * require a minimum probe_count before awarding a high score, so a lucky
-    //     single success can't look like perfect uptime.
+    // Never probed → we have no evidence it's alive, so treat it as not-alive.
+    // This guard also protects the division below from a divide-by-zero.
+    if agent.probe_count == 0 {
+        return 0.0;
+    }
 
-    let _ = clamp01;
-    let _ = agent;
-    todo!("return the valid-probe success rate, guarding against divide-by-zero")
+    // The `as f64` casts are mandatory: `probe_successes` and `probe_count` are
+    // integers, and integer division truncates (3 / 4 == 0). Rust never silently
+    // converts number types for you — you write the cast, and the intent is
+    // explicit. Casting to floating point first gives us the real 0.75.
+    let rate = agent.probe_successes as f64 / agent.probe_count as f64;
+
+    // `clamp01` is belt-and-braces: `successes` should never exceed `count`, but
+    // if a data bug ever made it so, we cap at 1.0 rather than serve 1.2.
+    clamp01(rate)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::model::AgentView;
+
     #[test]
     fn zero_probes_scores_zero() {
-        todo!("an AgentView with probe_count = 0 must score exactly 0.0");
+        let mut a = AgentView::sample();
+        a.probe_count = 0;
+        a.probe_successes = 0;
+        assert_eq!(liveness_score(&a), 0.0);
+    }
+
+    #[test]
+    fn success_rate_is_the_score() {
+        let mut a = AgentView::sample();
+        a.probe_count = 4;
+        a.probe_successes = 3;
+        assert_eq!(liveness_score(&a), 0.75);
     }
 }

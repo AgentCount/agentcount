@@ -20,6 +20,10 @@ thiserror = { workspace = true }
 # chrono: we reason about agent age and activity spread over time.
 chrono = { workspace = true }
 
+# uuid: cluster ids travel with an agent on `ClusterInfo`. We don't generate
+# them here (the enricher does), but we carry the type, so we depend on it.
+uuid = { workspace = true }
+
 [dev-dependencies]
 # `[dev-dependencies]` are only compiled for tests/benches/examples, never for
 # the shipped library. Nothing here yet — but this is where a property-testing

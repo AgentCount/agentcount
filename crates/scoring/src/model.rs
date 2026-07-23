@@ -76,7 +76,7 @@ pub struct AgentView {
 pub struct FeedbackEdge {
     /// The agent giving the feedback.
     pub from_agent_id: u64,
-    /// The raw score they attested (normalize to `[0, 1]` when you build it).
+    /// The raw score they attested, already normalised to `[0, 1]`.
     pub raw_value: f64,
     /// A pre-computed trust weight for the *attester* — how much this source's
     /// opinion should count. In a full EigenTrust-style system this would be the
@@ -98,7 +98,7 @@ pub struct ClusterInfo {
     /// The cluster this agent belongs to, if any. `Option<T>` is Rust's built-in
     /// "maybe a value, maybe nothing" — there is no `null`; you must handle the
     /// `None` case, which the compiler enforces.
-    pub cluster_id: Option<uuid_stub::Uuid>,
+    pub cluster_id: Option<uuid::Uuid>,
     /// How many agents are in that cluster (1 = effectively alone).
     pub cluster_size: u32,
     /// A `[0, 1]` "how coordinated does this cluster look" signal produced by the
@@ -112,7 +112,7 @@ pub struct ClusterInfo {
 /// `#[derive(Serialize)]` is what lets the `api` crate turn this straight into
 /// the JSON your `/api/agents/:id/score` endpoint returns — and, conveniently,
 /// what makes the score breakdown easy to show on the explorer page.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TrustScore {
     pub payment: f64,
     pub liveness: f64,
@@ -129,7 +129,7 @@ pub struct TrustScore {
 /// These are the knobs of the *published methodology*. Keeping them in one
 /// struct (rather than as magic numbers sprinkled through the code) means the
 /// whole methodology is one auditable, serializable value.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScoreWeights {
     pub payment: f64,
     pub liveness: f64,
@@ -144,14 +144,17 @@ impl ScoreWeights {
     ///
     /// `&self` means "borrow the weights to read them"; we return the crate's
     /// error type so callers can react to a bad configuration.
+    ///
+    /// We compare with a tiny tolerance rather than `==` because floating-point
+    /// sums are rarely *exactly* 1.0 (adding `0.40, 0.20, 0.15, 0.25` may land a
+    /// hair off). Comparing floats for exact equality is a classic bug; always
+    /// compare within a tolerance.
     pub fn validate(&self) -> Result<(), crate::ScoringError> {
-        // Sketch:
-        //     let sum = self.payment + self.liveness + self.age + self.reputation;
-        //     if (sum - 1.0).abs() > 1e-9 {
-        //         return Err(crate::ScoringError::WeightsDoNotSumToOne { actual: sum });
-        //     }
-        //     Ok(())
-        todo!("verify the four weights sum to 1.0 within a small tolerance")
+        let sum = self.payment + self.liveness + self.age + self.reputation;
+        if (sum - 1.0).abs() > 1e-9 {
+            return Err(crate::ScoringError::WeightsDoNotSumToOne { actual: sum });
+        }
+        Ok(())
     }
 }
 
@@ -174,13 +177,46 @@ impl Default for ScoreWeights {
     }
 }
 
-// ── A tiny stand-in so this file reads without extra dependencies ────────────
-// The real project uses the `uuid` crate for cluster ids. To keep the `scoring`
-// crate's dependency list minimal in this skeleton, we reference a placeholder
-// module here. When you wire things up, delete this and add `uuid` to
-// scoring/Cargo.toml, then use `uuid::Uuid` directly.
-mod uuid_stub {
-    /// Placeholder for `uuid::Uuid`. Replace with the real crate.
-    #[derive(Debug, Clone)]
-    pub struct Uuid;
+// ─────────────────────────────────────────────────────────────────────────────
+// Test-only helper: a believable baseline agent that tests can tweak.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `#[cfg(test)]` means this block is compiled ONLY during `cargo test`. Because
+// it's part of the same crate, the sub-score test modules (in subscores/*.rs)
+// can call `AgentView::sample()` too — `cfg(test)` is active for the whole crate
+// when testing. Every test starts from this healthy baseline and mutates just
+// the one field it cares about, so each test states exactly one idea.
+#[cfg(test)]
+impl AgentView {
+    /// A healthy, organic-looking agent. Clone it and change one field per test.
+    pub(crate) fn sample() -> Self {
+        // Fixed timestamps (no `Utc::now()`): scoring must be deterministic, and
+        // so must its tests. `from_timestamp` builds a UTC time from a Unix epoch
+        // second count; `.unwrap()` is fine here because the constant is valid.
+        let first_seen = chrono::DateTime::from_timestamp(1_600_000_000, 0).unwrap();
+        let last_activity = first_seen + chrono::Duration::days(180);
+
+        Self {
+            agent_id: 1,
+            chain: "ethereum".to_string(),
+            distinct_counterparties: 40,
+            total_payment_value: 5_000.0,
+            probe_count: 10,
+            probe_successes: 9,
+            first_seen,
+            last_activity,
+            active_days: 90,
+            incoming_feedback: vec![FeedbackEdge {
+                from_agent_id: 2,
+                raw_value: 1.0,
+                attester_weight: 1.0,
+                is_reciprocal: false,
+            }],
+            cluster: ClusterInfo {
+                cluster_id: None,
+                cluster_size: 1,
+                suspicion: 0.0,
+            },
+        }
+    }
 }
