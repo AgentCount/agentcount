@@ -84,9 +84,19 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTTP client. The enricher uses it to fetch agent metadata and to probe
-# whether an agent's endpoint is alive.
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client. The enricher uses it to observe agent endpoints. The "stream"
+# feature enables chunk-by-chunk body reads, which is how we cap response size
+# (a hostile endpoint must not be able to OOM the enricher).
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# SSRF guard: parse+validate URLs built from on-chain (attacker-controlled) domains.
+url = "2"
+
+# Content hashes for archived metadata snapshots (change detection, dedupe).
+sha2 = "0.10"
+
+# Recorded-HTTP test server: probe tests run against a local mock, not the network.
+wiremock = "0.6"
 
 # Combinators for working with many futures at once. The enricher uses
 # `futures::stream::StreamExt::buffer_unordered` to probe many endpoints with a

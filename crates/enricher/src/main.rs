@@ -24,6 +24,8 @@
 mod clustering;
 mod liveness;
 mod metadata;
+mod netguard;
+mod observe;
 mod scoring_step;
 mod store;
 
