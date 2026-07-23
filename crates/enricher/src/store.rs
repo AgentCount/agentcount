@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use crate::clustering::{AgentKey, AgentNode, Cluster};
+use crate::flags::{AgentFlag, AgentKey, AgentNode};
 use crate::metadata::AgentStub;
 
 /// Thin wrapper over the connection pool, cloneable and shareable.
@@ -160,7 +160,9 @@ impl Db {
             registered_at: chrono::DateTime<chrono::Utc>,
         }
         let rows = sqlx::query_as::<_, Row>(
-            "SELECT chain, agent_id, address, registered_at FROM agents",
+            // address_norm, not address: grouping by operator wallet must
+            // never fragment on hex casing.
+            "SELECT chain, agent_id, address_norm AS address, registered_at FROM agents",
         )
         .fetch_all(&self.pool)
         .await
@@ -211,54 +213,55 @@ impl Db {
             .collect())
     }
 
-    /// Replace the clustering wholesale: wipe the old clusters, reset everyone's
-    /// suspicion, then insert the freshly-detected clusters and stamp each
-    /// member's suspicion. Wrapped in a transaction so readers never see a
-    /// half-updated picture.
-    pub async fn write_clusters(&self, clusters: &[Cluster]) -> Result<()> {
+    /// Upsert flags, append-only at the EVENT level: a new (subject, kind)
+    /// inserts a flag plus a 'raised' event; changed evidence updates the
+    /// current row plus an 'evidence_added' event. Nothing is ever deleted —
+    /// the flag_events trail is the observation history.
+    pub async fn upsert_flags(&self, flags: &[AgentFlag]) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-
-        // `DELETE FROM clusters` cascades to `cluster_members` (ON DELETE CASCADE).
-        sqlx::query("DELETE FROM clusters").execute(&mut *tx).await?;
-        sqlx::query("UPDATE agents SET suspicion = 0")
-            .execute(&mut *tx)
-            .await?;
-
-        for cluster in clusters {
-            let reasons: Vec<&str> = cluster.reasons.iter().map(|r| r.label()).collect();
-            let reasons_json = serde_json::to_value(&reasons)?;
-
-            // Insert the cluster and get its generated UUID back.
-            let cluster_id: uuid::Uuid = sqlx::query_scalar(
-                "INSERT INTO clusters (suspicion, reasons) VALUES ($1, $2) RETURNING id",
+        for f in flags {
+            let existing: Option<(i64, serde_json::Value)> = sqlx::query_as(
+                "SELECT id, evidence FROM flags WHERE chain = $1 AND agent_id = $2 AND kind = $3",
             )
-            .bind(cluster.suspicion)
-            .bind(&reasons_json)
-            .fetch_one(&mut *tx)
+            .bind(&f.key.chain)
+            .bind(f.key.agent_id)
+            .bind(f.kind.label())
+            .fetch_optional(&mut *tx)
             .await?;
 
-            for member in &cluster.members {
-                sqlx::query(
-                    "INSERT INTO cluster_members (cluster_id, chain, agent_id) \
-                     VALUES ($1, $2, $3)",
-                )
-                .bind(cluster_id)
-                .bind(&member.chain)
-                .bind(member.agent_id)
-                .execute(&mut *tx)
-                .await?;
-
-                sqlx::query(
-                    "UPDATE agents SET suspicion = $1 WHERE chain = $2 AND agent_id = $3",
-                )
-                .bind(cluster.suspicion)
-                .bind(&member.chain)
-                .bind(member.agent_id)
-                .execute(&mut *tx)
-                .await?;
+            match existing {
+                None => {
+                    let id: i64 = sqlx::query_scalar(
+                        "INSERT INTO flags (chain, agent_id, kind, evidence) \
+                         VALUES ($1, $2, $3, $4) RETURNING id",
+                    )
+                    .bind(&f.key.chain)
+                    .bind(f.key.agent_id)
+                    .bind(f.kind.label())
+                    .bind(&f.evidence)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    sqlx::query("INSERT INTO flag_events (flag_id, event, detail) VALUES ($1, 'raised', $2)")
+                        .bind(id)
+                        .bind(&f.evidence)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                Some((id, old)) if old != f.evidence => {
+                    sqlx::query("UPDATE flags SET evidence = $1 WHERE id = $2")
+                        .bind(&f.evidence)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query("INSERT INTO flag_events (flag_id, event, detail) VALUES ($1, 'evidence_added', $2)")
+                        .bind(id)
+                        .bind(&f.evidence)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                Some(_) => {} // unchanged — no event, no churn
             }
         }
-
         tx.commit().await?;
         Ok(())
     }

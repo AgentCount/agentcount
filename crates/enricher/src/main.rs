@@ -21,7 +21,7 @@
 //! * **Calling a sibling crate** — `scoring::score(&view)` is an ordinary
 //!   function call into our pure library; no I/O crosses that boundary.
 
-mod clustering;
+mod flags;
 mod metadata;
 mod netguard;
 mod observe;
@@ -116,10 +116,11 @@ async fn run_pass(db: &store::Db, concurrency: usize) -> anyhow::Result<()> {
     // 3. Append history + refresh the cache (a failed fetch is stored as data).
     db.write_observations(&observations).await?;
 
-    // 4. Re-cluster across ALL agents (needs the global graph) and persist.
-    let clusters = clustering::detect(db).await?;
-    tracing::info!("detected {} suspicious clusters", clusters.len());
-    db.write_clusters(&clusters).await?;
+    // 4. Detect coordination flags across the whole agent set (needs the
+    //    global picture) and persist them, append-only at the event level.
+    let flags = flags::detect(db).await?;
+    tracing::info!("detected {} flags", flags.len());
+    db.upsert_flags(&flags).await?;
 
     // 5. Score every agent from freshly-enriched data and store the results.
     let scored = scoring_step::score_all(db).await?;

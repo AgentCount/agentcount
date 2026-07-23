@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
-use crate::clustering::AgentKey;
+use crate::flags::AgentKey;
 use crate::store::Db;
 
 /// Assume feedback scores are on a 0..=5 scale; normalise to the `[0, 1]` the
