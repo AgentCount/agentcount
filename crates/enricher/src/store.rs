@@ -21,21 +21,13 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 use crate::clustering::{AgentKey, AgentNode, Cluster};
-use crate::liveness::ProbeOutcome;
-use crate::metadata::{AgentCard, AgentStub};
+use crate::metadata::AgentStub;
 
 /// Thin wrapper over the connection pool, cloneable and shareable.
+/// `pub(crate) pool` so the sqlx tests below can construct a Db directly.
 #[derive(Clone)]
 pub struct Db {
-    pool: PgPool,
-}
-
-/// The bundle produced for one agent by the concurrent probe stage in `main`.
-/// `card` is a `Result` because fetching can fail (and that failure is data).
-pub struct EnrichmentResult {
-    pub agent: AgentStub,
-    pub card: Result<AgentCard>,
-    pub probe: ProbeOutcome,
+    pub(crate) pool: PgPool,
 }
 
 /// One per-agent aggregate row for scoring (see `load_score_inputs`).
@@ -90,35 +82,27 @@ impl Db {
         Ok(agents)
     }
 
-    /// Persist the results of probing/fetching a batch of agents. Each agent's
-    /// enrichment row is upserted, a probe-history row is appended, and the
-    /// agent's `last_enriched_at` is bumped — all inside one transaction so the
-    /// batch is atomic.
-    pub async fn write_enrichment(&self, results: &[EnrichmentResult]) -> Result<()> {
+    /// Persist one batch of observations. Per agent, per pass:
+    ///   * APPEND a metadata_snapshots row — success or failure, the archive
+    ///     records what the domain served (or didn't) at this moment;
+    ///   * APPEND a probe_history row;
+    ///   * UPDATE the agent_enrichment cache (latest liveness; last GOOD card).
+    /// History is never updated or deleted — it's the moat.
+    pub async fn write_observations(&self, observations: &[crate::observe::Observation]) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        for r in results {
-            let healthy = r.probe.is_success();
-            // Serialise a successful card to JSON for the JSONB column; a failed
-            // fetch stores SQL NULL. `Option<Value>` binds to `NULL`/`jsonb`.
-            let card_json: Option<serde_json::Value> = match &r.card {
-                Ok(card) => Some(serde_json::to_value(card)?),
-                Err(_) => None,
-            };
-
+        for o in observations {
             sqlx::query(
-                "INSERT INTO agent_enrichment \
-                    (chain, agent_id, agent_card, endpoint_healthy, last_probed_at) \
-                 VALUES ($1, $2, $3, $4, now()) \
-                 ON CONFLICT (chain, agent_id) DO UPDATE SET \
-                    agent_card = EXCLUDED.agent_card, \
-                    endpoint_healthy = EXCLUDED.endpoint_healthy, \
-                    last_probed_at = EXCLUDED.last_probed_at",
+                "INSERT INTO metadata_snapshots (chain, agent_id, url, http_status, content_hash, body, error) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
-            .bind(&r.agent.chain)
-            .bind(r.agent.agent_id)
-            .bind(&card_json)
-            .bind(healthy)
+            .bind(&o.agent.chain)
+            .bind(o.agent.agent_id)
+            .bind(&o.url)
+            .bind(o.outcome.http_status())
+            .bind(&o.body_hash)
+            .bind(&o.body)
+            .bind(if o.outcome.is_alive() { None } else { Some(o.outcome.label()) })
             .execute(&mut *tx)
             .await?;
 
@@ -126,16 +110,35 @@ impl Db {
                 "INSERT INTO probe_history (chain, agent_id, outcome, latency_ms) \
                  VALUES ($1, $2, $3, $4)",
             )
-            .bind(&r.agent.chain)
-            .bind(r.agent.agent_id)
-            .bind(r.probe.label())
-            .bind(r.probe.latency_ms())
+            .bind(&o.agent.chain)
+            .bind(o.agent.agent_id)
+            .bind(o.outcome.label())
+            .bind(o.outcome.latency_ms())
+            .execute(&mut *tx)
+            .await?;
+
+            // COALESCE keeps the last GOOD card when this pass got nothing —
+            // the cache serves the UI; the truth lives in the snapshots.
+            let card: Option<&serde_json::Value> =
+                if o.outcome.is_alive() { o.body.as_ref() } else { None };
+            sqlx::query(
+                "INSERT INTO agent_enrichment (chain, agent_id, agent_card, endpoint_healthy, last_probed_at) \
+                 VALUES ($1, $2, $3, $4, now()) \
+                 ON CONFLICT (chain, agent_id) DO UPDATE SET \
+                    agent_card = COALESCE(EXCLUDED.agent_card, agent_enrichment.agent_card), \
+                    endpoint_healthy = EXCLUDED.endpoint_healthy, \
+                    last_probed_at = EXCLUDED.last_probed_at",
+            )
+            .bind(&o.agent.chain)
+            .bind(o.agent.agent_id)
+            .bind(card)
+            .bind(o.outcome.is_alive())
             .execute(&mut *tx)
             .await?;
 
             sqlx::query("UPDATE agents SET last_enriched_at = now() WHERE chain = $1 AND agent_id = $2")
-                .bind(&r.agent.chain)
-                .bind(r.agent.agent_id)
+                .bind(&o.agent.chain)
+                .bind(o.agent.agent_id)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -341,5 +344,64 @@ impl Db {
         }
         tx.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::observe::{Observation, ProbeOutcome};
+
+    /// `#[sqlx::test]` spins up a fresh database per test and applies every
+    /// migration — the test proves code and schema agree. Needs DATABASE_URL
+    /// pointing at a running Postgres.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn observations_append_history_and_update_cache(pool: sqlx::PgPool) {
+        // Fixture agent (FK target).
+        sqlx::query(
+            "INSERT INTO agents (chain, agent_id, address, domain, registered_block, registered_at, registered_tx) \
+             VALUES ('base', 1, '0xabc', 'agent.example', 1, now(), '0xdead')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let db = Db { pool: pool.clone() };
+        let agent = AgentStub { chain: "base".into(), agent_id: 1, domain: "agent.example".into() };
+        let obs = |outcome: ProbeOutcome, body: Option<serde_json::Value>| Observation {
+            agent: agent.clone(),
+            url: "https://agent.example/.well-known/agent.json".into(),
+            body_hash: body.as_ref().map(|_| "hash1".into()),
+            body,
+            outcome,
+        };
+
+        // Two passes: first healthy with a card, then the endpoint dies.
+        db.write_observations(&[obs(
+            ProbeOutcome::Healthy { latency_ms: 50 },
+            Some(serde_json::json!({"name": "A"})),
+        )])
+        .await
+        .unwrap();
+        db.write_observations(&[obs(ProbeOutcome::Unreachable, None)]).await.unwrap();
+
+        // History: BOTH snapshots and BOTH probes kept — nothing overwritten.
+        let snapshots: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM metadata_snapshots WHERE agent_id = 1")
+                .fetch_one(&pool).await.unwrap();
+        assert_eq!(snapshots, 2, "every fetch is archived, including failures");
+        let probes: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM probe_history WHERE agent_id = 1")
+                .fetch_one(&pool).await.unwrap();
+        assert_eq!(probes, 2);
+
+        // Cache: reflects the LATEST state (down), but the last good card
+        // survives — the cache updates, history accumulates.
+        let (healthy, card): (bool, Option<serde_json::Value>) = sqlx::query_as(
+            "SELECT endpoint_healthy, agent_card FROM agent_enrichment WHERE agent_id = 1",
+        )
+        .fetch_one(&pool).await.unwrap();
+        assert!(!healthy);
+        assert_eq!(card.unwrap()["name"], "A");
     }
 }

@@ -22,7 +22,6 @@
 //!   function call into our pure library; no I/O crosses that boundary.
 
 mod clustering;
-mod liveness;
 mod metadata;
 mod netguard;
 mod observe;
@@ -94,27 +93,28 @@ async fn run_pass(db: &store::Db, concurrency: usize) -> anyhow::Result<()> {
     let agents = db.load_agents_to_enrich().await?;
     tracing::info!("enriching {} agents", agents.len());
 
-    // 2. Probe + fetch metadata concurrently, but with a cap.
+    // 2. One observation per agent — a single guarded fetch yields liveness
+    //    AND the metadata snapshot.
     //
     //    `stream::iter(agents)` turns the Vec into a stream; `.map(...)` starts an
     //    async job per agent; `.buffer_unordered(concurrency)` runs up to
     //    `concurrency` of them at once and yields results as they finish (order
     //    not preserved — we don't care). `.collect()` gathers them all.
     //
-    //    `async move` makes each job take ownership of its `agent`, so the future
-    //    can outlive the loop turn that created it.
-    let results: Vec<store::EnrichmentResult> = stream::iter(agents)
-        .map(|agent| async move {
-            let card = metadata::fetch_agent_card(&agent).await;
-            let probe = liveness::probe(&agent).await;
-            store::EnrichmentResult { agent, card, probe }
+    //    One shared client for the whole pass: reqwest's Client is an Arc'd
+    //    connection pool, so each job borrows it instead of building its own.
+    let client = observe::build_client()?;
+    let observations: Vec<observe::Observation> = stream::iter(agents)
+        .map(|agent| {
+            let client = &client;
+            async move { observe::observe(client, &agent).await }
         })
         .buffer_unordered(concurrency)
         .collect()
         .await;
 
-    // 3. Persist per-agent enrichment (a failed fetch is stored as "down").
-    db.write_enrichment(&results).await?;
+    // 3. Append history + refresh the cache (a failed fetch is stored as data).
+    db.write_observations(&observations).await?;
 
     // 4. Re-cluster across ALL agents (needs the global graph) and persist.
     let clusters = clustering::detect(db).await?;
