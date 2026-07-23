@@ -14,10 +14,10 @@
 //!
 //! ## Reorgs (chain reorganisations)
 //!
-//! The most recent blocks can be reverted by the network. We stay a few blocks
-//! behind the tip (the `CONFIRMATIONS` buffer) so we only index blocks unlikely
-//! to be reorged. Deeper reorg handling (rolling back on a detected revert) is a
-//! good follow-up exercise.
+//! The most recent blocks can be reverted by the network. We stay a per-chain
+//! `confirmations` buffer behind the tip (fast chains need more blocks for the
+//! same wall-clock safety), and every raw event stores its block hash so a
+//! deeper reorg is at least *detectable* and re-processable from the audit log.
 
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
@@ -30,8 +30,15 @@ use crate::store::Db;
 /// Fetch at most this many blocks per request; RPC providers cap the range.
 const BLOCK_BATCH_SIZE: u64 = 2_000;
 
-/// How many blocks to stay behind the tip, to dodge reorgs.
-const CONFIRMATIONS: u64 = 5;
+/// Where to resume: the block AFTER the cursor, or the registry deploy block
+/// on a chain we've never indexed. Pure, so it's trivially unit-testable —
+/// off-by-one bugs here mean skipped or double-fetched blocks.
+pub fn resume_from(cursor: Option<i64>, deploy_block: i64) -> u64 {
+    match cursor {
+        Some(last) => (last + 1) as u64,
+        None => deploy_block.max(0) as u64,
+    }
+}
 
 /// Run the ingest loop for one chain until the process stops.
 ///
@@ -39,13 +46,15 @@ const CONFIRMATIONS: u64 = 5;
 /// handle to persist through. `async` and effectively infinite — every `.await`
 /// yields to the runtime, so running one of these per chain interleaves cheaply.
 pub async fn run(chain: Chain, db: Db) -> Result<()> {
+    let name = chain.config.chain.clone();
+    let confirmations = chain.config.confirmations as u64;
     loop {
         // 1. Where did we get to last time?
-        let from_block = db.load_cursor(&chain.name).await?;
+        let from_block = resume_from(db.load_cursor(&name).await?, chain.config.deploy_block);
 
         // 2. What's the safe tip to index up to right now?
         let head = chain.provider.get_block_number().await?;
-        let safe_head = head.saturating_sub(CONFIRMATIONS);
+        let safe_head = head.saturating_sub(confirmations);
 
         // Already caught up? Nap, then re-loop. `continue` jumps to the top.
         if from_block > safe_head {
@@ -66,14 +75,14 @@ pub async fn run(chain: Chain, db: Db) -> Result<()> {
         //    discarding the rest — a very common iterator idiom.
         let indexed: Vec<IndexedLog> = logs
             .iter()
-            .filter_map(|log| bindings::index_log(&chain.name, log))
+            .filter_map(|log| bindings::index_log(&name, log))
             .collect();
 
         // 5. Persist raw logs + decoded rows + the new cursor, atomically.
-        db.write_batch(&chain.name, &indexed, to_block).await?;
+        db.write_batch(&name, &indexed, to_block).await?;
 
         tracing::info!(
-            chain = %chain.name,
+            chain = %name,
             from = from_block,
             to = to_block,
             events = indexed.len(),
@@ -84,5 +93,24 @@ pub async fn run(chain: Chain, db: Db) -> Result<()> {
         if to_block >= safe_head {
             tokio::time::sleep(std::time::Duration::from_secs(12)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cursor stores the last FULLY PROCESSED block; resumption starts at
+    /// the NEXT one. The old code re-fetched the cursor block every loop.
+    #[test]
+    fn resume_starts_after_the_cursor() {
+        assert_eq!(resume_from(Some(100), 50), 101);
+    }
+
+    /// First run (no cursor row yet): start at the registry's deploy block,
+    /// never at genesis.
+    #[test]
+    fn first_run_starts_at_deploy_block() {
+        assert_eq!(resume_from(None, 34_567_890), 34_567_890);
     }
 }

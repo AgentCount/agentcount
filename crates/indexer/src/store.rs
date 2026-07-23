@@ -16,10 +16,6 @@ use sqlx::PgPool;
 
 use crate::bindings::{IndexedLog, RegistryEvent};
 
-/// If we've never indexed a chain before, start here. In production set this to
-/// each registry's deployment block so you don't rescan the whole chain.
-const DEFAULT_START_BLOCK: i64 = 0;
-
 /// Thin, cloneable wrapper over the pool.
 #[derive(Clone)]
 pub struct Db {
@@ -37,16 +33,30 @@ impl Db {
         Ok(Self { pool })
     }
 
-    /// The block number to resume indexing from for a chain. Falls back to
-    /// [`DEFAULT_START_BLOCK`] on the very first run (no cursor row yet).
-    pub async fn load_cursor(&self, chain: &str) -> Result<u64> {
+    /// The chains the indexer should follow, straight from the `chains` table.
+    pub async fn load_enabled_chains(&self) -> Result<Vec<crate::chains::ChainConfig>> {
+        let rows = sqlx::query_as::<_, crate::chains::ChainConfig>(
+            "SELECT chain, chain_id, identity_registry, reputation_registry, \
+                    validation_registry, deploy_block, confirmations \
+             FROM chains WHERE enabled",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("loading enabled chains")?;
+        Ok(rows)
+    }
+
+    /// The last block we FULLY processed for a chain, if any. Resumption
+    /// arithmetic (start at the NEXT block, or at deploy_block on first run)
+    /// lives in `ingest::resume_from`, where it's unit-tested.
+    pub async fn load_cursor(&self, chain: &str) -> Result<Option<i64>> {
         let last: Option<i64> =
             sqlx::query_scalar("SELECT last_block FROM indexer_cursor WHERE chain = $1")
                 .bind(chain)
                 .fetch_optional(&self.pool)
                 .await
                 .context("loading cursor")?;
-        Ok(last.unwrap_or(DEFAULT_START_BLOCK) as u64)
+        Ok(last)
     }
 
     /// Persist one batch atomically: raw logs, decoded rows, and the new cursor —
