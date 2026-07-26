@@ -59,10 +59,10 @@ pub struct SnapshotStats {
 }
 
 pub struct AttestationStats {
+    /// On-chain feedback rows pointing at this agent. In the deployed ERC-8004
+    /// model each is left by a client address, so this is a raw count of
+    /// feedback received — no agent↔agent pairing is asserted.
     pub total: i64,
-    /// Attestations that are part of a mutual A↔B pair (a collusion tell —
-    /// published as a count, not a discount).
-    pub mutual: i64,
 }
 
 pub struct ValidationStats {

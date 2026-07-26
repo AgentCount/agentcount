@@ -3,20 +3,24 @@
 //! not a penalty woven through the data model: no suspicion score, no cluster
 //! multiplier. Every flag carries the concrete evidence a reader can check.
 //!
-//! Three detectable signals:
-//! * **shared_operator** — the same wallet controls several agents.
+//! Two signals, both derivable purely from what the Identity Registry gives us:
+//! * **shared_operator** — the same wallet (NFT owner) controls several agents.
 //! * **synchronized_registration** — a BURST of registrations in a tight
-//!   window. Burst, not chain: the old consecutive-gap linking merged a whole
-//!   busy afternoon into one mega-cluster (any steady stream <120s apart
+//!   window. Burst, not chain: naive consecutive-gap linking would merge a
+//!   whole busy afternoon into one mega-cluster (any steady stream <120s apart
 //!   chains transitively). We require ≥MIN_BURST_SIZE within a bounded span.
-//! * **reciprocal_feedback** — mutual A↔B rating pairs.
+//!
+//! A third signal — reciprocal feedback — lived here while feedback was modelled
+//! as agent→agent. The deployed ERC-8004 Reputation Registry emits feedback as
+//! client-ADDRESS→agent, so agent↔agent reciprocity no longer maps directly; a
+//! replacement built on the owner-address↔agent mapping is future work.
 //!
 //! Rust concept spotlight: **pure core, async shell.** `detect_flags` is a
 //! plain function over plain data — the heuristics that end up in the research
 //! report are unit-tested without a database. `detect` is the thin async
 //! wrapper that loads the inputs.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde_json::json;
 
@@ -41,7 +45,6 @@ pub struct AgentNode {
 pub enum FlagKind {
     SharedOperator,
     SynchronizedRegistration,
-    ReciprocalFeedback,
 }
 
 impl FlagKind {
@@ -50,7 +53,6 @@ impl FlagKind {
         match self {
             FlagKind::SharedOperator => "shared_operator",
             FlagKind::SynchronizedRegistration => "synchronized_registration",
-            FlagKind::ReciprocalFeedback => "reciprocal_feedback",
         }
     }
 }
@@ -72,7 +74,7 @@ const MIN_BURST_SIZE: usize = 5;
 const MAX_BURST_SPAN_SECS: i64 = 3_600;
 
 /// Detect all flags across the agent set. Pure — inputs in, flags out.
-pub fn detect_flags(nodes: &[AgentNode], feedback: &[(AgentKey, AgentKey)]) -> Vec<AgentFlag> {
+pub fn detect_flags(nodes: &[AgentNode]) -> Vec<AgentFlag> {
     let mut out = Vec::new();
 
     // ── shared_operator ──────────────────────────────────────────────────────
@@ -102,9 +104,10 @@ pub fn detect_flags(nodes: &[AgentNode], feedback: &[(AgentKey, AgentKey)]) -> V
     let mut by_time: Vec<&AgentNode> = nodes.iter().collect();
     by_time.sort_by_key(|n| n.registered_at);
     let mut burst: Vec<&AgentNode> = Vec::new();
-    // A closure that closes over nothing mutable except via its arguments —
-    // the idiomatic way to share "flush" logic between the loop and the tail.
-    let mut flush = |burst: &mut Vec<&AgentNode>, out: &mut Vec<AgentFlag>| {
+    // A closure that shares "flush" logic between the loop and the tail. It
+    // captures nothing mutably (all state comes in as &mut params), so the
+    // binding itself needn't be `mut`.
+    let flush = |burst: &mut Vec<&AgentNode>, out: &mut Vec<AgentFlag>| {
         if burst.len() >= MIN_BURST_SIZE {
             let from = burst.first().unwrap().registered_at;
             let to = burst.last().unwrap().registered_at;
@@ -137,34 +140,13 @@ pub fn detect_flags(nodes: &[AgentNode], feedback: &[(AgentKey, AgentKey)]) -> V
     }
     flush(&mut burst, &mut out);
 
-    // ── reciprocal_feedback ──────────────────────────────────────────────────
-    let directed: HashSet<(&AgentKey, &AgentKey)> = feedback.iter().map(|(f, t)| (f, t)).collect();
-    let mut mutual_peers: HashMap<&AgentKey, Vec<&AgentKey>> = HashMap::new();
-    for (from, to) in feedback {
-        if directed.contains(&(to, from)) {
-            mutual_peers.entry(from).or_default().push(to);
-        }
-    }
-    for (key, peers) in mutual_peers {
-        let peers: Vec<_> = peers
-            .iter()
-            .map(|p| json!({ "chain": p.chain, "agent_id": p.agent_id }))
-            .collect();
-        out.push(AgentFlag {
-            key: key.clone(),
-            kind: FlagKind::ReciprocalFeedback,
-            evidence: json!({ "peers": peers }),
-        });
-    }
-
     out
 }
 
 /// Load inputs and run detection. Async shell around the pure core.
 pub async fn detect(db: &crate::store::Db) -> anyhow::Result<Vec<AgentFlag>> {
     let nodes = db.load_agent_nodes().await?;
-    let feedback = db.load_feedback_pairs().await?;
-    Ok(detect_flags(&nodes, &feedback))
+    Ok(detect_flags(&nodes))
 }
 
 #[cfg(test)]
@@ -190,7 +172,7 @@ mod tests {
             node(2, "0xaaa", t0(), 500_000),
             node(3, "0xbbb", t0(), 0),
         ];
-        let flags = detect_flags(&nodes, &[]);
+        let flags = detect_flags(&nodes);
         let shared: Vec<_> = flags.iter().filter(|f| f.kind == FlagKind::SharedOperator).collect();
         assert_eq!(shared.len(), 2, "both co-operated agents flagged, the loner not");
         let f = shared.iter().find(|f| f.key.agent_id == 1).unwrap();
@@ -206,7 +188,7 @@ mod tests {
     fn steady_traffic_splits_into_bounded_windows() {
         let many_hours: Vec<AgentNode> =
             (0..40).map(|i| node(100 + i, &format!("0y{i}"), t0(), i * 110)).collect();
-        let flags = detect_flags(&many_hours, &[]);
+        let flags = detect_flags(&many_hours);
         let sync: Vec<_> = flags.iter().filter(|f| f.kind == FlagKind::SynchronizedRegistration).collect();
         assert!(!sync.is_empty());
         for f in &sync {
@@ -225,21 +207,7 @@ mod tests {
         // Four agents in two minutes: under MIN_BURST_SIZE → no flag.
         let nodes: Vec<AgentNode> =
             (0..4).map(|i| node(i, &format!("0x{i}"), t0(), i * 20)).collect();
-        let flags = detect_flags(&nodes, &[]);
+        let flags = detect_flags(&nodes);
         assert!(flags.iter().all(|f| f.kind != FlagKind::SynchronizedRegistration));
-    }
-
-    #[test]
-    fn reciprocal_pairs_flag_both_sides_with_the_peer_as_evidence() {
-        let a = AgentKey { chain: "base".into(), agent_id: 1 };
-        let b = AgentKey { chain: "base".into(), agent_id: 2 };
-        let c = AgentKey { chain: "base".into(), agent_id: 3 };
-        let nodes = vec![node(1, "0x1", t0(), 0), node(2, "0x2", t0(), 0), node(3, "0x3", t0(), 0)];
-        // a↔b mutual; a→c one-directional (fine).
-        let feedback = vec![(a.clone(), b.clone()), (b.clone(), a.clone()), (a.clone(), c)];
-        let flags = detect_flags(&nodes, &feedback);
-        let recip: Vec<_> = flags.iter().filter(|f| f.kind == FlagKind::ReciprocalFeedback).collect();
-        assert_eq!(recip.len(), 2);
-        assert!(recip.iter().any(|f| f.key == a && f.evidence["peers"][0]["agent_id"] == 2));
     }
 }

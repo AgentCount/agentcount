@@ -34,27 +34,25 @@
         doesn't.</dd>
 
     <dt>Attestations</dt>
-    <dd>Raw counts of on-chain feedback ("N recorded, M mutual"). Mutual pairs
-        are reported, not discounted — what mutuality means is your call.</dd>
+    <dd>A raw count of on-chain feedback received ("N recorded"). In the deployed
+        ERC-8004 model each is left by a client address, so we assert nothing
+        about who left it or whether it's reciprocal.</dd>
 
     <dt>Validation proofs</dt>
     <dd>Present/absent counts — and "registry unavailable" where a chain has no
-        Validation Registry, which is different from having zero proofs.</dd>
+        Validation Registry (as on Base today), which is different from having
+        zero proofs.</dd>
 </dl>
 
 <h2>Flags</h2>
 <dl>
     <dt>Shared operator</dt>
-    <dd>The same wallet address controls multiple agents. Evidence: the address
-        and the peer agents.</dd>
+    <dd>The same wallet owns multiple agent NFTs. Evidence: the address and the
+        peer agents.</dd>
 
     <dt>Synchronized registration</dt>
     <dd>Five or more agents registered within a tight window (gaps under two
         minutes, window capped at one hour). Evidence: the window and the peers.</dd>
-
-    <dt>Reciprocal feedback</dt>
-    <dd>Mutual A↔B rating pairs — a pattern strangers rarely produce.
-        Evidence: the peer agents.</dd>
 </dl>
 
 <h2>Honest limitations</h2>

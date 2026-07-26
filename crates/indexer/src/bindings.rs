@@ -1,4 +1,4 @@
-//! Typed Rust bindings for the ERC-8004 registry contracts.
+//! Typed Rust bindings for the ERC-8004 registry contracts on Base.
 //!
 //! This is where alloy's headline feature — the `sol!` macro — earns its keep.
 //! You hand it Solidity event signatures and at COMPILE TIME it generates
@@ -10,29 +10,41 @@
 //! embedded in your Rust source. Same idea — code that writes code at compile
 //! time — taken to its logical extreme.
 //!
-//! ⚠️ The event signatures below are illustrative. Replace them with the exact
-//! signatures from the real ERC-8004 registry ABIs (field names, types, and
-//! which fields are `indexed` must match, or decoding silently finds nothing).
+//! The event signatures below are the REAL ones from the deployed ERC-8004 v1
+//! registries on Base (Identity `Registered`, Reputation `NewFeedback`). The
+//! canonical parameter types AND the `indexed` flags must match exactly, or
+//! `log_decode` silently finds nothing (topic0 is keccak of the type list;
+//! indexed-ness decides which fields live in topics vs data).
 
 use alloy::sol;
 
-// `sol!` expands each `event` into a Rust struct implementing the `SolEvent`
-// trait, which knows the event's topic hash and how to decode a log into typed
-// fields. `#[derive(Debug)]` is passed through to the generated structs.
 sol! {
-    // ── Identity Registry ───────────────────────────────────────────────────
-    // Emitted when a new agent registers. `indexed` fields become searchable log
-    // topics; the rest live in the log's data section.
+    // ── Identity Registry (0x8004A169…) ──────────────────────────────────────
+    // Agents are ERC-721 NFTs. `Registered` fires on mint. `agentURI` is the
+    // token URI pointing at the agent's metadata document (NOT a bare domain);
+    // `owner` is the address that holds the NFT.
     #[derive(Debug)]
-    event AgentRegistered(uint256 indexed agentId, string agentDomain, address indexed agentAddress);
+    event Registered(uint256 indexed agentId, string agentURI, address indexed owner);
 
-    // ── Reputation Registry ─────────────────────────────────────────────────
+    // ── Reputation Registry (0x8004BAa1…) ────────────────────────────────────
+    // Feedback is left by an arbitrary CLIENT ADDRESS about an agent, carrying a
+    // signed value with its own decimal scale plus free-form tags. All 11
+    // parameters must be declared (in order, with correct indexed flags) so the
+    // topic hash and topic/data split line up; we only read the first five.
     #[derive(Debug)]
-    event FeedbackGiven(uint256 indexed fromAgentId, uint256 indexed toAgentId, uint8 score);
-
-    // ── Validation Registry ─────────────────────────────────────────────────
-    #[derive(Debug)]
-    event ValidationRecorded(uint256 indexed validatorId, uint256 indexed subjectId, bool passed);
+    event NewFeedback(
+        uint256 indexed agentId,
+        address indexed clientAddress,
+        uint64 feedbackIndex,
+        int128 value,
+        uint8 valueDecimals,
+        string indexed indexedTag1,
+        string tag1,
+        string tag2,
+        string endpoint,
+        string feedbackURI,
+        bytes32 feedbackHash
+    );
 }
 
 /// A single decoded event, normalised into one enum the store can handle
@@ -43,20 +55,22 @@ sol! {
 /// variant — add a new event later and the compiler lists every place to update.
 #[derive(Debug)]
 pub enum RegistryEvent {
-    AgentRegistered {
+    /// An agent NFT was minted. `agent_uri` is its metadata pointer; `owner` is
+    /// the holding address (lower-cased).
+    Registered {
         agent_id: u64,
-        domain: String,
-        agent_address: String,
+        agent_uri: String,
+        owner: String,
     },
-    FeedbackGiven {
-        from_agent_id: u64,
+    /// A client left feedback about an agent. `client_address` is the rater
+    /// (lower-cased); `value`/`value_decimals` are the signed score and its
+    /// scale, stored verbatim (we don't interpret the number yet).
+    Feedback {
         to_agent_id: u64,
-        score: u8,
-    },
-    ValidationRecorded {
-        validator_id: u64,
-        subject_id: u64,
-        passed: bool,
+        client_address: String,
+        feedback_index: i64,
+        value: String,
+        value_decimals: i16,
     },
 }
 
@@ -128,59 +142,44 @@ pub fn index_log(
 fn decode(
     log: &alloy::rpc::types::Log,
 ) -> Option<(&'static str, serde_json::Value, RegistryEvent)> {
-    if let Ok(ev) = log.log_decode::<AgentRegistered>() {
+    if let Ok(ev) = log.log_decode::<Registered>() {
         let d = ev.inner.data;
         let agent_id = d.agentId.to::<u64>();
-        let domain = d.agentDomain;
-        let address = addr_lower(&d.agentAddress);
+        let agent_uri = d.agentURI;
+        let owner = addr_lower(&d.owner);
         let payload = serde_json::json!({
-            "agent_id": agent_id, "domain": domain, "address": address,
+            "agent_id": agent_id, "agent_uri": agent_uri.clone(), "owner": owner.clone(),
         });
         return Some((
-            "AgentRegistered",
+            "Registered",
             payload,
-            RegistryEvent::AgentRegistered {
-                agent_id,
-                domain,
-                agent_address: address,
-            },
+            RegistryEvent::Registered { agent_id, agent_uri, owner },
         ));
     }
 
-    if let Ok(ev) = log.log_decode::<FeedbackGiven>() {
+    if let Ok(ev) = log.log_decode::<NewFeedback>() {
         let d = ev.inner.data;
-        let from_agent_id = d.fromAgentId.to::<u64>();
-        let to_agent_id = d.toAgentId.to::<u64>();
-        let score = d.score;
+        let to_agent_id = d.agentId.to::<u64>();
+        let client_address = addr_lower(&d.clientAddress);
+        let feedback_index = d.feedbackIndex as i64;
+        // `value` is int128; `.to_string()` gives the exact decimal regardless
+        // of whether alloy backs it with a native or wide integer type.
+        let value = d.value.to_string();
+        let value_decimals = d.valueDecimals as i16;
         let payload = serde_json::json!({
-            "from_agent_id": from_agent_id, "to_agent_id": to_agent_id, "score": score,
+            "to_agent_id": to_agent_id, "client_address": client_address.clone(),
+            "feedback_index": feedback_index, "value": value.clone(),
+            "value_decimals": value_decimals,
         });
         return Some((
-            "FeedbackGiven",
+            "NewFeedback",
             payload,
-            RegistryEvent::FeedbackGiven {
-                from_agent_id,
+            RegistryEvent::Feedback {
                 to_agent_id,
-                score,
-            },
-        ));
-    }
-
-    if let Ok(ev) = log.log_decode::<ValidationRecorded>() {
-        let d = ev.inner.data;
-        let validator_id = d.validatorId.to::<u64>();
-        let subject_id = d.subjectId.to::<u64>();
-        let passed = d.passed;
-        let payload = serde_json::json!({
-            "validator_id": validator_id, "subject_id": subject_id, "passed": passed,
-        });
-        return Some((
-            "ValidationRecorded",
-            payload,
-            RegistryEvent::ValidationRecorded {
-                validator_id,
-                subject_id,
-                passed,
+                client_address,
+                feedback_index,
+                value,
+                value_decimals,
             },
         ));
     }

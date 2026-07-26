@@ -113,15 +113,9 @@ pub async fn assemble(
     #[derive(sqlx::FromRow)]
     struct Attest {
         total: i64,
-        mutual: i64,
     }
     let a = sqlx::query_as::<_, Attest>(
-        "SELECT count(*) AS total, \
-                count(*) FILTER (WHERE EXISTS ( \
-                    SELECT 1 FROM feedback r \
-                    WHERE r.chain = f.chain AND r.from_agent_id = f.to_agent_id \
-                      AND r.to_agent_id = f.from_agent_id)) AS mutual \
-         FROM feedback f WHERE f.chain = $1 AND f.to_agent_id = $2",
+        "SELECT count(*) AS total FROM feedback WHERE chain = $1 AND to_agent_id = $2",
     )
     .bind(chain)
     .bind(agent_id)
@@ -179,7 +173,7 @@ pub async fn assemble(
             now,
         ),
         facts::attestations(
-            &facts::AttestationStats { total: a.total, mutual: a.mutual },
+            &facts::AttestationStats { total: a.total },
             &agent.chain,
             now,
         ),

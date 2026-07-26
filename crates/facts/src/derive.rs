@@ -68,9 +68,9 @@ pub fn metadata_status(s: &SnapshotStats, now: DateTime<Utc>) -> Fact {
 pub fn attestations(s: &AttestationStats, chain: &str, now: DateTime<Utc>) -> Fact {
     Fact {
         kind: "attestations",
-        // Phrased as counts: "N attestations recorded, M mutual". Mutuality is
-        // published, not used to discount — consumers decide what it means.
-        value: json!({ "total": s.total, "mutual": s.mutual }),
+        // A raw count of feedback received, phrased exactly that way — no claim
+        // about who left it or whether it's reciprocal.
+        value: json!({ "total": s.total }),
         observed_at: now,
         evidence: vec![EvidenceRef::Registry { chain: chain.to_string() }],
     }

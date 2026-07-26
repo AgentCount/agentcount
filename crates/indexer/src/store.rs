@@ -95,11 +95,13 @@ impl Db {
             // exhaustive: add a variant to `RegistryEvent` and the compiler makes
             // you handle it here.
             match &il.event {
-                RegistryEvent::AgentRegistered {
+                RegistryEvent::Registered {
                     agent_id,
-                    domain,
-                    agent_address,
+                    agent_uri,
+                    owner,
                 } => {
+                    // `owner` (NFT holder) → address; `agent_uri` (metadata
+                    // pointer) → the `domain` column (see 0007's note on the name).
                     sqlx::query(
                         "INSERT INTO agents \
                             (chain, agent_id, address, domain, registered_block, registered_at, registered_tx) \
@@ -108,51 +110,33 @@ impl Db {
                     )
                     .bind(&il.chain)
                     .bind(*agent_id as i64)
-                    .bind(agent_address)
-                    .bind(domain)
+                    .bind(owner)
+                    .bind(agent_uri)
                     .bind(il.block)
                     .bind(il.timestamp)
                     .bind(&il.tx_hash)
                     .execute(&mut *tx)
                     .await?;
                 }
-                RegistryEvent::FeedbackGiven {
-                    from_agent_id,
+                RegistryEvent::Feedback {
                     to_agent_id,
-                    score,
+                    client_address,
+                    feedback_index,
+                    value,
+                    value_decimals,
                 } => {
                     sqlx::query(
                         "INSERT INTO feedback \
-                            (chain, from_agent_id, to_agent_id, score, block, tx_hash, log_index, created_at) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                            (chain, to_agent_id, client_address, feedback_index, value, value_decimals, block, tx_hash, log_index, created_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
                          ON CONFLICT (chain, tx_hash, log_index) DO NOTHING",
                     )
                     .bind(&il.chain)
-                    .bind(*from_agent_id as i64)
                     .bind(*to_agent_id as i64)
-                    .bind(*score as i16)
-                    .bind(il.block)
-                    .bind(&il.tx_hash)
-                    .bind(il.log_index)
-                    .bind(il.timestamp)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-                RegistryEvent::ValidationRecorded {
-                    validator_id,
-                    subject_id,
-                    passed,
-                } => {
-                    sqlx::query(
-                        "INSERT INTO validations \
-                            (chain, validator_id, subject_id, passed, block, tx_hash, log_index, created_at) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-                         ON CONFLICT (chain, tx_hash, log_index) DO NOTHING",
-                    )
-                    .bind(&il.chain)
-                    .bind(*validator_id as i64)
-                    .bind(*subject_id as i64)
-                    .bind(*passed)
+                    .bind(client_address)
+                    .bind(*feedback_index)
+                    .bind(value)
+                    .bind(*value_decimals)
                     .bind(il.block)
                     .bind(&il.tx_hash)
                     .bind(il.log_index)

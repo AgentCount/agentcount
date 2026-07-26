@@ -17,6 +17,9 @@ use anyhow::{Context, Result};
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ChainConfig {
     pub chain: String,
+    /// EIP-155 id. Loaded and kept whole so a future startup check can assert
+    /// the RPC actually serves this chain (guarding a mis-set RPC_URL).
+    #[allow(dead_code)]
     pub chain_id: i64,
     pub identity_registry: String,
     pub reputation_registry: Option<String>,

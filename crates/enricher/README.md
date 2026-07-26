@@ -26,12 +26,15 @@ liveness + last good card) is updated in place.
 ## The flag signals
 
 - **shared_operator** — the same wallet (compared on `address_norm`, so hex
-  casing can never fragment a group) controls several agents.
+  casing can never fragment a group) owns several agent NFTs.
 - **synchronized_registration** — a **burst**: ≥5 registrations with gaps
   under 120s, window capped at one hour. Burst, not chain — naive
   consecutive-gap linking would merge a whole busy afternoon into one
   mega-cluster.
-- **reciprocal_feedback** — mutual A↔B rating pairs.
+
+(A third signal, reciprocal feedback, was dropped when the deployed ERC-8004
+Reputation Registry turned out to model feedback as client-address→agent rather
+than agent→agent. An address-based replacement is future work.)
 
 Flags are per-signal (no cluster merging, no suspicion score, no penalty).
 Persistence is append-only at the event level: a new flag inserts a `raised`

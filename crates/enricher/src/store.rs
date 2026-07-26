@@ -77,7 +77,7 @@ impl Db {
             .bind(o.outcome.http_status())
             .bind(&o.body_hash)
             .bind(&o.body)
-            .bind(if o.outcome.is_alive() { None } else { Some(o.outcome.label()) })
+            .bind(o.outcome.error_detail())
             .execute(&mut *tx)
             .await?;
 
@@ -152,38 +152,6 @@ impl Db {
                 },
                 address: r.address,
                 registered_at: r.registered_at,
-            })
-            .collect())
-    }
-
-    /// Load all directed feedback edges as `(from, to)` agent-key pairs.
-    pub async fn load_feedback_pairs(&self) -> Result<Vec<(AgentKey, AgentKey)>> {
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            chain: String,
-            from_agent_id: i64,
-            to_agent_id: i64,
-        }
-        let rows = sqlx::query_as::<_, Row>(
-            "SELECT chain, from_agent_id, to_agent_id FROM feedback",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("loading feedback pairs")?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    AgentKey {
-                        chain: r.chain.clone(),
-                        agent_id: r.from_agent_id,
-                    },
-                    AgentKey {
-                        chain: r.chain,
-                        agent_id: r.to_agent_id,
-                    },
-                )
             })
             .collect())
     }

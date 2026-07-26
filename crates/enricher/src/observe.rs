@@ -77,6 +77,18 @@ impl ProbeOutcome {
             _ => None,
         }
     }
+
+    /// What to store in `metadata_snapshots.error` for a non-alive outcome:
+    /// `None` when the endpoint answered (alive), the specific reason for a
+    /// guard rejection, else the coarse label. Keeping the rejection reason
+    /// makes "why couldn't we reach this agent" answerable from history.
+    pub fn error_detail(&self) -> Option<String> {
+        match self {
+            ProbeOutcome::Healthy { .. } | ProbeOutcome::PaymentRequired { .. } => None,
+            ProbeOutcome::Rejected { reason } => Some(format!("rejected: {reason}")),
+            other => Some(other.label().to_string()),
+        }
+    }
 }
 
 /// Everything one fetch told us. `body`/`body_hash` are Some only when we got

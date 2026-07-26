@@ -99,7 +99,7 @@ pub async fn agent_detail(
                 ),
                 "attestations" => (
                     "Attestations".to_string(),
-                    format!("{} recorded on-chain, {} mutual", v["total"], v["mutual"]),
+                    format!("{} recorded on-chain", v["total"]),
                 ),
                 "validation_proofs" => (
                     "Validation proofs".to_string(),

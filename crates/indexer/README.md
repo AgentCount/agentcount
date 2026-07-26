@@ -1,9 +1,11 @@
 # `indexer` — chain events → Postgres
 
 A **binary crate**. The mouth of the pipeline: it connects to every ENABLED
-chain in the `chains` table, watches its ERC-8004 registries, decodes every
-event, and writes it with true on-chain provenance. Everything downstream
-(enricher, api) reads what this produces.
+chain in the `chains` table, watches its ERC-8004 registries (on Base: the
+Identity Registry's `Registered` event and the Reputation Registry's
+`NewFeedback` — Base has no Validation Registry), decodes every event, and
+writes it with true on-chain provenance. Everything downstream (enricher, api)
+reads what this produces.
 
 Chains are **data, not code**: which chains exist, their registry addresses,
 deploy blocks, and reorg buffers all live in the `chains` table (seeded by
@@ -38,14 +40,15 @@ deploy blocks, and reorg buffers all live in the `chains` table (seeded by
 
 ## ⚠️ Before it will index real data
 
-1. **Seed the chains.** Fill in the real ERC-8004 registry addresses and the
-   Base deploy block in `scripts/seed_chains.sql`, then run it. The indexer
-   refuses zero-address registries — a forgotten edit fails loudly.
-2. **Verify event signatures.** The `sol!` block in `bindings.rs` uses
-   illustrative signatures. Check them against the deployed registry ABIs
-   (field names, types, and `indexed`-ness must match, or decoding silently
-   finds nothing).
-3. **Set `RPC_URL_BASE`** (and one var per additional enabled chain).
+1. **Seed the chains.** `scripts/seed_chains.sql` carries the real Base ERC-8004
+   registry addresses; run it. The `deploy_block` is left at 0 (safe, but scans
+   from genesis) — set it to the registry's creation block to skip an hour of
+   empty ranges on the first backfill. The indexer refuses zero-address
+   registries, so a forgotten edit fails loudly.
+2. **Set `RPC_URL_BASE`** (and one var per additional enabled chain).
+
+The `sol!` block in `bindings.rs` already matches the deployed Base registries
+(Identity `Registered`, Reputation `NewFeedback`).
 
 ## Run it
 
