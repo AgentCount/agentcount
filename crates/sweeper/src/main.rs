@@ -3,7 +3,9 @@
 //! A run is the unit of work and the unit of citation: it pins a block, reads
 //! every agent's current state, answers the rungs it can, and writes both the
 //! database rows and the `data/<run_id>/` export. Runs are immutable; to get
-//! newer answers you take a new run, never edit an old one.
+//! newer answers you take a new run, never edit an old one. Resuming (see
+//! [`sweep_resume`]) does not break that: it adds rows to a run that never
+//! finished, it never edits a row already written.
 //!
 //! Day 1 answers rung 1 only. Rungs 2-7 are ABSENT from the output rather than
 //! reported as `skipped` — "we did not ask" and "we could not ask" are
@@ -11,6 +13,8 @@
 
 mod export;
 mod store;
+
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -42,6 +46,21 @@ fn sweep_max_agents() -> Option<usize> {
     std::env::var("SWEEP_MAX_AGENTS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0)
 }
 
+/// Resume an existing run instead of opening a new one. Set to a `run_id` a
+/// previous sweep printed. Exists because a ~60,000-agent sweep runs for
+/// hours, and a crash partway through — an RPC failure, a value the database
+/// refuses (the NUL-byte hazard [`store::escape_nuls_for_postgres`-adjacent
+/// code] guards against), a wedged connection, Ctrl-C — should not force
+/// starting over from agent 0.
+fn sweep_resume() -> Result<Option<Uuid>> {
+    match std::env::var("SWEEP_RESUME") {
+        Ok(s) => Ok(Some(
+            Uuid::parse_str(&s).with_context(|| format!("SWEEP_RESUME={s} is not a valid run id"))?,
+        )),
+        Err(_) => Ok(None),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -51,42 +70,33 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let chain_name = std::env::args().nth(1).unwrap_or_else(|| "base".to_string());
+    let chain_arg = std::env::args().nth(1).unwrap_or_else(|| "base".to_string());
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
+    let db = store::Db::connect(&database_url).await?;
+
+    // Resuming reloads chain, pinned_block, and every provenance column from
+    // the EXISTING run, rather than deriving them fresh — see `sweep_resume`.
+    let resume_run_id = sweep_resume()?;
+    let resumed = match resume_run_id {
+        Some(run_id) => {
+            let r = db.load_run(run_id).await?;
+            if r.chain != chain_arg {
+                tracing::warn!(
+                    "SWEEP_RESUME={run_id} was recorded for chain {}; ignoring the \
+                     command-line chain argument {chain_arg:?}",
+                    r.chain
+                );
+            }
+            Some((run_id, r))
+        }
+        None => None,
+    };
+    let chain_name = resumed.as_ref().map(|(_, r)| r.chain.clone()).unwrap_or(chain_arg);
+
     let rpc_var = format!("RPC_URL_{}", chain_name.to_uppercase());
     let rpc_url = std::env::var(&rpc_var).with_context(|| format!("{rpc_var} must be set"))?;
-
-    let db = store::Db::connect(&database_url).await?;
     let (chain_id, registry_addr, deploy_block) = db.chain_config(&chain_name).await?;
-
     let registry = chain::Registry::connect(&rpc_url, &registry_addr).await?;
-    let pinned = registry.pinned_block().await?;
-    tracing::info!("sweeping {chain_name} at block {pinned}");
-
-    let run_id = Uuid::new_v4();
-    let checker_commit = env!("CHECKER_COMMIT");
-    let max_agents = sweep_max_agents();
-    // The rerun command must describe what THIS run actually swept. A pilot
-    // capped by SWEEP_MAX_AGENTS is not reproduced by the bare command below —
-    // omitting the cap here would make the archived run claim a full sweep it
-    // never did.
-    let rerun = match max_agents {
-        Some(n) => {
-            format!("SWEEP_MAX_AGENTS={n} cargo run -p sweeper -- {chain_name}   # at block {pinned}")
-        }
-        None => format!("cargo run -p sweeper -- {chain_name}   # at block {pinned}"),
-    };
-
-    db.open_run(&store::RunMeta {
-        run_id,
-        chain: chain_name.clone(),
-        schema_version: checks::SCHEMA_VERSION,
-        checker_version: checks::CHECKER_VERSION.to_string(),
-        checker_commit: checker_commit.to_string(),
-        spec_commit: checks::SPEC_COMMIT.to_string(),
-        rerun_command: rerun.clone(),
-    })
-    .await?;
 
     // `deploy_block` is no longer used for enumeration (agent ids are found
     // by binary search on `ownerOf` existence, not by scanning logs from
@@ -94,14 +104,97 @@ async fn main() -> Result<()> {
     // still describes the chain and stays wired for chain_config's other
     // callers.
     let _ = deploy_block;
+
+    let (run_id, pinned, schema_version, checker_version, checker_commit, spec_commit, rerun, started_at, already_swept) =
+        match resumed {
+            Some((run_id, r)) => {
+                let already_swept = db.swept_agent_ids(run_id, &chain_name).await?;
+                tracing::info!(
+                    "resuming run {run_id} on {chain_name} at pinned block {} — \
+                     {} agent(s) already swept, resuming the remainder",
+                    r.pinned_block,
+                    already_swept.len()
+                );
+                (
+                    run_id,
+                    r.pinned_block,
+                    r.schema_version,
+                    r.checker_version,
+                    r.checker_commit,
+                    r.spec_commit,
+                    r.rerun_command,
+                    r.started_at.to_rfc3339(),
+                    already_swept,
+                )
+            }
+            None => {
+                let pinned = registry.pinned_block().await?;
+                tracing::info!("sweeping {chain_name} at block {pinned}");
+
+                let run_id = Uuid::new_v4();
+                let checker_commit = env!("CHECKER_COMMIT").to_string();
+                let max_agents = sweep_max_agents();
+                // The rerun command must describe what THIS run actually
+                // swept. A pilot capped by SWEEP_MAX_AGENTS is not reproduced
+                // by the bare command below — omitting the cap here would
+                // make the archived run claim a full sweep it never did.
+                let rerun = match max_agents {
+                    Some(n) => format!(
+                        "SWEEP_MAX_AGENTS={n} cargo run -p sweeper -- {chain_name}   # at block {pinned}"
+                    ),
+                    None => format!("cargo run -p sweeper -- {chain_name}   # at block {pinned}"),
+                };
+
+                db.open_run(&store::RunMeta {
+                    run_id,
+                    chain: chain_name.clone(),
+                    pinned_block: pinned,
+                    schema_version: checks::SCHEMA_VERSION,
+                    checker_version: checks::CHECKER_VERSION.to_string(),
+                    checker_commit: checker_commit.clone(),
+                    spec_commit: checks::SPEC_COMMIT.to_string(),
+                    rerun_command: rerun.clone(),
+                })
+                .await?;
+
+                (
+                    run_id,
+                    pinned,
+                    checks::SCHEMA_VERSION,
+                    checks::CHECKER_VERSION.to_string(),
+                    checker_commit,
+                    checks::SPEC_COMMIT.to_string(),
+                    rerun,
+                    Utc::now().to_rfc3339(),
+                    HashSet::new(),
+                )
+            }
+        };
+    let checker_commit = checker_commit.as_str();
+    let checker_version = checker_version.as_str();
+    let spec_commit = spec_commit.as_str();
+
+    let max_agents = sweep_max_agents();
+    // Enumerated at the PINNED block (the original one, if resuming) so the
+    // population matches what the first session saw, not whatever exists on
+    // chain right now.
     let mut ids = registry.enumerate_agent_ids(pinned).await?;
     let discovered = ids.len();
     if let Some(n) = max_agents {
         ids.truncate(n);
     }
+    // `planned` is this run's TOTAL intended scope — cumulative across every
+    // session that has worked on it, not just this one. It equals
+    // `already_swept.len() + ids.len()` below by construction (the same list
+    // just gets filtered), which is what keeps the swept/unreadable math at
+    // the end honest without having to remember a prior session's counts.
+    let planned = ids.len();
+    ids.retain(|id| !already_swept.contains(id));
+    let remaining = ids.len();
     tracing::info!(
-        "{discovered} agent ids discovered; sweeping {} of them{}",
-        ids.len(),
+        "{discovered} agent ids discovered; {planned} in scope for this run \
+         ({} already swept, {remaining} remaining this session){}",
+        already_swept.len(),
         max_agents.map(|n| format!(" (SWEEP_MAX_AGENTS={n})")).unwrap_or_default()
     );
 
@@ -116,8 +209,6 @@ async fn main() -> Result<()> {
     // many we managed: the incompleteness would be discoverable only by
     // counting rows, which is exactly what this project promises never to
     // make someone do.
-    let planned = ids.len();
-    let started_at = Utc::now().to_rfc3339();
     let manifest = |swept: Option<usize>, unreadable: Option<usize>, finished: Option<String>| {
         export::RunManifest {
             run_id: run_id.to_string(),
@@ -126,10 +217,10 @@ async fn main() -> Result<()> {
             registry: &registry_addr,
             pinned_block: pinned,
             started_at: started_at.clone(),
-            schema_version: checks::SCHEMA_VERSION,
-            checker_version: checks::CHECKER_VERSION,
+            schema_version,
+            checker_version,
             checker_commit,
-            spec_commit: checks::SPEC_COMMIT,
+            spec_commit,
             rerun_command: &rerun,
             agent_count: planned,
             swept,
@@ -152,6 +243,12 @@ async fn main() -> Result<()> {
         })
         .buffer_unordered(rpc_concurrency());
 
+    // Session-local, but see the `planned` comment above: because `ids` here
+    // is exactly `planned` minus `already_swept`, every id in it is attempted
+    // exactly once (success or failure), so `already_swept.len() + swept +
+    // unreadable == planned` holds whether this is a fresh run (already_swept
+    // empty) or a resumed one — no need to have persisted a prior session's
+    // failure count anywhere to report the true cumulative totals below.
     let mut swept = 0usize;
     let mut unreadable = 0usize;
 
@@ -198,20 +295,23 @@ async fn main() -> Result<()> {
             block_number: s.block_number,
             checks: &results,
             checker_commit,
-            spec_commit: checks::SPEC_COMMIT,
+            spec_commit,
         })?;
 
         swept += 1;
         if swept % 500 == 0 {
-            tracing::info!("{swept}/{planned} agents swept ({unreadable} unreadable)");
+            tracing::info!("{swept}/{remaining} agents swept this session ({unreadable} unreadable this session)");
         }
     }
 
     let finished = Utc::now();
-    db.close_run(run_id, swept as i32, finished).await?;
+    // Cumulative across every session this run has had, per the invariant
+    // documented above the loop.
+    let total_swept = already_swept.len() + swept;
+    db.close_run(run_id, total_swept as i32, finished).await?;
     // Rewrite the manifest so the downloadable artefact matches the rows.
     export::write_manifest(&manifest(
-        Some(swept),
+        Some(total_swept),
         Some(unreadable),
         Some(finished.to_rfc3339()),
     ))?;
@@ -223,7 +323,7 @@ async fn main() -> Result<()> {
              and are ABSENT from this run — not recorded as failures"
         );
     }
-    tracing::info!("run {run_id} complete: {swept} of {planned} agents");
+    tracing::info!("run {run_id} complete: {total_swept} of {planned} agents");
     println!("{run_id}");
     Ok(())
 }

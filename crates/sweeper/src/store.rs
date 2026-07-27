@@ -3,6 +3,7 @@
 //! make the archive lie.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -17,11 +18,30 @@ pub struct Db {
 pub struct RunMeta {
     pub run_id: Uuid,
     pub chain: String,
+    /// The block every read in this run is pinned to. Stored on `runs` (as of
+    /// migration 0009) so a resumed session can read the remainder at the
+    /// SAME block the first session used, rather than re-pinning to whatever
+    /// block happens to be current when the resume starts.
+    pub pinned_block: u64,
     pub schema_version: i32,
     pub checker_version: String,
     pub checker_commit: String,
     pub spec_commit: String,
     pub rerun_command: String,
+}
+
+/// Everything needed to resume an existing run: its provenance, reloaded from
+/// `runs` rather than regenerated, plus the pinned block reads must stay
+/// locked to.
+pub struct ResumedRun {
+    pub chain: String,
+    pub pinned_block: u64,
+    pub schema_version: i32,
+    pub checker_version: String,
+    pub checker_commit: String,
+    pub spec_commit: String,
+    pub rerun_command: String,
+    pub started_at: DateTime<Utc>,
 }
 
 /// Postgres `TEXT` (and `JSONB`) refuse a literal NUL byte outright —
@@ -66,12 +86,13 @@ impl Db {
 
     pub async fn open_run(&self, m: &RunMeta) -> Result<()> {
         sqlx::query(
-            "INSERT INTO runs (run_id, chain, schema_version, checker_version, \
+            "INSERT INTO runs (run_id, chain, pinned_block, schema_version, checker_version, \
                                checker_commit, spec_commit, rerun_command) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
         )
         .bind(m.run_id)
         .bind(&m.chain)
+        .bind(m.pinned_block as i64)
         .bind(m.schema_version)
         .bind(&m.checker_version)
         .bind(&m.checker_commit)
@@ -81,6 +102,55 @@ impl Db {
         .await
         .context("opening run")?;
         Ok(())
+    }
+
+    /// Reload an existing run's provenance and pinned block so a resumed
+    /// sweep can reuse them instead of opening a new run. Errors if the run
+    /// doesn't exist, or if it predates migration 0009 and has no
+    /// `pinned_block` recorded (nothing safe to resume against).
+    pub async fn load_run(&self, run_id: Uuid) -> Result<ResumedRun> {
+        let row: (String, Option<i64>, i32, String, String, String, String, DateTime<Utc>) =
+            sqlx::query_as(
+                "SELECT chain, pinned_block, schema_version, checker_version, \
+                        checker_commit, spec_commit, rerun_command, started_at \
+                 FROM runs WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await
+            .with_context(|| format!("no run {run_id} to resume"))?;
+        let pinned_block = row.1.with_context(|| {
+            format!(
+                "run {run_id} has no pinned_block recorded — it predates migration 0009 \
+                 and cannot be resumed"
+            )
+        })?;
+        Ok(ResumedRun {
+            chain: row.0,
+            pinned_block: pinned_block as u64,
+            schema_version: row.2,
+            checker_version: row.3,
+            checker_commit: row.4,
+            spec_commit: row.5,
+            rerun_command: row.6,
+            started_at: row.7,
+        })
+    }
+
+    /// Every agent id already snapshotted for this run — the resume set to
+    /// skip. Scoped by run_id AND chain (a run is always single-chain, but
+    /// the extra predicate costs nothing and matches how every other query
+    /// here addresses `agent_snapshots`).
+    pub async fn swept_agent_ids(&self, run_id: Uuid, chain: &str) -> Result<HashSet<u64>> {
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT agent_id FROM agent_snapshots WHERE run_id = $1 AND chain = $2",
+        )
+        .bind(run_id)
+        .bind(chain)
+        .fetch_all(&self.pool)
+        .await
+        .context("loading already-swept agent ids")?;
+        Ok(rows.into_iter().map(|(id,)| id as u64).collect())
     }
 
     pub async fn write_snapshot(
