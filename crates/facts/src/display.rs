@@ -145,7 +145,10 @@ pub struct FlagDisplay {
 /// and the `FlagKind` enum lives in the `enricher` BINARY, which a library
 /// must not depend on. The stable-string contract already exists
 /// (`FlagKind::label()`); this function is its reader, and an unrecognised
-/// kind degrades to a readable label rather than an error.
+/// kind degrades to a readable label rather than an error — same convention
+/// as `describe`'s unknown-kind fallback: `flags` is append-only, so a
+/// retired kind (e.g. `reciprocal_feedback`) may still be sitting in an older
+/// database, and it should render *something*, not a blank statement.
 pub fn describe_flag(kind: &str, evidence: &serde_json::Value) -> FlagDisplay {
     let peers = evidence["peers"].as_array().map(|p| p.len()).unwrap_or(0);
     let statement = match kind {
@@ -157,7 +160,7 @@ pub fn describe_flag(kind: &str, evidence: &serde_json::Value) -> FlagDisplay {
             "registered in a burst of {} agents within one window",
             num(&evidence["count"])
         ),
-        _ => String::new(),
+        _ => evidence.to_string(),
     };
     FlagDisplay {
         label: kind.replace('_', " "),
@@ -369,7 +372,7 @@ mod tests {
     fn an_unknown_flag_kind_still_gets_a_readable_label() {
         let d = describe_flag("some_future_signal", &serde_json::json!({}));
         assert_eq!(d.label, "some future signal");
-        assert_eq!(d.statement, "");
+        assert_eq!(d.statement, "{}");
     }
 
     #[test]

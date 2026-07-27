@@ -3,8 +3,9 @@
 A **binary crate**: the axum web server, and the only crate the outside world
 talks to. It reads observations from Postgres, assembles them into
 evidence-carrying facts via the pure `facts` crate, and serves them as JSON
-and server-rendered HTML. Both surfaces go through the same
-`facts_view::assemble`, so the site can never disagree with the API.
+and server-rendered HTML. Both surfaces go through the same shared queries —
+per-agent facts via `facts_view::assemble`, the paginated directory via
+`facts_view::list_agents` — so the site can never disagree with the API.
 
 ## Endpoints
 
@@ -13,7 +14,7 @@ agent #7 on Ethereum are different agents.
 
 | Route | Returns |
 |-------|---------|
-| `GET /api/agents?chain=&limit=&offset=&sort=` | `{items, page:{limit,offset,total}}`. `limit` clamped to 500 (default 100); `sort` is `registered` (default) or `alive` — explicit orderings only, no ranking. |
+| `GET /api/agents?chain=&limit=&offset=&sort=` | `{items, page:{limit,offset,total}}`. `limit` clamped to 500 (default 100); `sort` is `registered` (default) or `alive` — explicit orderings only, no ranking; an unrecognized `sort` value falls back to `registered`. |
 | `GET /api/agents/{chain}/{id}` | Summary + full fact list + flags. Facts and flags each carry a `display` object. |
 | `GET /api/agents/{chain}/{id}/facts` | Just the fact list, same published shape. |
 | `GET /api/chains` | Enabled chains with agent counts — what a chain filter may offer. |
@@ -39,7 +40,7 @@ until this date and now returns the `{items, page}` envelope above.
 | `src/main.rs` | Router, shared `AppState`, `/healthz`, timeout + concurrency-limit layers. |
 | `src/facts_view.rs` | SQL aggregates → `facts::Fact` values, plus the one shared paginated directory query. The ONLY place queries meet the facts crate. |
 | `src/error.rs` | `ApiError` + `IntoResponse`/`From` impls (so handlers can `?`). |
-| `src/templates.rs` | askama template structs; all display strings pre-formatted here. |
+| `src/templates.rs` | askama template structs; the display strings they carry are built in `facts::display`, not here. |
 | `src/routes/agents.rs` | The JSON agent endpoints. |
 | `src/routes/chains.rs` | The chain list for frontend filters. |
 | `src/routes/stats.rs` | Aggregate counts. |

@@ -232,9 +232,12 @@ pub async fn assemble(
 /// the variant names are what get interpolated into SQL — user input can
 /// never reach the query text.
 ///
-/// Every ordering ends in `a.agent_id DESC` so it is TOTAL. Without that
-/// tiebreaker two agents sharing a `registered_at` can swap places between
-/// two paged queries, which shows one of them twice and hides the other.
+/// Every ordering ends in `a.agent_id DESC, a.chain DESC` — the full
+/// `(agent_id, chain)` identity — so it is TOTAL. Without that tiebreaker two
+/// agents sharing a `registered_at` (and, with no chain filter, possibly an
+/// `agent_id` too — a chain-less directory interleaves every chain) can swap
+/// places between two paged queries, which shows one of them twice and hides
+/// the other.
 #[derive(Debug, Clone, Copy)]
 pub enum Sort {
     Registered,
@@ -251,8 +254,10 @@ impl Sort {
 
     pub fn order_by(&self) -> &'static str {
         match self {
-            Sort::Registered => "a.registered_at DESC, a.agent_id DESC",
-            Sort::Alive => "endpoint_alive DESC, a.registered_at DESC, a.agent_id DESC",
+            Sort::Registered => "a.registered_at DESC, a.agent_id DESC, a.chain DESC",
+            Sort::Alive => {
+                "endpoint_alive DESC, a.registered_at DESC, a.agent_id DESC, a.chain DESC"
+            }
         }
     }
 }

@@ -39,7 +39,14 @@ pub async fn list(
     // Clamp: a missing limit gets a sane default, a hostile one gets a ceiling.
     // A negative offset is meaningless, not an error — treat it as the start.
     let filter = facts_view::ListFilter {
-        chain: params.chain,
+        // An empty (or whitespace-only) `chain` means "no filter, all
+        // chains" — not a chain literally named "" that matches nothing.
+        // `chains.chain`/`agents.chain` are canonical lowercase, so normalize
+        // case here too rather than surprising a caller who sends `?chain=BASE`.
+        chain: params
+            .chain
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| !c.is_empty()),
         limit: params.limit.clamp(1, 500),
         offset: params.offset.max(0),
         sort: facts_view::Sort::from_param(params.sort.as_deref()),
