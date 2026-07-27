@@ -1,7 +1,7 @@
 //! Assemble the published facts for one agent: SQL aggregates in, evidence-
 //! carrying `facts::Fact` values out. This is the ONLY place API queries meet
-//! the pure facts crate — pages and JSON routes both call `assemble` so the
-//! site can never disagree with the API.
+//! the pure facts crate, so every consumer of `assemble` sees the same facts
+//! worded the same way.
 
 use chrono::{Duration, Utc};
 use serde::Serialize;

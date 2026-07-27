@@ -11,8 +11,8 @@ use crate::model::*;
 // These are published methodology, not implementation detail: a reader who
 // wants to check "answered 100 of 120 probes in the last 30 days" needs to
 // know what 30 refers to. They live here, `pub`, so the api crate queries with
-// the same number the methodology page states and the API reports — one
-// definition, three consumers.
+// the same number `/api/methodology` publishes — one definition, and whoever
+// renders it reads it rather than restating it.
 
 /// The probe window liveness facts are computed over.
 pub const LIVENESS_WINDOW_DAYS: i64 = 30;
