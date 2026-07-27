@@ -80,7 +80,7 @@ pub async fn get_one(
 pub async fn get_facts(
     State(state): State<AppState>,
     Path((chain, agent_id)): Path<(String, i64)>,
-) -> ApiResult<Json<Vec<facts::Fact>>> {
+) -> ApiResult<Json<Vec<facts::PublishedFact>>> {
     let assembled = facts_view::assemble(&state.db, &chain, agent_id)
         .await?
         .ok_or(ApiError::NotFound)?;

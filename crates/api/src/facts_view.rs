@@ -21,17 +21,22 @@ pub struct AgentSummary {
     pub flag_count: i64,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+/// One flag as published: the raw evidence, plus the words we say about it.
+///
+/// No `sqlx::FromRow` here any more — `display` is derived, not selected, so
+/// the row is read into a private struct below and mapped into this one.
+#[derive(Debug, Serialize)]
 pub struct FlagView {
     pub kind: String,
     pub evidence: serde_json::Value,
     pub raised_at: chrono::DateTime<chrono::Utc>,
+    pub display: facts::FlagDisplay,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AgentFacts {
     pub summary: AgentSummary,
-    pub facts: Vec<facts::Fact>,
+    pub facts: Vec<facts::PublishedFact>,
     pub flags: Vec<FlagView>,
 }
 
@@ -139,14 +144,28 @@ pub async fn assemble(
     .fetch_one(pool)
     .await?;
 
-    let flags = sqlx::query_as::<_, FlagView>(
+    #[derive(sqlx::FromRow)]
+    struct FlagRowDb {
+        kind: String,
+        evidence: serde_json::Value,
+        raised_at: chrono::DateTime<chrono::Utc>,
+    }
+    let flags: Vec<FlagView> = sqlx::query_as::<_, FlagRowDb>(
         "SELECT kind, evidence, raised_at FROM flags \
          WHERE chain = $1 AND agent_id = $2 ORDER BY raised_at DESC",
     )
     .bind(chain)
     .bind(agent_id)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|r| FlagView {
+        display: facts::describe_flag(&r.kind, &r.evidence),
+        kind: r.kind,
+        evidence: r.evidence,
+        raised_at: r.raised_at,
+    })
+    .collect();
 
     // SQL aggregates → pure derivations. The facts crate owns the phrasing.
     let probe_stats = facts::ProbeStats {
@@ -201,7 +220,10 @@ pub async fn assemble(
             endpoint_alive: agent.endpoint_alive,
             flag_count: flags.len() as i64,
         },
-        facts: fact_list,
+        facts: fact_list
+            .into_iter()
+            .map(facts::PublishedFact::new)
+            .collect(),
         flags,
     }))
 }

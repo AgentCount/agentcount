@@ -62,93 +62,26 @@ pub async fn agent_detail(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    // Facts → display rows. The phrasing here mirrors the fact JSON exactly;
-    // no interpretation is added between the data and the reader.
+    // Display strings come from the facts crate — this handler decides layout,
+    // never wording. Dates are formatted here because a date format is not a
+    // claim.
     let facts = assembled
         .facts
         .iter()
-        .map(|f| {
-            let v = &f.value;
-            let (label, value) = match f.kind {
-                "registered_since" => (
-                    "Registered".to_string(),
-                    format!(
-                        "since {} on {}",
-                        v["registered_at"].as_str().unwrap_or("?"),
-                        v["chain"].as_str().unwrap_or("?")
-                    ),
-                ),
-                "endpoint_liveness" => (
-                    "Endpoint liveness".to_string(),
-                    format!("answered {} of {} probes in the last 30 days", v["alive"], v["probes"]),
-                ),
-                "payable_endpoint" => (
-                    "Payable endpoint".to_string(),
-                    format!(
-                        "returned HTTP 402 (payment required) on {} probes",
-                        v["payment_required_responses"]
-                    ),
-                ),
-                "metadata_status" => (
-                    "Metadata".to_string(),
-                    format!(
-                        "{} ({} snapshots archived)",
-                        v["status"].as_str().unwrap_or("?"),
-                        v["snapshots_archived"]
-                    ),
-                ),
-                "attestations" => (
-                    "Attestations".to_string(),
-                    format!("{} recorded on-chain", v["total"]),
-                ),
-                "validation_proofs" => (
-                    "Validation proofs".to_string(),
-                    format!(
-                        "{} ({} passed, {} failed)",
-                        v["status"].as_str().unwrap_or("?"),
-                        v["passed"],
-                        v["failed"]
-                    ),
-                ),
-                other => (other.to_string(), v.to_string()),
-            };
-            let evidence = f
-                .evidence
-                .iter()
-                .map(|e| match e {
-                    facts::EvidenceRef::Tx { chain, tx_hash } => format!("tx {tx_hash} ({chain})"),
-                    facts::EvidenceRef::Snapshot { snapshot_id } => format!("snapshot #{snapshot_id}"),
-                    facts::EvidenceRef::ProbeWindow { probes, .. } => format!("{probes} archived probes"),
-                    facts::EvidenceRef::Registry { chain } => format!("{chain} registry events"),
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            FactRow { label, value, evidence }
+        .map(|pf| FactRow {
+            label: pf.display.label.clone(),
+            value: pf.display.statement.clone(),
+            evidence: pf.display.evidence_summary.clone(),
         })
         .collect();
 
     let flags = assembled
         .flags
         .iter()
-        .map(|fl| {
-            let peers = fl.evidence["peers"].as_array().map(|p| p.len()).unwrap_or(0);
-            let detail = match fl.kind.as_str() {
-                "shared_operator" => format!(
-                    "operated by the same wallet ({}) as {} other agent(s)",
-                    fl.evidence["address"].as_str().unwrap_or("?"),
-                    peers
-                ),
-                "synchronized_registration" => {
-                    format!("registered in a burst of {} agents within one window", fl.evidence["count"])
-                }
-                "reciprocal_feedback" => format!("mutual rating pair(s) with {} agent(s)", peers),
-                other => other.to_string(),
-            };
-            FlagRow {
-                label: fl.kind.replace('_', " "),
-                detail,
-                raised: fl.raised_at.format("%Y-%m-%d").to_string(),
-            }
+        .map(|fl| FlagRow {
+            label: fl.display.label.clone(),
+            detail: fl.display.statement.clone(),
+            raised: fl.raised_at.format("%Y-%m-%d").to_string(),
         })
         .collect();
 
