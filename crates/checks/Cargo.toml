@@ -1,0 +1,11 @@
+[package]
+name = "checks"
+version = "0.2.0"
+edition = "2024"
+
+# PURE. If a network, database, or clock dependency ever appears in this list,
+# a check has stopped being reproducible. "now" is a parameter, never a call.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

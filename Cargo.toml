@@ -29,6 +29,7 @@ resolver = "3"
 # about order, it works out the real build order from the dependency graph.
 members = [
     "crates/chain",
+    "crates/checks",
     "crates/indexer",
     "crates/enricher",
     "crates/facts",
