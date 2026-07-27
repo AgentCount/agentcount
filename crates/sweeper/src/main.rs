@@ -109,25 +109,35 @@ async fn main() -> Result<()> {
     // RPC_CONCURRENCY reads in flight; results arrive out of order, which is
     // fine because each carries its own agent_id.
     // The manifest is written BEFORE the sweep, so a run that dies partway
-    // still leaves a readable, self-describing directory on disk. Its
-    // `agent_count` is the number we intend to sweep; the run row's
-    // `agent_count`, written at the end, is the number we actually persisted.
-    // A gap between the two is exactly the signal a reader needs.
+    // still leaves a readable, self-describing directory on disk — and then
+    // REWRITTEN at the end with what actually happened. Writing it only once,
+    // up front, would mean the artefact a reader downloads reports the
+    // population we intended to sweep while the files beside it hold however
+    // many we managed: the incompleteness would be discoverable only by
+    // counting rows, which is exactly what this project promises never to
+    // make someone do.
     let planned = ids.len();
-    export::write_manifest(&export::RunManifest {
-        run_id: run_id.to_string(),
-        chain: &chain_name,
-        chain_id: chain_id as u64,
-        registry: &registry_addr,
-        pinned_block: pinned,
-        started_at: Utc::now().to_rfc3339(),
-        schema_version: checks::SCHEMA_VERSION,
-        checker_version: checks::CHECKER_VERSION,
-        checker_commit,
-        spec_commit: checks::SPEC_COMMIT,
-        rerun_command: &rerun,
-        agent_count: planned,
-    })?;
+    let started_at = Utc::now().to_rfc3339();
+    let manifest = |swept: Option<usize>, unreadable: Option<usize>, finished: Option<String>| {
+        export::RunManifest {
+            run_id: run_id.to_string(),
+            chain: &chain_name,
+            chain_id: chain_id as u64,
+            registry: &registry_addr,
+            pinned_block: pinned,
+            started_at: started_at.clone(),
+            schema_version: checks::SCHEMA_VERSION,
+            checker_version: checks::CHECKER_VERSION,
+            checker_commit,
+            spec_commit: checks::SPEC_COMMIT,
+            rerun_command: &rerun,
+            agent_count: planned,
+            swept,
+            unreadable,
+            finished_at: finished,
+        }
+    };
+    export::write_manifest(&manifest(None, None, None))?;
 
     // Persist each agent AS IT ARRIVES rather than collecting the whole
     // population first. At 60,000 agents a sweep runs for hours, and a
@@ -197,7 +207,14 @@ async fn main() -> Result<()> {
         }
     }
 
-    db.close_run(run_id, swept as i32, Utc::now()).await?;
+    let finished = Utc::now();
+    db.close_run(run_id, swept as i32, finished).await?;
+    // Rewrite the manifest so the downloadable artefact matches the rows.
+    export::write_manifest(&manifest(
+        Some(swept),
+        Some(unreadable),
+        Some(finished.to_rfc3339()),
+    ))?;
     if unreadable > 0 {
         // Say it loudly: a census missing agents is not a complete census, and
         // the gap must never be discovered later from a row count.

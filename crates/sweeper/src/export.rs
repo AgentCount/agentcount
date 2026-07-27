@@ -22,7 +22,21 @@ pub struct RunManifest<'a> {
     pub checker_commit: &'a str,
     pub spec_commit: &'a str,
     pub rerun_command: &'a str,
+    /// How many agents this run intends to sweep — the enumerated population,
+    /// or the `SWEEP_MAX_AGENTS` cap when one is set.
     pub agent_count: usize,
+    /// How many were actually read and persisted. `None` while the sweep is
+    /// still running: the manifest is written up front so a run that dies
+    /// partway still leaves a readable directory, then rewritten at the end
+    /// with the real figures.
+    pub swept: Option<usize>,
+    /// How many could not be read (RPC failures on our side) and are therefore
+    /// ABSENT from this run. A reader who has only this directory — no
+    /// database — must be able to see that the census is incomplete.
+    pub unreadable: Option<usize>,
+    /// Set only once the sweep completed. Its absence means the run was
+    /// interrupted, and the counts above are whatever it reached.
+    pub finished_at: Option<String>,
 }
 
 #[derive(Serialize)]
