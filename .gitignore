@@ -6,3 +6,6 @@
 
 /docs
 .env.local
+
+# Run exports: reproducible from Postgres + the pinned commit, never committed.
+/data
