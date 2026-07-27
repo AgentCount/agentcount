@@ -13,11 +13,15 @@ agent #7 on Ethereum are different agents.
 
 | Route | Returns |
 |-------|---------|
-| `GET /api/agents?chain=&limit=&sort=` | Directory with facts-summary columns. `limit` clamped to 500; `sort` is `registered` (default) or `alive` — explicit orderings only, no ranking. |
-| `GET /api/agents/{chain}/{id}` | Summary + full fact list + flags with evidence. |
-| `GET /api/agents/{chain}/{id}/facts` | Just the fact list. |
+| `GET /api/agents?chain=&limit=&offset=&sort=` | `{items, page:{limit,offset,total}}`. `limit` clamped to 500 (default 100); `sort` is `registered` (default) or `alive` — explicit orderings only, no ranking. |
+| `GET /api/agents/{chain}/{id}` | Summary + full fact list + flags. Facts and flags each carry a `display` object. |
+| `GET /api/agents/{chain}/{id}/facts` | Just the fact list, same published shape. |
+| `GET /api/chains` | Enabled chains with agent counts — what a chain filter may offer. |
 | `GET /api/stats` | Raw aggregate counts (agents, live, payable, resolving, flagged, flags by kind). |
 | `GET /healthz` | Liveness: process up + Postgres reachable. |
+
+**Breaking change (2026-07-27):** `GET /api/agents` returned a bare JSON array
+until this date and now returns the `{items, page}` envelope above.
 
 **Server-rendered pages** (askama templates in `../../frontend`)
 
@@ -33,10 +37,11 @@ agent #7 on Ethereum are different agents.
 | File | What's in it |
 |------|--------------|
 | `src/main.rs` | Router, shared `AppState`, `/healthz`, timeout + concurrency-limit layers. |
-| `src/facts_view.rs` | SQL aggregates → `facts::Fact` values. The ONLY place queries meet the facts crate. |
+| `src/facts_view.rs` | SQL aggregates → `facts::Fact` values, plus the one shared paginated directory query. The ONLY place queries meet the facts crate. |
 | `src/error.rs` | `ApiError` + `IntoResponse`/`From` impls (so handlers can `?`). |
 | `src/templates.rs` | askama template structs; all display strings pre-formatted here. |
 | `src/routes/agents.rs` | The JSON agent endpoints. |
+| `src/routes/chains.rs` | The chain list for frontend filters. |
 | `src/routes/stats.rs` | Aggregate counts. |
 | `src/routes/pages.rs` | The HTML page handlers (facts → display rows). |
 
@@ -50,6 +55,12 @@ agent #7 on Ethereum are different agents.
   sizes. Per-IP rate limiting is a fast-follow.
 - **Static path.** `ServeDir::new("frontend")` resolves relative to the working
   directory, so run the binary from the workspace root.
+- **Every claim is worded once.** Facts and flags cross the wire with a
+  `display` object (`label`, `statement`, `evidence_summary`) built by
+  `facts::describe`/`describe_flag`. The api crate formats nothing itself, so
+  the JSON API, the askama pages, and any future frontend state each fact in
+  exactly the same words. The raw `value` stays canonical for machine
+  consumers; `display` is additive and can be ignored.
 
 ## Run it
 

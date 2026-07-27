@@ -17,8 +17,8 @@
 //! loads into.
 
 use anyhow::{Context, Result};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::flags::{AgentFlag, AgentKey, AgentNode};
 use crate::metadata::AgentStub;
@@ -64,7 +64,10 @@ impl Db {
     ///   * APPEND a probe_history row;
     ///   * UPDATE the agent_enrichment cache (latest liveness; last GOOD card).
     /// History is never updated or deleted — it's the moat.
-    pub async fn write_observations(&self, observations: &[crate::observe::Observation]) -> Result<()> {
+    pub async fn write_observations(
+        &self,
+        observations: &[crate::observe::Observation],
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
         for o in observations {
@@ -95,8 +98,11 @@ impl Db {
 
             // COALESCE keeps the last GOOD card when this pass got nothing —
             // the cache serves the UI; the truth lives in the snapshots.
-            let card: Option<&serde_json::Value> =
-                if o.outcome.is_alive() { o.body.as_ref() } else { None };
+            let card: Option<&serde_json::Value> = if o.outcome.is_alive() {
+                o.body.as_ref()
+            } else {
+                None
+            };
             sqlx::query(
                 "INSERT INTO agent_enrichment (chain, agent_id, agent_card, endpoint_healthy, last_probed_at) \
                  VALUES ($1, $2, $3, $4, now()) \
@@ -112,11 +118,13 @@ impl Db {
             .execute(&mut *tx)
             .await?;
 
-            sqlx::query("UPDATE agents SET last_enriched_at = now() WHERE chain = $1 AND agent_id = $2")
-                .bind(&o.agent.chain)
-                .bind(o.agent.agent_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE agents SET last_enriched_at = now() WHERE chain = $1 AND agent_id = $2",
+            )
+            .bind(&o.agent.chain)
+            .bind(o.agent.agent_id)
+            .execute(&mut *tx)
+            .await?;
         }
 
         tx.commit().await?;
@@ -209,7 +217,6 @@ impl Db {
         tx.commit().await?;
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -232,7 +239,11 @@ mod tests {
         .unwrap();
 
         let db = Db { pool: pool.clone() };
-        let agent = AgentStub { chain: "base".into(), agent_id: 1, agent_uri: "https://agent.example/".into() };
+        let agent = AgentStub {
+            chain: "base".into(),
+            agent_id: 1,
+            agent_uri: "https://agent.example/".into(),
+        };
         let obs = |outcome: ProbeOutcome, body: Option<serde_json::Value>| Observation {
             agent: agent.clone(),
             url: "https://agent.example/.well-known/agent.json".into(),
@@ -248,16 +259,22 @@ mod tests {
         )])
         .await
         .unwrap();
-        db.write_observations(&[obs(ProbeOutcome::Unreachable, None)]).await.unwrap();
+        db.write_observations(&[obs(ProbeOutcome::Unreachable, None)])
+            .await
+            .unwrap();
 
         // History: BOTH snapshots and BOTH probes kept — nothing overwritten.
         let snapshots: i64 =
             sqlx::query_scalar("SELECT count(*) FROM metadata_snapshots WHERE agent_id = 1")
-                .fetch_one(&pool).await.unwrap();
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(snapshots, 2, "every fetch is archived, including failures");
         let probes: i64 =
             sqlx::query_scalar("SELECT count(*) FROM probe_history WHERE agent_id = 1")
-                .fetch_one(&pool).await.unwrap();
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(probes, 2);
 
         // Cache: reflects the LATEST state (down), but the last good card
@@ -265,7 +282,9 @@ mod tests {
         let (healthy, card): (bool, Option<serde_json::Value>) = sqlx::query_as(
             "SELECT endpoint_healthy, agent_card FROM agent_enrichment WHERE agent_id = 1",
         )
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert!(!healthy);
         assert_eq!(card.unwrap()["name"], "A");
     }

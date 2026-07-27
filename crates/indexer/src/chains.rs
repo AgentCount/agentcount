@@ -39,9 +39,9 @@ impl ChainConfig {
             ("validation", self.validation_registry.as_deref()),
         ] {
             let Some(addr) = addr else { continue }; // NULL = registry absent on this chain
-            let parsed: Address = addr
-                .parse()
-                .with_context(|| format!("chain {}: bad {name} registry address {addr}", self.chain))?;
+            let parsed: Address = addr.parse().with_context(|| {
+                format!("chain {}: bad {name} registry address {addr}", self.chain)
+            })?;
             if parsed == Address::ZERO {
                 anyhow::bail!(
                     "chain {}: {name} registry is the zero address — run scripts/seed_chains.sql \
@@ -75,7 +75,11 @@ impl Chain {
             .await
             .with_context(|| format!("connecting to {} RPC", config.chain))?
             .erased();
-        Ok(Self { config, provider, registries })
+        Ok(Self {
+            config,
+            provider,
+            registries,
+        })
     }
 }
 

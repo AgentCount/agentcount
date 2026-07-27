@@ -127,12 +127,12 @@ pub fn detect_flags(nodes: &[AgentNode]) -> Vec<AgentFlag> {
         burst.clear();
     };
     for n in by_time {
-        let breaks_gap = burst
-            .last()
-            .is_some_and(|prev| (n.registered_at - prev.registered_at).num_seconds() > BURST_GAP_SECS);
-        let breaks_span = burst
-            .first()
-            .is_some_and(|first| (n.registered_at - first.registered_at).num_seconds() > MAX_BURST_SPAN_SECS);
+        let breaks_gap = burst.last().is_some_and(|prev| {
+            (n.registered_at - prev.registered_at).num_seconds() > BURST_GAP_SECS
+        });
+        let breaks_span = burst.first().is_some_and(|first| {
+            (n.registered_at - first.registered_at).num_seconds() > MAX_BURST_SPAN_SECS
+        });
         if breaks_gap || breaks_span {
             flush(&mut burst, &mut out);
         }
@@ -156,7 +156,10 @@ mod tests {
 
     fn node(id: i64, address: &str, t0: DateTime<Utc>, offset_secs: i64) -> AgentNode {
         AgentNode {
-            key: AgentKey { chain: "base".into(), agent_id: id },
+            key: AgentKey {
+                chain: "base".into(),
+                agent_id: id,
+            },
             address: address.into(),
             registered_at: t0 + Duration::seconds(offset_secs),
         }
@@ -173,8 +176,15 @@ mod tests {
             node(3, "0xbbb", t0(), 0),
         ];
         let flags = detect_flags(&nodes);
-        let shared: Vec<_> = flags.iter().filter(|f| f.kind == FlagKind::SharedOperator).collect();
-        assert_eq!(shared.len(), 2, "both co-operated agents flagged, the loner not");
+        let shared: Vec<_> = flags
+            .iter()
+            .filter(|f| f.kind == FlagKind::SharedOperator)
+            .collect();
+        assert_eq!(
+            shared.len(),
+            2,
+            "both co-operated agents flagged, the loner not"
+        );
         let f = shared.iter().find(|f| f.key.agent_id == 1).unwrap();
         assert_eq!(f.evidence["address"], "0xaaa");
         assert_eq!(f.evidence["peers"][0]["agent_id"], 2);
@@ -186,14 +196,20 @@ mod tests {
     /// windows and every flag names ITS window in the evidence.
     #[test]
     fn steady_traffic_splits_into_bounded_windows() {
-        let many_hours: Vec<AgentNode> =
-            (0..40).map(|i| node(100 + i, &format!("0y{i}"), t0(), i * 110)).collect();
+        let many_hours: Vec<AgentNode> = (0..40)
+            .map(|i| node(100 + i, &format!("0y{i}"), t0(), i * 110))
+            .collect();
         let flags = detect_flags(&many_hours);
-        let sync: Vec<_> = flags.iter().filter(|f| f.kind == FlagKind::SynchronizedRegistration).collect();
+        let sync: Vec<_> = flags
+            .iter()
+            .filter(|f| f.kind == FlagKind::SynchronizedRegistration)
+            .collect();
         assert!(!sync.is_empty());
         for f in &sync {
-            let from: DateTime<Utc> = serde_json::from_value(f.evidence["window_from"].clone()).unwrap();
-            let to: DateTime<Utc> = serde_json::from_value(f.evidence["window_to"].clone()).unwrap();
+            let from: DateTime<Utc> =
+                serde_json::from_value(f.evidence["window_from"].clone()).unwrap();
+            let to: DateTime<Utc> =
+                serde_json::from_value(f.evidence["window_to"].clone()).unwrap();
             assert!(
                 (to - from).num_seconds() <= MAX_BURST_SPAN_SECS,
                 "burst window must be span-bounded, got {}s",
@@ -205,9 +221,14 @@ mod tests {
     #[test]
     fn small_coincidences_are_not_flagged() {
         // Four agents in two minutes: under MIN_BURST_SIZE → no flag.
-        let nodes: Vec<AgentNode> =
-            (0..4).map(|i| node(i, &format!("0x{i}"), t0(), i * 20)).collect();
+        let nodes: Vec<AgentNode> = (0..4)
+            .map(|i| node(i, &format!("0x{i}"), t0(), i * 20))
+            .collect();
         let flags = detect_flags(&nodes);
-        assert!(flags.iter().all(|f| f.kind != FlagKind::SynchronizedRegistration));
+        assert!(
+            flags
+                .iter()
+                .all(|f| f.kind != FlagKind::SynchronizedRegistration)
+        );
     }
 }

@@ -137,7 +137,10 @@ fn decode_data_uri(rest: &str) -> Result<Vec<u8>, String> {
     let comma = rest.find(',').ok_or("no comma separator")?;
     let meta = &rest[..comma];
     let payload = &rest[comma + 1..];
-    if meta.split(';').any(|seg| seg.eq_ignore_ascii_case("base64")) {
+    if meta
+        .split(';')
+        .any(|seg| seg.eq_ignore_ascii_case("base64"))
+    {
         // Try padded standard base64, then no-pad — data URIs use both.
         base64::engine::general_purpose::STANDARD
             .decode(payload)
@@ -157,9 +160,17 @@ mod tests {
     #[test]
     fn private_and_metadata_ranges_are_rejected() {
         for bad in [
-            "127.0.0.1", "10.0.0.1", "172.16.5.5", "192.168.1.1",
-            "169.254.169.254",     // cloud metadata endpoint — the classic SSRF target
-            "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:10.0.0.1",
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.5",
+            "192.168.1.1",
+            "169.254.169.254", // cloud metadata endpoint — the classic SSRF target
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
         ] {
             let ip: IpAddr = bad.parse().unwrap();
             assert!(!is_public_ip(ip), "{bad} must be rejected");
@@ -177,8 +188,20 @@ mod tests {
     #[tokio::test]
     async fn malformed_and_empty_uris_are_rejected() {
         // The ~65% real-world garbage bucket, plus unsupported schemes.
-        for bad in ["", "   ", "undefined/agents/442/agent-card/v1", "ftp://x/y", "not a uri"] {
-            assert!(matches!(resolve(bad, "https://ipfs.io/ipfs/").await, Resolution::Reject(_)), "{bad:?} must reject");
+        for bad in [
+            "",
+            "   ",
+            "undefined/agents/442/agent-card/v1",
+            "ftp://x/y",
+            "not a uri",
+        ] {
+            assert!(
+                matches!(
+                    resolve(bad, "https://ipfs.io/ipfs/").await,
+                    Resolution::Reject(_)
+                ),
+                "{bad:?} must reject"
+            );
         }
     }
 
@@ -186,7 +209,11 @@ mod tests {
     async fn literal_private_host_is_rejected_without_dns() {
         // A literal IP is checked directly (no DNS), so this is deterministic.
         assert!(matches!(
-            resolve("http://169.254.169.254/latest/meta-data/", "https://ipfs.io/ipfs/").await,
+            resolve(
+                "http://169.254.169.254/latest/meta-data/",
+                "https://ipfs.io/ipfs/"
+            )
+            .await,
             Resolution::Reject(_)
         ));
     }
@@ -194,7 +221,11 @@ mod tests {
     #[tokio::test]
     async fn literal_public_ip_is_fetchable() {
         assert!(matches!(
-            resolve("https://1.1.1.1/.well-known/agent.json", "https://ipfs.io/ipfs/").await,
+            resolve(
+                "https://1.1.1.1/.well-known/agent.json",
+                "https://ipfs.io/ipfs/"
+            )
+            .await,
             Resolution::Fetch(_)
         ));
     }
@@ -202,7 +233,11 @@ mod tests {
     #[tokio::test]
     async fn data_uri_is_decoded_inline() {
         // base64 of {"a":1}
-        let r = resolve("data:application/json;base64,eyJhIjoxfQ==", "https://ipfs.io/ipfs/").await;
+        let r = resolve(
+            "data:application/json;base64,eyJhIjoxfQ==",
+            "https://ipfs.io/ipfs/",
+        )
+        .await;
         match r {
             Resolution::Inline(bytes) => assert_eq!(bytes, br#"{"a":1}"#),
             _ => panic!("expected Inline"),

@@ -11,8 +11,8 @@
 //! opening new connections.
 
 use anyhow::{Context, Result};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::bindings::{IndexedLog, RegistryEvent};
 

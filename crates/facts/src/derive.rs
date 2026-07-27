@@ -11,7 +11,10 @@ pub fn registered_since(r: &Registration) -> Fact {
         kind: "registered_since",
         value: json!({ "chain": r.chain, "registered_at": r.registered_at }),
         observed_at: r.registered_at,
-        evidence: vec![EvidenceRef::Tx { chain: r.chain.clone(), tx_hash: r.tx_hash.clone() }],
+        evidence: vec![EvidenceRef::Tx {
+            chain: r.chain.clone(),
+            tx_hash: r.tx_hash.clone(),
+        }],
     }
 }
 
@@ -22,7 +25,11 @@ pub fn endpoint_liveness(s: &ProbeStats) -> Fact {
         // is the consumer's threshold, not ours.
         value: json!({ "probes": s.probes, "alive": s.alive, "window_from": s.from, "window_to": s.to }),
         observed_at: s.to,
-        evidence: vec![EvidenceRef::ProbeWindow { from: s.from, to: s.to, probes: s.probes }],
+        evidence: vec![EvidenceRef::ProbeWindow {
+            from: s.from,
+            to: s.to,
+            probes: s.probes,
+        }],
     }
 }
 
@@ -37,7 +44,11 @@ pub fn payable_endpoint(s: &ProbeStats) -> Option<Fact> {
         kind: "payable_endpoint",
         value: json!({ "payment_required_responses": s.payment_required, "window_from": s.from, "window_to": s.to }),
         observed_at: s.to,
-        evidence: vec![EvidenceRef::ProbeWindow { from: s.from, to: s.to, probes: s.probes }],
+        evidence: vec![EvidenceRef::ProbeWindow {
+            from: s.from,
+            to: s.to,
+            probes: s.probes,
+        }],
     })
 }
 
@@ -72,7 +83,9 @@ pub fn attestations(s: &AttestationStats, chain: &str, now: DateTime<Utc>) -> Fa
         // about who left it or whether it's reciprocal.
         value: json!({ "total": s.total }),
         observed_at: now,
-        evidence: vec![EvidenceRef::Registry { chain: chain.to_string() }],
+        evidence: vec![EvidenceRef::Registry {
+            chain: chain.to_string(),
+        }],
     }
 }
 
@@ -88,6 +101,8 @@ pub fn validations(s: &ValidationStats, chain: &str, now: DateTime<Utc>) -> Fact
         kind: "validation_proofs",
         value: json!({ "status": status, "passed": s.passed, "failed": s.failed }),
         observed_at: now,
-        evidence: vec![EvidenceRef::Registry { chain: chain.to_string() }],
+        evidence: vec![EvidenceRef::Registry {
+            chain: chain.to_string(),
+        }],
     }
 }

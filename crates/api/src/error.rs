@@ -36,7 +36,10 @@ impl IntoResponse for ApiError {
                 // Log the real detail for us; return something bland to the client
                 // so we never leak internals.
                 tracing::error!("internal error: {detail}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
         };
         (status, message).into_response()

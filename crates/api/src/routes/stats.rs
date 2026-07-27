@@ -1,12 +1,12 @@
 //! Aggregate statistics — raw counts for the research post. No fractions of
 //! "fake reputation": the report derives its own claims from flags + evidence.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Serialize;
 
-use crate::error::ApiResult;
 use crate::AppState;
+use crate::error::ApiResult;
 
 /// The aggregate numbers. Every field is fodder for a chart in the write-up.
 #[derive(Debug, Serialize)]

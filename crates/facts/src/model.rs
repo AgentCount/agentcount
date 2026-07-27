@@ -17,7 +17,11 @@ pub enum EvidenceRef {
     /// at a point in time, even after the origin rots.
     Snapshot { snapshot_id: i64 },
     /// A window of probe history rows.
-    ProbeWindow { from: DateTime<Utc>, to: DateTime<Utc>, probes: i64 },
+    ProbeWindow {
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        probes: i64,
+    },
     /// The on-chain registry itself (for counts derived wholly from indexed events).
     Registry { chain: String },
 }

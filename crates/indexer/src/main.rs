@@ -32,7 +32,10 @@ async fn main() -> anyhow::Result<()> {
     let db = store::Db::connect(&database_url).await?;
 
     let configs = db.load_enabled_chains().await?;
-    anyhow::ensure!(!configs.is_empty(), "no enabled chains — run scripts/seed_chains.sql");
+    anyhow::ensure!(
+        !configs.is_empty(),
+        "no enabled chains — run scripts/seed_chains.sql"
+    );
 
     // One ingest task per enabled chain. RPC URLs come from env (secrets never
     // live in the database): RPC_URL_<CHAIN>, e.g. RPC_URL_BASE.
