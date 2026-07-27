@@ -58,8 +58,8 @@ with the label attached so no consumer re-derives it.
   can be ignored.
 - **Thresholds are data, not prose.** `facts::LIVENESS_WINDOW_DAYS` and
   `facts::ROT_AFTER_DAYS` are the single definition of the measurement
-  windows: the queries use them, `/api/methodology` publishes them, and the
-  methodology page interpolates them rather than restating the numbers.
+  windows: the queries use them, and `/api/methodology` publishes them so
+  any frontend rendering them states the same numbers.
 
 ## Run it
 

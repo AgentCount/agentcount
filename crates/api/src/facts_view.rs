@@ -295,8 +295,7 @@ impl Sort {
     }
 }
 
-/// What to list. Built by the JSON route from query params and by the HTML
-/// page from constants — one query serves both.
+/// What to list. Built by the JSON route from query params.
 #[derive(Debug)]
 pub struct ListFilter {
     pub chain: Option<String>,
@@ -321,7 +320,7 @@ pub struct Page<T> {
 }
 
 /// The agent directory, paginated. The ONLY agent-list query in the codebase:
-/// the JSON route and the HTML explorer both call it, so they cannot drift.
+/// the JSON route calls it to assemble the directory listing.
 pub async fn list_agents(
     pool: &PgPool,
     filter: &ListFilter,

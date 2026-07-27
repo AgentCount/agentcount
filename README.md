@@ -27,7 +27,7 @@ record is the moat).
 
 ```
              ┌───────────┐      ┌────────────┐      ┌───────────┐
-   chains ──▶│  indexer  │─────▶│  Postgres  │◀────▶│    api    │──▶ web + JSON
+   chains ──▶│  indexer  │─────▶│  Postgres  │◀────▶│    api    │──▶ JSON
              └───────────┘      └────────────┘      └───────────┘
                                    ▲      │                ▲
                                    │      ▼                │

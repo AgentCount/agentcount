@@ -1,9 +1,10 @@
 //! # api — serve the facts to the world
 //!
-//! The public face of Ledgerscope. It exposes a free JSON API and a small
-//! server-rendered explorer website, reading everything from Postgres (which
-//! the indexer and enricher populate). It computes nothing heavy on the request
-//! path — facts are assembled from pre-aggregated observations.
+//! The public face of Ledgerscope: the JSON API and the only crate the outside
+//! world talks to. It reads observations from Postgres (which the indexer and
+//! enricher populate), assembles them into evidence-carrying facts via the pure
+//! `facts` crate, and serves them as JSON. The Next.js app in the sibling
+//! `ledgerscope-web` repo is the frontend.
 //!
 //! ## Rust concepts this crate is here to teach
 //!
