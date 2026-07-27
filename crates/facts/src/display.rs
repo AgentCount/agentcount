@@ -165,6 +165,32 @@ pub fn describe_flag(kind: &str, evidence: &serde_json::Value) -> FlagDisplay {
     }
 }
 
+/// A fact as it crosses the wire: the measurement, plus the words we publish
+/// about it.
+///
+/// `Fact` itself stays a pure measurement type — this wrapper is the API's
+/// shape, not the model's. `#[serde(flatten)]` splices the fact's own fields
+/// into this struct's JSON object instead of nesting them under a `fact` key,
+/// so existing consumers still find `kind`/`value` exactly where they were.
+///
+/// Shipping presentation strings in a data API is normally a smell. Here the
+/// precise wording IS the product: "answered 100 of 120 probes" is a claim we
+/// are accountable for, and re-deriving it downstream is how a frontend ends
+/// up contradicting the API.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishedFact {
+    #[serde(flatten)]
+    pub fact: Fact,
+    pub display: FactDisplay,
+}
+
+impl PublishedFact {
+    pub fn new(fact: Fact) -> Self {
+        let display = describe(&fact);
+        Self { fact, display }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +398,21 @@ mod tests {
             evidence: vec![],
         };
         assert_eq!(describe(&f).statement, "answered ? of ? probes");
+    }
+
+    #[test]
+    fn published_fact_serializes_flat_with_display_attached() {
+        let f = crate::attestations(&AttestationStats { total: 7 }, "base", t(0));
+        let json = serde_json::to_value(PublishedFact::new(f)).unwrap();
+
+        // The raw measurement stays exactly where machine consumers expect it,
+        // at the top level — `display` is purely additive.
+        assert_eq!(json["kind"], "attestations");
+        assert_eq!(json["value"]["total"], 7);
+        assert!(json["observed_at"].is_string());
+        assert!(json["evidence"].is_array());
+        assert_eq!(json["display"]["label"], "Attestations");
+        assert_eq!(json["display"]["statement"], "7 recorded on-chain");
+        assert_eq!(json["display"]["evidence_summary"], "base registry events");
     }
 }

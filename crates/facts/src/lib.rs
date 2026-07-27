@@ -28,7 +28,7 @@ pub use derive::{
     attestations, endpoint_liveness, metadata_status, payable_endpoint, registered_since,
     validations,
 };
-pub use display::{describe, describe_flag, FactDisplay, FlagDisplay};
+pub use display::{FactDisplay, FlagDisplay, PublishedFact, describe, describe_flag};
 pub use model::{
     AttestationStats, EvidenceRef, Fact, ProbeStats, Registration, SnapshotStats, ValidationStats,
 };
@@ -72,9 +72,21 @@ mod tests {
 
     #[test]
     fn payable_endpoint_only_exists_when_a_402_was_observed() {
-        let none = ProbeStats { from: t(0), to: t(60), probes: 5, alive: 5, payment_required: 0 };
+        let none = ProbeStats {
+            from: t(0),
+            to: t(60),
+            probes: 5,
+            alive: 5,
+            payment_required: 0,
+        };
         assert!(payable_endpoint(&none).is_none());
-        let some = ProbeStats { from: t(0), to: t(60), probes: 5, alive: 5, payment_required: 3 };
+        let some = ProbeStats {
+            from: t(0),
+            to: t(60),
+            probes: 5,
+            alive: 5,
+            payment_required: 3,
+        };
         assert_eq!(payable_endpoint(&some).unwrap().kind, "payable_endpoint");
     }
 
@@ -93,19 +105,32 @@ mod tests {
         assert_eq!(f.value["last_resolved_at"], serde_json::json!(t(0)));
         // Evidence points at the archived snapshot — the content may be gone
         // from the origin, but we kept what it said.
-        assert!(matches!(f.evidence[0], EvidenceRef::Snapshot { snapshot_id: 42 }));
+        assert!(matches!(
+            f.evidence[0],
+            EvidenceRef::Snapshot { snapshot_id: 42 }
+        ));
     }
 
     #[test]
     fn never_resolved_and_resolving_statuses() {
         let never = metadata_status(
-            &SnapshotStats { total: 3, last_ok_at: None, last_ok_snapshot_id: None, last_attempt_at: Some(t(5)) },
+            &SnapshotStats {
+                total: 3,
+                last_ok_at: None,
+                last_ok_snapshot_id: None,
+                last_attempt_at: Some(t(5)),
+            },
             t(10),
         );
         assert_eq!(never.value["status"], "never_resolved");
 
         let fresh = metadata_status(
-            &SnapshotStats { total: 3, last_ok_at: Some(t(5)), last_ok_snapshot_id: Some(7), last_attempt_at: Some(t(5)) },
+            &SnapshotStats {
+                total: 3,
+                last_ok_at: Some(t(5)),
+                last_ok_snapshot_id: Some(7),
+                last_attempt_at: Some(t(5)),
+            },
             t(10),
         );
         assert_eq!(fresh.value["status"], "resolving");
@@ -114,14 +139,24 @@ mod tests {
     #[test]
     fn validations_fact_distinguishes_absent_registry_from_zero_proofs() {
         let unavailable = validations(
-            &ValidationStats { registry_available: false, passed: 0, failed: 0 },
-            "base", t(0),
+            &ValidationStats {
+                registry_available: false,
+                passed: 0,
+                failed: 0,
+            },
+            "base",
+            t(0),
         );
         assert_eq!(unavailable.value["status"], "registry_unavailable");
 
         let none = validations(
-            &ValidationStats { registry_available: true, passed: 0, failed: 0 },
-            "base", t(0),
+            &ValidationStats {
+                registry_available: true,
+                passed: 0,
+                failed: 0,
+            },
+            "base",
+            t(0),
         );
         assert_eq!(none.value["status"], "absent");
     }
