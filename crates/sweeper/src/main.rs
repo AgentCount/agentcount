@@ -108,28 +108,12 @@ async fn main() -> Result<()> {
     // Read current state for each id, bounded. `buffer_unordered` keeps at most
     // RPC_CONCURRENCY reads in flight; results arrive out of order, which is
     // fine because each carries its own agent_id.
-    let snapshots: Vec<chain::AgentSnapshot> = stream::iter(ids)
-        .map(|id| {
-            let registry = &registry;
-            async move {
-                match registry.snapshot(id, pinned).await {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        // An RPC failure is OUR problem, not the agent's: skip
-                        // it from this run rather than recording a `fail`.
-                        tracing::warn!("snapshot({id}) failed: {e:#}");
-                        None
-                    }
-                }
-            }
-        })
-        .buffer_unordered(rpc_concurrency())
-        .filter_map(|o| async move { o })
-        .collect()
-        .await;
-
-    tracing::info!("{} snapshots read", snapshots.len());
-
+    // The manifest is written BEFORE the sweep, so a run that dies partway
+    // still leaves a readable, self-describing directory on disk. Its
+    // `agent_count` is the number we intend to sweep; the run row's
+    // `agent_count`, written at the end, is the number we actually persisted.
+    // A gap between the two is exactly the signal a reader needs.
+    let planned = ids.len();
     export::write_manifest(&export::RunManifest {
         run_id: run_id.to_string(),
         chain: &chain_name,
@@ -142,10 +126,39 @@ async fn main() -> Result<()> {
         checker_commit,
         spec_commit: checks::SPEC_COMMIT,
         rerun_command: &rerun,
-        agent_count: snapshots.len(),
+        agent_count: planned,
     })?;
 
-    for s in &snapshots {
+    // Persist each agent AS IT ARRIVES rather than collecting the whole
+    // population first. At 60,000 agents a sweep runs for hours, and a
+    // collect-then-write shape means a crash, a dropped connection, or a
+    // Ctrl-C at hour three discards every read — plus the database shows
+    // nothing until the very end, so there is no way to tell a working sweep
+    // from a wedged one.
+    let mut stream = stream::iter(ids)
+        .map(|id| {
+            let registry = &registry;
+            async move { (id, registry.snapshot(id, pinned).await) }
+        })
+        .buffer_unordered(rpc_concurrency());
+
+    let mut swept = 0usize;
+    let mut unreadable = 0usize;
+
+    while let Some((id, result)) = stream.next().await {
+        let s = match result {
+            Ok(s) => s,
+            Err(e) => {
+                // An RPC failure is OUR problem, not the agent's: leave the
+                // agent out of this run rather than recording a `fail` about
+                // them. The count is reported at the end so the omission is
+                // visible instead of silent.
+                tracing::warn!("snapshot({id}) failed: {e:#}");
+                unreadable += 1;
+                continue;
+            }
+        };
+        let s = &s;
         let now = Utc::now();
         let rung1 = checks::registered(
             &checks::RegisteredInput {
@@ -177,10 +190,23 @@ async fn main() -> Result<()> {
             checker_commit,
             spec_commit: checks::SPEC_COMMIT,
         })?;
+
+        swept += 1;
+        if swept % 500 == 0 {
+            tracing::info!("{swept}/{planned} agents swept ({unreadable} unreadable)");
+        }
     }
 
-    db.close_run(run_id, snapshots.len() as i32, Utc::now()).await?;
-    tracing::info!("run {run_id} complete: {} agents", snapshots.len());
+    db.close_run(run_id, swept as i32, Utc::now()).await?;
+    if unreadable > 0 {
+        // Say it loudly: a census missing agents is not a complete census, and
+        // the gap must never be discovered later from a row count.
+        tracing::warn!(
+            "run {run_id}: {unreadable} of {planned} agents could not be read \
+             and are ABSENT from this run — not recorded as failures"
+        );
+    }
+    tracing::info!("run {run_id} complete: {swept} of {planned} agents");
     println!("{run_id}");
     Ok(())
 }
