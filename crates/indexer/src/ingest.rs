@@ -76,6 +76,10 @@ fn is_range_too_large(e: &impl std::fmt::Display) -> bool {
         || s.contains("response size")
         || s.contains("limited to")
         || s.contains("exceed")
+        // Providers that cap the *block* range (e.g. Alchemy free: "up to a 10
+        // block range"). Matching this makes the indexer split down to a
+        // workable range instead of retrying the same doomed one forever.
+        || s.contains("block range")
 }
 
 /// Fetch all logs in `[from, to]`, transparently halving the range whenever the
