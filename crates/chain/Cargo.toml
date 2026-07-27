@@ -1,0 +1,13 @@
+[package]
+name = "chain"
+version = "0.1.0"
+edition = "2024"
+
+# Contract reads and nothing else. No database, no HTTP beyond JSON-RPC, no
+# check logic — so `crates/checks` can stay pure and this can be swapped for a
+# mock in tests.
+[dependencies]
+alloy = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

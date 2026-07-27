@@ -28,6 +28,7 @@ resolver = "3"
 # api, but note the members are listed alphabetically — Cargo does not care
 # about order, it works out the real build order from the dependency graph.
 members = [
+    "crates/chain",
     "crates/indexer",
     "crates/enricher",
     "crates/facts",
