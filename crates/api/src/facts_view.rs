@@ -233,7 +233,7 @@ pub async fn assemble(
 /// never reach the query text.
 ///
 /// Every ordering ends in `a.agent_id DESC, a.chain DESC` — the full
-/// `(agent_id, chain)` identity — so it is TOTAL. Without that tiebreaker two
+/// `(chain, agent_id)` identity — so it is TOTAL. Without that tiebreaker two
 /// agents sharing a `registered_at` (and, with no chain filter, possibly an
 /// `agent_id` too — a chain-less directory interleaves every chain) can swap
 /// places between two paged queries, which shows one of them twice and hides
