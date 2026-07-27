@@ -39,103 +39,106 @@ listed under "Explicitly NOT checked" below.
 
 ---
 
-## `type`
+## Rulings
+
+### Ruling 1 — `type`, `name`, `description`, `image` remain REQUIRED (decided 2026-07-27)
+
+**Ambiguity:** Line 54 says "The registration file MUST have the following structure" and that structure includes these four fields. Line 115 then says these fields "SHOULD ensure compatibility with ERC-721 apps". Two readings were possible:
+- The SHOULD constrains what values those fields should contain (format/content compatibility), leaving presence governed by line 54's MUST.
+- The SHOULD downgrades the presence requirement itself to optional.
+
+**Decision:** The project owner has ruled that line 115's SHOULD attaches to "ensure compatibility" (a behavioral constraint), not to "are present" (a presence requirement). Line 54's MUST governs whether the fields appear in the document. All four stay REQUIRED for rung 4.
+
+### Ruling 2 — `registrations` is NOT required, but its sub-fields are validated when present (decided 2026-07-27)
+
+**Ambiguity:** Line 54 says "The registration file MUST have the following structure" and includes `registrations` in that structure. Line 123 then says "Agents SHOULD have at least one registration (multiple are possible), and all fields in the registration are mandatory." Two readings were possible:
+- `registrations` is required to be present (per line 54), and any entry inside is mandatory (per line 123).
+- Line 123's SHOULD downgrades the presence of `registrations` itself (like it does for non-empty entries), while the phrase "all fields in the registration are mandatory" still governs the contents of any entry that does exist.
+
+**Decision:** The project owner has ruled that line 123's SHOULD applies to the `registrations` key itself (presence is recommended, not required), so a document lacking `registrations` entirely does not fail rung 4. However, the same sentence also says "all fields in the registration are mandatory"—meaning `agentId` and `agentRegistry` are required only within entries of a present `registrations` array. Rung 4 checks these two sub-fields conditionally: if `registrations` is present, every entry must have both; if absent, rung 4 does not check.
+
+---
+
+## Unconditionally REQUIRED (7 fields)
+
+The registration file MUST have the following structure (line 54). These seven fields are checked on every document by rung 4:
+
+### `type`
 - JSON path: `$.type`
 - Spec line: 54 (governing MUST), field appears at line 58
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 58: `"type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",`
 - Type: string (URI identifying the registration schema version)
-- **Ambiguity flag** — see "Ambiguous — needs human ruling" section below.
 
-## `name`
+### `name`
 - JSON path: `$.name`
 - Spec line: 54 (governing MUST), field appears at line 59
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 59: `"name": "myAgentName",`
 - Type: string
-- **Ambiguity flag** — see below.
 
-## `description`
+### `description`
 - JSON path: `$.description`
 - Spec line: 54 (governing MUST), field appears at line 60
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 60: `"description": "A natural language description of the Agent, which MAY include what it does, how it works, pricing, and interaction methods",`
 - Type: string
-- **Ambiguity flag** — see below.
 
-## `image`
+### `image`
 - JSON path: `$.image`
 - Spec line: 54 (governing MUST), field appears at line 61
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 61: `"image": "https://example.com/agentimage.png",`
 - Type: string (URI)
-- **Ambiguity flag** — see below.
 
-## `services`
+### `services`
 - JSON path: `$.services`
 - Spec line: 54 (governing MUST), field appears at line 62
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 62: `"services": [`
 - Type: array. Rung 4 checks only that the key is present (an array, possibly empty) — its contents are explicitly unconstrained: "The number and type of *endpoints* are fully customizable, allowing developers to add as many as they wish." (line 115)
 
-## `x402Support`
+### `x402Support`
 - JSON path: `$.x402Support`
 - Spec line: 54 (governing MUST), field appears at line 99
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 99: `"x402Support": false,`
 - Type: boolean
 
-## `active`
+### `active`
 - JSON path: `$.active`
 - Spec line: 54 (governing MUST), field appears at line 100
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 100: `"active": true,`
 - Type: boolean
 
-## `registrations`
-- JSON path: `$.registrations`
-- Spec line: 54 (governing MUST), field appears at line 101
-- Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 101: `"registrations": [`
-- Type: array. Rung 4 checks only that the key is present. Having a non-empty list is a SHOULD, not a MUST: "Agents SHOULD have at least one registration (multiple are possible)" (line 123) — so an empty array does not itself fail this key's presence check, but see `agentId`/`agentRegistry` below for what's required of any entry that does exist.
+---
 
-## `registrations[].agentId`
+## Conditionally REQUIRED (2 fields when `registrations` is present)
+
+When a `registrations` array exists in the document, every entry in it MUST contain these two fields (line 123: "all fields in the registration are mandatory"). Rung 5 (`bound`) consumes exactly these two to validate chain-scoped registration claims.
+
+### `registrations[].agentId`
 - JSON path: `$.registrations[*].agentId`
 - Spec line: 123, field appears at line 103
 - Verbatim: "...and all fields in the registration are mandatory." (line 123), schema line 103: `"agentId": 22,`
 - Type: integer (ERC-721 tokenId)
+- **Condition:** checked only if `$.registrations` array is present; not checked if the key is absent.
 
-## `registrations[].agentRegistry`
+### `registrations[].agentRegistry`
 - JSON path: `$.registrations[*].agentRegistry`
 - Spec line: 123, field appears at line 104
 - Verbatim: "...and all fields in the registration are mandatory." (line 123), schema line 104: `"agentRegistry": "{namespace}:{chainId}:{identityRegistry}" // e.g. eip155:1:0x742...`
 - Type: string, colon-separated `{namespace}:{chainId}:{identityRegistry}` (format defined at lines 42-45)
+- **Condition:** checked only if `$.registrations` array is present; not checked if the key is absent.
 
 ---
 
-## Ambiguous — needs human ruling
-
-Line 115 reads: **"The *type*, *name*, *description*, and *image* fields at
-the top SHOULD ensure compatibility with ERC-721 apps."**
-
-This is a SHOULD applied to the same four fields the line-54 MUST-structure
-already lists. Two readings are possible:
-
-1. **(Adopted above)** The SHOULD governs *format/content* compatibility
-   with generic ERC-721 metadata conventions, layered on top of a baseline
-   presence requirement already set by line 54's MUST. Under this reading,
-   the four fields stay REQUIRED (presence-wise) and are listed above.
-2. **(Alternative)** The SHOULD downgrades the *presence* requirement for
-   these four specific fields to recommended-but-optional, overriding the
-   general MUST-structure statement for just these four keys. Under this
-   reading, `type`/`name`/`description`/`image` should move to "Explicitly
-   NOT checked" below, and rung 4 would only enforce `services`,
-   `x402Support`, `active`, `registrations`, and the two registration
-   sub-fields.
-
-This is a genuine reading-level ambiguity in the spec text itself (not a
-gap in this extraction) and a human should rule on which interpretation
-rung 4 encodes before it ships. Whichever way it is decided, the governing
-quotes above are unchanged — only which section these four fields sit in
-would move.
-
 ## Explicitly NOT checked
 
-Fields the spec marks OPTIONAL or RECOMMENDED, listed here so their absence
-from rung 4 is a documented decision rather than an oversight:
+Fields the spec marks OPTIONAL or RECOMMENDED, or whose presence itself is
+SHOULD (not MUST), listed here so their absence from rung 4 is a documented
+decision rather than an oversight:
 
+- `registrations` (the key itself) — "Agents SHOULD have at least one
+  registration (multiple are possible)" (line 123). The key's presence is a
+  SHOULD, not a MUST; a document lacking the `registrations` key entirely
+  does not fail rung 4. However, when `registrations` is present, the spec
+  requires every entry to have `agentId` and `agentRegistry` (see
+  "Conditionally REQUIRED" above).
 - `supportedTrust` — "The *supportedTrust* field is OPTIONAL. If absent or
   empty, this ERC is used only for discovery, not for trust." (line 124)
 - `services[].version` — "The *version* field in endpoints is a SHOULD,
@@ -181,9 +184,10 @@ sentence at line 54 ("The registration file MUST have the following
 structure:"), reinforced by the resolution requirement at line 52
 ("*agentURI* MUST resolve to the agent registration file") — and, once,
 the word "mandatory" (line 123, for the two `registrations[]` sub-fields)
-for that purpose. The 10 fields extracted above are
-built from those MUST/mandatory statements — see "Extraction methodology"
-above — not from the 4 grep hits. Nothing was missed: the low grep count
-against a document that clearly does define required agent-document fields
-is explained entirely by this document's word-choice (MUST over REQUIRED),
-not by an incomplete extraction.
+for that purpose. The 9 fields checked by rung 4 (7 unconditional + 2
+conditionally required) are built from those MUST/mandatory statements —
+see "Extraction methodology" above — not from the 4 grep hits. The
+`registrations` key itself is not checked (SHOULD, not MUST). Nothing was
+missed: the low grep count against a document that clearly does define
+required agent-document fields is explained entirely by this document's
+word-choice (MUST over REQUIRED), not by an incomplete extraction.
