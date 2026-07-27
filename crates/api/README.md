@@ -22,8 +22,12 @@ agent #7 on Ethereum are different agents.
 | `GET /api/stats` | Raw aggregate counts. `flags_by_kind` is an array of `{kind, label, count}`, most-flagged first. |
 | `GET /healthz` | Liveness: process up + Postgres reachable. |
 
-**Breaking change (2026-07-27):** `GET /api/agents` returned a bare JSON array
+**Breaking changes (2026-07-27):** `GET /api/agents` returned a bare JSON array
 until this date and now returns the `{items, page}` envelope above.
+`GET /api/stats` returned `flags_by_kind` as an object keyed by kind
+(`{"shared_operator": 12}`) and now returns an ordered array of
+`{kind, label, count}` — an array because a chart needs a stable order, and
+with the label attached so no consumer re-derives it.
 
 **Server-rendered pages** (askama templates in `../../frontend`)
 
