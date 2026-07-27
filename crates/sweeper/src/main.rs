@@ -18,8 +18,19 @@ use futures::stream::{self, StreamExt};
 use uuid::Uuid;
 
 /// How many `ownerOf`/`tokenURI` pairs to read at once. Conservative: a public
-/// RPC endpoint is a shared resource and this is not a race.
-const RPC_CONCURRENCY: usize = 8;
+/// RPC endpoint is a shared resource and this is not a race. Lowered from 8
+/// after Task 8's first live sweep hit Alchemy's free-tier "compute units per
+/// second" cap immediately — override with `RPC_CONCURRENCY` without
+/// recompiling, same pattern as `CHAIN_BLOCK_BATCH` in `crates/chain`.
+const DEFAULT_RPC_CONCURRENCY: usize = 3;
+
+fn rpc_concurrency() -> usize {
+    std::env::var("RPC_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_RPC_CONCURRENCY)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -80,7 +91,7 @@ async fn main() -> Result<()> {
                 }
             }
         })
-        .buffer_unordered(RPC_CONCURRENCY)
+        .buffer_unordered(rpc_concurrency())
         .filter_map(|o| async move { o })
         .collect()
         .await;

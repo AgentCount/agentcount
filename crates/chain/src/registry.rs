@@ -50,14 +50,91 @@ fn block_batch_size() -> u64 {
 /// Identical matching to `crates/indexer/src/ingest.rs::is_range_too_large`,
 /// which solved this same problem for the ingest loop first — reused here
 /// rather than reinvented, per that module's doc comment.
+///
+/// The "exceed" substring alone would also match Alchemy's throttling message
+/// ("exceeded its compute units per second capacity"), which is a wholly
+/// different problem with a different fix (wait and retry, not narrow the
+/// range) — see [`is_throttled`]. Excluding throttled errors here keeps the
+/// two from competing to explain the same message.
 fn is_range_too_large(e: &impl std::fmt::Display) -> bool {
     let s = e.to_string().to_lowercase();
-    s.contains("too large")
+    (s.contains("too large")
         || s.contains("too many results")
         || s.contains("response size")
         || s.contains("limited to")
         || s.contains("exceed")
-        || s.contains("block range")
+        || s.contains("block range"))
+        && !is_throttled(e)
+}
+
+/// Does this RPC error mean "the provider is throttling us right now", as
+/// opposed to a genuine, permanent problem with the request itself? Alchemy's
+/// free tier returns HTTP 429 with "exceeded its compute units per second
+/// capacity" under sustained load — exactly what a ~2,000-agent sweep
+/// generates. Retrying THIS is correct because the request was fine and the
+/// provider will accept it again shortly; retrying a malformed call or a
+/// contract revert forever would not (those never match here).
+fn is_throttled(e: &impl std::fmt::Display) -> bool {
+    let s = e.to_string().to_lowercase();
+    s.contains("429")
+        || s.contains("compute units per second")
+        || s.contains("too many requests")
+        || s.contains("rate limit")
+}
+
+/// How many times to retry a throttled call before giving up and letting the
+/// caller treat it as a real failure. Bounded so a provider that is down
+/// outright (not just busy) still fails within a reasonable time instead of
+/// spinning forever.
+const MAX_THROTTLE_RETRIES: u32 = 8;
+/// Base of the exponential backoff, doubled each retry: 300ms, 600ms, 1.2s,
+/// 2.4s, 4.8s, 9.6s, 19.2s, 38.4s — generous, because "busy" on a free-tier
+/// RPC can last several seconds, and a completed sweep beats a fast one.
+const THROTTLE_BACKOFF_BASE_MS: u64 = 300;
+
+/// Run `f` and, if it fails because the provider is throttling us
+/// ([`is_throttled`]), retry with exponential backoff up to
+/// `MAX_THROTTLE_RETRIES` times. Any other error — a genuine one — returns
+/// immediately on the first attempt: throttling is the only condition where
+/// "ask again" is the right response to "no".
+async fn retry_throttled<T, E, F, Fut>(f: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    retry_throttled_with(MAX_THROTTLE_RETRIES, THROTTLE_BACKOFF_BASE_MS, f).await
+}
+
+/// The tunable core of [`retry_throttled`], parameterised on retry budget and
+/// backoff base so tests can exercise "gives up eventually" in milliseconds
+/// instead of the real ~76s the production constants would take.
+async fn retry_throttled_with<T, E, F, Fut>(
+    max_retries: u32,
+    backoff_base_ms: u64,
+    mut f: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) if is_throttled(&e) && attempt < max_retries => {
+                let backoff_ms = backoff_base_ms * (1u64 << attempt);
+                tracing::warn!(
+                    "throttled (attempt {}/{max_retries}), backing off {backoff_ms}ms: {e:#}",
+                    attempt + 1
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Split `[from, to]` into inclusive, non-overlapping, ascending chunks of at
@@ -147,7 +224,7 @@ impl Registry {
                 .event_signature(Registered::SIGNATURE_HASH)
                 .from_block(lo)
                 .to_block(hi);
-            match self.provider.get_logs(&filter).await {
+            match retry_throttled(|| self.provider.get_logs(&filter)).await {
                 Ok(logs) => ids.extend(
                     logs.iter()
                         .filter_map(|l| l.log_decode::<Registered>().ok())
@@ -180,18 +257,20 @@ impl Registry {
         let c = IIdentityRegistry::new(self.address, &self.provider);
         let token_id = U256::from(agent_id);
 
-        let owner = c
-            .ownerOf(token_id)
-            .block(BlockId::from(block))
-            .call()
-            .await
-            .with_context(|| format!("ownerOf({agent_id})"))?;
-        let agent_uri = c
-            .tokenURI(token_id)
-            .block(BlockId::from(block))
-            .call()
-            .await
-            .with_context(|| format!("tokenURI({agent_id})"))?;
+        // `.call()` returns an `EthCall` builder (`IntoFuture`, not `Future`
+        // directly) — wrapping it in an `async` block turns it into a plain
+        // `Future` so it satisfies `retry_throttled`'s bound, exactly as
+        // `.await`-ing it inline would have.
+        let owner = retry_throttled(|| async {
+            c.ownerOf(token_id).block(BlockId::from(block)).call().await
+        })
+        .await
+        .with_context(|| format!("ownerOf({agent_id})"))?;
+        let agent_uri = retry_throttled(|| async {
+            c.tokenURI(token_id).block(BlockId::from(block)).call().await
+        })
+        .await
+        .with_context(|| format!("tokenURI({agent_id})"))?;
 
         Ok(AgentSnapshot {
             agent_id,
@@ -266,6 +345,84 @@ mod tests {
     #[test]
     fn a_timeout_is_not_treated_as_too_large() {
         assert!(!is_range_too_large(&"request timed out"));
+    }
+
+    /// The exact Alchemy 429 body observed sweeping Base in Task 8: "compute
+    /// units per second capacity" exceeded. Must be recognised as throttling,
+    /// not as a permanent error and not as "range too large" (it contains
+    /// "exceeded" too, which is why `is_range_too_large` excludes throttling
+    /// explicitly).
+    #[test]
+    fn recognises_alchemys_429_as_throttled_not_as_too_large() {
+        let body = "HTTP error 429 with body: {\"jsonrpc\":\"2.0\",\"id\":232,\"error\":\
+                    {\"code\":429,\"message\":\"Your app has exceeded its compute units \
+                    per second capacity. If you have retries enabled, you can safely \
+                    ignore this message.\"}}";
+        assert!(is_throttled(&body));
+        assert!(!is_range_too_large(&body));
+    }
+
+    #[test]
+    fn a_genuine_error_is_not_treated_as_throttled() {
+        assert!(!is_throttled(&"execution reverted"));
+        assert!(!is_throttled(&"invalid address"));
+    }
+
+    /// `retry_throttled` must retry a throttled failure until it succeeds,
+    /// and must return the eventual success rather than an error. Uses the
+    /// real production constants (`retry_throttled`, not `_with`) since two
+    /// retries at a 1ms base is fast regardless.
+    #[tokio::test]
+    async fn retry_throttled_recovers_after_transient_429s() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let result: Result<&'static str, &'static str> = retry_throttled(|| {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err("HTTP error 429: exceeded its compute units per second capacity")
+                } else {
+                    Ok("ok")
+                }
+            }
+        })
+        .await;
+        assert_eq!(result, Ok("ok"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    /// A genuine, non-throttling error must NOT be retried — it should return
+    /// immediately on the first attempt, so a malformed request fails fast
+    /// instead of being retried into a multi-minute timeout for no reason.
+    #[tokio::test]
+    async fn retry_throttled_does_not_retry_genuine_errors() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let result: Result<(), &'static str> = retry_throttled(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err("execution reverted") }
+        })
+        .await;
+        assert_eq!(result, Err("execution reverted"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    /// A throttled call that never recovers must give up after the retry
+    /// budget, not spin forever. Uses `_with` at a 1ms backoff base so the
+    /// test runs in milliseconds instead of the ~76s the production backoff
+    /// constants would take for 8 retries.
+    #[tokio::test]
+    async fn retry_throttled_gives_up_after_the_retry_budget() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let max_retries = 3;
+        let result: Result<(), &'static str> = retry_throttled_with(max_retries, 1, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err("HTTP error 429: rate limit exceeded") }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), max_retries + 1);
     }
 
     /// Hits a real RPC endpoint, so it is `#[ignore]` by default:
