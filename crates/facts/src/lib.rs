@@ -21,12 +21,14 @@
 //!   I/O in here, "what we claim" is a deterministic function of "what we saw".
 
 mod derive;
+mod display;
 mod model;
 
 pub use derive::{
     attestations, endpoint_liveness, metadata_status, payable_endpoint, registered_since,
     validations,
 };
+pub use display::{describe, FactDisplay};
 pub use model::{
     AttestationStats, EvidenceRef, Fact, ProbeStats, Registration, SnapshotStats, ValidationStats,
 };
