@@ -16,8 +16,21 @@ pub struct Stats {
     pub payable_endpoints: i64,
     pub metadata_resolving: i64,
     pub flagged_agents: i64,
-    /// Flag counts by kind, e.g. {"shared_operator": 12, ...}.
-    pub flags_by_kind: serde_json::Value,
+    /// Flag counts by kind, most-flagged first.
+    pub flags_by_kind: Vec<FlagKindCount>,
+}
+
+/// One row of the flags-by-kind breakdown.
+///
+/// An ordered array rather than a JSON object: a chart needs a stable order,
+/// and object key order is not a guarantee anyone should rely on. The `label`
+/// travels with the count so a dashboard never has to turn `shared_operator`
+/// into "shared operator" itself — that wording belongs to the facts crate.
+#[derive(Debug, Serialize)]
+pub struct FlagKindCount {
+    pub kind: String,
+    pub label: String,
+    pub count: i64,
 }
 
 /// `GET /api/stats` — a handful of aggregate queries assembled into `Stats`.
@@ -52,12 +65,26 @@ pub async fn summary(State(state): State<AppState>) -> ApiResult<Json<Stats>> {
             .fetch_one(&state.db)
             .await?;
 
-    let flags_by_kind: serde_json::Value = sqlx::query_scalar(
-        "SELECT COALESCE(jsonb_object_agg(kind, n), '{}'::jsonb) \
-         FROM (SELECT kind, count(*) AS n FROM flags GROUP BY kind) t",
+    // Ordered by count so the breakdown renders the same way every request;
+    // `kind` breaks ties so the order is total.
+    #[derive(sqlx::FromRow)]
+    struct KindRow {
+        kind: String,
+        count: i64,
+    }
+    let flags_by_kind: Vec<FlagKindCount> = sqlx::query_as::<_, KindRow>(
+        "SELECT kind, count(*) AS count FROM flags GROUP BY kind \
+         ORDER BY count DESC, kind",
     )
-    .fetch_one(&state.db)
-    .await?;
+    .fetch_all(&state.db)
+    .await?
+    .into_iter()
+    .map(|r| FlagKindCount {
+        label: facts::flag_label(&r.kind),
+        kind: r.kind,
+        count: r.count,
+    })
+    .collect();
 
     Ok(Json(Stats {
         total_agents,

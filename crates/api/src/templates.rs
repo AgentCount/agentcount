@@ -21,8 +21,15 @@ pub struct AgentRow {
     pub agent_id: i64,
     pub chain: String,
     pub domain: String,
-    /// Whether the endpoint answered at the last observation — drives a status dot.
-    pub is_alive: bool,
+    /// The endpoint's status word ("live"/"down"), from `facts::describe_endpoint`.
+    /// The template must not choose this wording — every other consumer of the
+    /// same boolean would then choose its own.
+    pub status: String,
+    /// The longer form, used as the dot's tooltip.
+    pub status_title: String,
+    /// CSS modifier for the status dot ("live"/"dead"). A class name is styling,
+    /// not a claim, so it is chosen here rather than in the facts crate.
+    pub dot_class: &'static str,
     /// e.g. "2026-05-03"
     pub registered: String,
     pub flag_count: i64,
@@ -54,9 +61,12 @@ pub struct FlagRow {
     pub raised: String,
 }
 
-/// Data for the methodology write-up (`/methodology`). Static prose — the
-/// facts and flags it describes are defined in the `facts` crate and the
-/// enricher's flag producer.
+/// Data for the methodology write-up (`/methodology`). The prose is static,
+/// but the NUMBERS in it are not: they come from the `facts` crate's constants
+/// so the page can never state a window we no longer measure over.
 #[derive(Template)]
 #[template(path = "methodology.html")]
-pub struct MethodologyPage {}
+pub struct MethodologyPage {
+    pub liveness_window_days: i64,
+    pub rot_after_days: i64,
+}

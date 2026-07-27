@@ -38,7 +38,9 @@ pub async fn explorer(State(state): State<AppState>) -> ApiResult<Html<String>> 
             agent_id: r.agent_id,
             chain: r.chain,
             domain: r.domain,
-            is_alive: r.endpoint_alive,
+            status: r.display.status,
+            status_title: r.display.statement,
+            dot_class: if r.endpoint_alive { "live" } else { "dead" },
             registered: r.registered_at.format("%Y-%m-%d").to_string(),
             flag_count: r.flag_count,
         })
@@ -91,6 +93,15 @@ pub async fn agent_detail(
 }
 
 /// `GET /methodology` — what we measure and how; no formulas, no weights.
+///
+/// The windows are read from the facts crate rather than written into the
+/// prose, so the page cannot state a threshold the code stopped using.
 pub async fn methodology() -> ApiResult<Html<String>> {
-    Ok(Html(MethodologyPage {}.render()?))
+    Ok(Html(
+        MethodologyPage {
+            liveness_window_days: facts::LIVENESS_WINDOW_DAYS,
+            rot_after_days: facts::ROT_AFTER_DAYS,
+        }
+        .render()?,
+    ))
 }

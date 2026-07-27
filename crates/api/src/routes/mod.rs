@@ -4,6 +4,7 @@
 //! and each file focused:
 //!   * [`agents`] — JSON endpoints about individual agents.
 //!   * [`chains`] — the chain list a frontend filter needs.
+//!   * [`methodology`] — the measurement windows, as data.
 //!   * [`stats`]  — the aggregate "how much reputation is fake" numbers.
 //!   * [`pages`]  — the server-rendered HTML explorer.
 //!
@@ -12,5 +13,6 @@
 
 pub mod agents;
 pub mod chains;
+pub mod methodology;
 pub mod pages;
 pub mod stats;

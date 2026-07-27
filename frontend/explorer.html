@@ -27,12 +27,10 @@
         <tr>
             <td><a href="/agent/{{ agent.chain }}/{{ agent.agent_id }}">{{ agent.domain }}</a></td>
             <td>{{ agent.chain }}</td>
+            {# The status WORDS come from facts::describe_endpoint via AgentRow;
+               only the CSS modifier is chosen here. #}
             <td>
-                {% if agent.is_alive %}
-                    <span class="dot dot-live" title="endpoint responded">●</span> live
-                {% else %}
-                    <span class="dot dot-dead" title="endpoint unreachable">●</span> down
-                {% endif %}
+                <span class="dot dot-{{ agent.dot_class }}" title="{{ agent.status_title }}">●</span> {{ agent.status }}
             </td>
             <td>{{ agent.registered }}</td>
             <td>{% if agent.flag_count > 0 %}⚑ {{ agent.flag_count }}{% else %}—{% endif %}</td>

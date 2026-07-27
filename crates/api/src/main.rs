@@ -73,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
             get(routes::agents::get_facts),
         )
         .route("/api/chains", get(routes::chains::list))
+        .route("/api/methodology", get(routes::methodology::get))
         .route("/api/stats", get(routes::stats::summary))
         // Server-rendered HTML pages
         .route("/", get(routes::pages::explorer))

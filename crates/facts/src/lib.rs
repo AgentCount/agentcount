@@ -25,10 +25,13 @@ mod display;
 mod model;
 
 pub use derive::{
-    attestations, endpoint_liveness, metadata_status, payable_endpoint, registered_since,
-    validations,
+    LIVENESS_WINDOW_DAYS, ROT_AFTER_DAYS, attestations, endpoint_liveness, metadata_status,
+    payable_endpoint, registered_since, validations,
 };
-pub use display::{FactDisplay, FlagDisplay, PublishedFact, describe, describe_flag};
+pub use display::{
+    EndpointDisplay, FactDisplay, FlagDisplay, PublishedFact, describe, describe_endpoint,
+    describe_flag, flag_label,
+};
 pub use model::{
     AttestationStats, EvidenceRef, Fact, ProbeStats, Registration, SnapshotStats, ValidationStats,
 };

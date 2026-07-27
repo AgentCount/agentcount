@@ -6,6 +6,20 @@ use serde_json::json;
 
 use crate::model::*;
 
+// ── The measurement windows, defined once ────────────────────────────────────
+//
+// These are published methodology, not implementation detail: a reader who
+// wants to check "answered 100 of 120 probes in the last 30 days" needs to
+// know what 30 refers to. They live here, `pub`, so the api crate queries with
+// the same number the methodology page states and the API reports — one
+// definition, three consumers.
+
+/// The probe window liveness facts are computed over.
+pub const LIVENESS_WINDOW_DAYS: i64 = 30;
+
+/// A card that hasn't resolved for this long is "rotted", not merely flaky.
+pub const ROT_AFTER_DAYS: i64 = 7;
+
 pub fn registered_since(r: &Registration) -> Fact {
     Fact {
         kind: "registered_since",
@@ -53,9 +67,6 @@ pub fn payable_endpoint(s: &ProbeStats) -> Option<Fact> {
 }
 
 pub fn metadata_status(s: &SnapshotStats, now: DateTime<Utc>) -> Fact {
-    /// A card that hasn't resolved for this long is "rotted", not merely flaky.
-    const ROT_AFTER_DAYS: i64 = 7;
-
     let (status, evidence) = match (s.last_ok_at, s.last_ok_snapshot_id) {
         (Some(ok_at), Some(id)) if (now - ok_at).num_days() >= ROT_AFTER_DAYS => {
             ("rotted", vec![EvidenceRef::Snapshot { snapshot_id: id }])

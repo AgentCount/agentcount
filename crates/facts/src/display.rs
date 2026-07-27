@@ -163,8 +163,46 @@ pub fn describe_flag(kind: &str, evidence: &serde_json::Value) -> FlagDisplay {
         _ => evidence.to_string(),
     };
     FlagDisplay {
-        label: kind.replace('_', " "),
+        label: flag_label(kind),
         statement,
+    }
+}
+
+/// The label for a flag kind, with no evidence needed.
+///
+/// Split out of [`describe_flag`] because aggregate views (the stats page's
+/// flags-by-kind breakdown) have counts but no evidence to describe, and would
+/// otherwise have to re-derive the label themselves — the exact drift this
+/// module exists to prevent.
+pub fn flag_label(kind: &str) -> String {
+    kind.replace('_', " ")
+}
+
+/// The words the directory uses for an agent's endpoint at its last observation.
+///
+/// A bool is not a claim until someone chooses words for it. That choice used
+/// to live in `explorer.html`, which meant every other consumer of
+/// `endpoint_alive` would pick its own — so it lives here now, like every
+/// other published wording.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EndpointDisplay {
+    /// "live" | "down" — the one word shown in the directory's status column.
+    pub status: String,
+    /// The longer form, for a tooltip or a detail line.
+    pub statement: String,
+}
+
+pub fn describe_endpoint(alive: bool) -> EndpointDisplay {
+    if alive {
+        EndpointDisplay {
+            status: "live".to_string(),
+            statement: "endpoint responded".to_string(),
+        }
+    } else {
+        EndpointDisplay {
+            status: "down".to_string(),
+            statement: "endpoint unreachable".to_string(),
+        }
     }
 }
 
@@ -373,6 +411,28 @@ mod tests {
         let d = describe_flag("some_future_signal", &serde_json::json!({}));
         assert_eq!(d.label, "some future signal");
         assert_eq!(d.statement, "{}");
+    }
+
+    #[test]
+    fn a_flag_label_is_the_same_with_or_without_evidence() {
+        // The stats breakdown has counts but no evidence; it must not have to
+        // invent its own label for a kind the agent pages already name.
+        assert_eq!(flag_label("shared_operator"), "shared operator");
+        assert_eq!(
+            flag_label("shared_operator"),
+            describe_flag("shared_operator", &serde_json::json!({})).label
+        );
+    }
+
+    #[test]
+    fn endpoint_status_words_live_here_not_in_a_template() {
+        let up = describe_endpoint(true);
+        assert_eq!(up.status, "live");
+        assert_eq!(up.statement, "endpoint responded");
+
+        let down = describe_endpoint(false);
+        assert_eq!(down.status, "down");
+        assert_eq!(down.statement, "endpoint unreachable");
     }
 
     #[test]

@@ -7,10 +7,12 @@ use chrono::{Duration, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-/// The probe window facts are computed over.
-const LIVENESS_WINDOW_DAYS: i64 = 30;
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
+/// One agent as the directory publishes it.
+///
+/// No `sqlx::FromRow` — `display` is derived from `endpoint_alive`, not
+/// selected, so rows are read into [`AgentSummaryRow`] and mapped. Same shape
+/// as [`FlagView`] below, for the same reason.
+#[derive(Debug, Serialize)]
 pub struct AgentSummary {
     pub chain: String,
     pub agent_id: i64,
@@ -19,6 +21,36 @@ pub struct AgentSummary {
     pub registered_at: chrono::DateTime<chrono::Utc>,
     pub endpoint_alive: bool,
     pub flag_count: i64,
+    /// The words for `endpoint_alive`, from the facts crate — so a consumer
+    /// never has to choose its own and disagree with the site.
+    pub display: facts::EndpointDisplay,
+}
+
+/// The selected columns, before the derived wording is attached.
+#[derive(sqlx::FromRow)]
+struct AgentSummaryRow {
+    chain: String,
+    agent_id: i64,
+    domain: String,
+    address: String,
+    registered_at: chrono::DateTime<chrono::Utc>,
+    endpoint_alive: bool,
+    flag_count: i64,
+}
+
+impl From<AgentSummaryRow> for AgentSummary {
+    fn from(r: AgentSummaryRow) -> Self {
+        Self {
+            display: facts::describe_endpoint(r.endpoint_alive),
+            chain: r.chain,
+            agent_id: r.agent_id,
+            domain: r.domain,
+            address: r.address,
+            registered_at: r.registered_at,
+            endpoint_alive: r.endpoint_alive,
+            flag_count: r.flag_count,
+        }
+    }
 }
 
 /// One flag as published: the raw evidence, plus the words we say about it.
@@ -74,7 +106,7 @@ pub async fn assemble(
     };
 
     let now = Utc::now();
-    let window_from = now - Duration::days(LIVENESS_WINDOW_DAYS);
+    let window_from = now - Duration::days(facts::LIVENESS_WINDOW_DAYS);
 
     #[derive(sqlx::FromRow)]
     struct Probes {
@@ -212,6 +244,7 @@ pub async fn assemble(
 
     Ok(Some(AgentFacts {
         summary: AgentSummary {
+            display: facts::describe_endpoint(agent.endpoint_alive),
             chain: agent.chain,
             agent_id: agent.agent_id,
             domain: agent.domain,
@@ -307,12 +340,15 @@ pub async fn list_agents(
          LIMIT $1 OFFSET $3",
         filter.sort.order_by()
     );
-    let items = sqlx::query_as::<_, AgentSummary>(&sql)
+    let items = sqlx::query_as::<_, AgentSummaryRow>(&sql)
         .bind(filter.limit)
         .bind(&filter.chain)
         .bind(filter.offset)
         .fetch_all(pool)
-        .await?;
+        .await?
+        .into_iter()
+        .map(AgentSummary::from)
+        .collect();
 
     // A separate count, deliberately — `count(*) OVER ()` would ride along on
     // the rows, and so would vanish on an empty page. An offset past the end

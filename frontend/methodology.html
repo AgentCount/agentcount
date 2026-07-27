@@ -20,7 +20,9 @@
     <dd>The registration event on each chain, with the transaction hash as evidence.</dd>
 
     <dt>Endpoint liveness</dt>
-    <dd>Raw probe counts over a 30-day window ("answered N of M probes"). An
+    {# The window and rot numbers are interpolated from the facts crate's
+       constants — prose must not restate a threshold the code owns. #}
+    <dd>Raw probe counts over a {{ liveness_window_days }}-day window ("answered N of M probes"). An
         HTTP 402 response counts as <em>alive</em> — for a payable (x402)
         endpoint, "Payment Required" is a healthy answer.</dd>
 
@@ -29,7 +31,7 @@
 
     <dt>Metadata status</dt>
     <dd>Whether the registered domain serves an agent card: resolving, rotted
-        (unreachable for 7+ days, with the last archived snapshot as evidence),
+        (unreachable for {{ rot_after_days }}+ days, with the last archived snapshot as evidence),
         or never resolved. Every fetch is archived — content rots; our archive
         doesn't.</dd>
 

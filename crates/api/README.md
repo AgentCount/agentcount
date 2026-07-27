@@ -15,10 +15,11 @@ agent #7 on Ethereum are different agents.
 | Route | Returns |
 |-------|---------|
 | `GET /api/agents?chain=&limit=&offset=&sort=` | `{items, page:{limit,offset,total}}`. `limit` clamped to 500 (default 100); `sort` is `registered` (default) or `alive` — explicit orderings only, no ranking; an unrecognized `sort` value falls back to `registered`. |
-| `GET /api/agents/{chain}/{id}` | Summary + full fact list + flags. Facts and flags each carry a `display` object. |
+| `GET /api/agents/{chain}/{id}` | Summary + full fact list + flags. The summary, each fact, and each flag all carry a `display` object. |
 | `GET /api/agents/{chain}/{id}/facts` | Just the fact list, same published shape. |
 | `GET /api/chains` | Enabled chains with agent counts — what a chain filter may offer. |
-| `GET /api/stats` | Raw aggregate counts (agents, live, payable, resolving, flagged, flags by kind). |
+| `GET /api/methodology` | The measurement windows (`liveness_window_days`, `rot_after_days`) so a consumer states them without hardcoding. |
+| `GET /api/stats` | Raw aggregate counts. `flags_by_kind` is an array of `{kind, label, count}`, most-flagged first. |
 | `GET /healthz` | Liveness: process up + Postgres reachable. |
 
 **Breaking change (2026-07-27):** `GET /api/agents` returned a bare JSON array
@@ -43,6 +44,7 @@ until this date and now returns the `{items, page}` envelope above.
 | `src/templates.rs` | askama template structs; the display strings they carry are built in `facts::display`, not here. |
 | `src/routes/agents.rs` | The JSON agent endpoints. |
 | `src/routes/chains.rs` | The chain list for frontend filters. |
+| `src/routes/methodology.rs` | The measurement windows, served as data. |
 | `src/routes/stats.rs` | Aggregate counts. |
 | `src/routes/pages.rs` | The HTML page handlers (facts → display rows). |
 
@@ -59,10 +61,17 @@ until this date and now returns the `{items, page}` envelope above.
 - **Every claim is worded once.** Facts and flags each carry a `display`
   object built by `facts::describe` and `facts::describe_flag` respectively:
   facts have `label`, `statement`, and `evidence_summary`; flags have `label`
-  and `statement`. The api crate formats nothing itself, so the JSON API, the
-  askama pages, and any future frontend state each claim in exactly the same
-  words. The raw `value` stays canonical for machine consumers; `display` is
-  additive and can be ignored.
+  and `statement`. An agent summary carries one too (`status`, `statement`)
+  for its endpoint, and `/api/stats` ships each flag kind's `label` beside its
+  count — so no consumer ever has to turn a bool or a `snake_case` kind into
+  words itself. The api crate formats nothing, so the JSON API, the askama
+  pages, and any future frontend state each claim in exactly the same words.
+  The raw `value` stays canonical for machine consumers; `display` is additive
+  and can be ignored.
+- **Thresholds are data, not prose.** `facts::LIVENESS_WINDOW_DAYS` and
+  `facts::ROT_AFTER_DAYS` are the single definition of the measurement
+  windows: the queries use them, `/api/methodology` publishes them, and the
+  methodology page interpolates them rather than restating the numbers.
 
 ## Run it
 
