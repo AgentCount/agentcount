@@ -39,6 +39,19 @@ fn window_days(v: &serde_json::Value) -> Option<i64> {
     Some((to - from).num_days())
 }
 
+/// Extract a numeric field with a `?` placeholder for missing or malformed data.
+///
+/// Evidence is data we wrote, but also data we might have written wrong: a
+/// measurement we never took must not render as a confident number. When a
+/// count is absent or stored as a string rather than a number, `?` shows the
+/// fallback rather than printing `null` or a quoted string.
+fn num(v: &serde_json::Value) -> String {
+    match v.as_i64() {
+        Some(n) => n.to_string(),
+        None => "?".to_string(),
+    }
+}
+
 /// Put one fact into words. Unknown kinds degrade to the raw JSON rather than
 /// panicking: a future `derive.rs` addition should render *something* useful
 /// even before it is taught a sentence here.
@@ -58,16 +71,21 @@ pub fn describe(f: &Fact) -> FactDisplay {
             match window_days(v) {
                 Some(days) => format!(
                     "answered {} of {} probes in the last {days} days",
-                    v["alive"], v["probes"]
+                    num(&v["alive"]),
+                    num(&v["probes"])
                 ),
-                None => format!("answered {} of {} probes", v["alive"], v["probes"]),
+                None => format!(
+                    "answered {} of {} probes",
+                    num(&v["alive"]),
+                    num(&v["probes"])
+                ),
             },
         ),
         "payable_endpoint" => (
             "Payable endpoint".to_string(),
             format!(
                 "returned HTTP 402 (payment required) on {} probes",
-                v["payment_required_responses"]
+                num(&v["payment_required_responses"])
             ),
         ),
         "metadata_status" => (
@@ -75,20 +93,20 @@ pub fn describe(f: &Fact) -> FactDisplay {
             format!(
                 "{} ({} snapshots archived)",
                 v["status"].as_str().unwrap_or("?"),
-                v["snapshots_archived"]
+                num(&v["snapshots_archived"])
             ),
         ),
         "attestations" => (
             "Attestations".to_string(),
-            format!("{} recorded on-chain", v["total"]),
+            format!("{} recorded on-chain", num(&v["total"])),
         ),
         "validation_proofs" => (
             "Validation proofs".to_string(),
             format!(
                 "{} ({} passed, {} failed)",
                 v["status"].as_str().unwrap_or("?"),
-                v["passed"],
-                v["failed"]
+                num(&v["passed"]),
+                num(&v["failed"])
             ),
         ),
         other => (other.to_string(), v.to_string()),
@@ -137,11 +155,14 @@ pub fn describe_flag(kind: &str, evidence: &serde_json::Value) -> FlagDisplay {
         ),
         "synchronized_registration" => format!(
             "registered in a burst of {} agents within one window",
-            evidence["count"]
+            num(&evidence["count"])
         ),
         _ => String::new(),
     };
-    FlagDisplay { label: kind.replace('_', " "), statement }
+    FlagDisplay {
+        label: kind.replace('_', " "),
+        statement,
+    }
 }
 
 #[cfg(test)]
@@ -180,7 +201,10 @@ mod tests {
         assert_eq!(d.label, "Endpoint liveness");
         // The window length is READ FROM THE FACT, never hardcoded — the
         // window is chosen by the api crate and must not be restated here.
-        assert_eq!(d.statement, "answered 100 of 120 probes in the last 30 days");
+        assert_eq!(
+            d.statement,
+            "answered 100 of 120 probes in the last 30 days"
+        );
         assert_eq!(d.evidence_summary, "120 archived probes");
     }
 
@@ -221,13 +245,21 @@ mod tests {
 
     #[test]
     fn attestations_and_validations_read_as_counts() {
-        let a = describe(&crate::attestations(&AttestationStats { total: 7 }, "base", t(0)));
+        let a = describe(&crate::attestations(
+            &AttestationStats { total: 7 },
+            "base",
+            t(0),
+        ));
         assert_eq!(a.label, "Attestations");
         assert_eq!(a.statement, "7 recorded on-chain");
         assert_eq!(a.evidence_summary, "base registry events");
 
         let v = describe(&crate::validations(
-            &ValidationStats { registry_available: true, passed: 2, failed: 1 },
+            &ValidationStats {
+                registry_available: true,
+                passed: 2,
+                failed: 1,
+            },
             "base",
             t(0),
         ));
@@ -301,7 +333,10 @@ mod tests {
     fn flag_evidence_with_missing_keys_does_not_panic() {
         let d = describe_flag("shared_operator", &serde_json::json!({}));
         assert_eq!(d.label, "shared operator");
-        assert_eq!(d.statement, "operated by the same wallet (?) as 0 other agent(s)");
+        assert_eq!(
+            d.statement,
+            "operated by the same wallet (?) as 0 other agent(s)"
+        );
     }
 
     #[test]
@@ -309,5 +344,33 @@ mod tests {
         let d = describe_flag("some_future_signal", &serde_json::json!({}));
         assert_eq!(d.label, "some future signal");
         assert_eq!(d.statement, "");
+    }
+
+    #[test]
+    fn synchronized_registration_with_missing_count_renders_placeholder() {
+        let d = describe_flag(
+            "synchronized_registration",
+            &serde_json::json!({
+                "window_from": "2026-05-01T00:00:00Z",
+                "window_to": "2026-05-01T00:10:00Z",
+                "peers": [{ "chain": "base", "agent_id": 2 }]
+            }),
+        );
+        assert_eq!(d.label, "synchronized registration");
+        assert_eq!(
+            d.statement,
+            "registered in a burst of ? agents within one window"
+        );
+    }
+
+    #[test]
+    fn endpoint_liveness_with_missing_counts_renders_placeholders() {
+        let f = Fact {
+            kind: "endpoint_liveness",
+            value: serde_json::json!({}),
+            observed_at: t(0),
+            evidence: vec![],
+        };
+        assert_eq!(describe(&f).statement, "answered ? of ? probes");
     }
 }
