@@ -4,13 +4,34 @@
 //! Rust concept spotlight: **`sol!` generates call types, not just events.**
 //! Given a function signature it produces a typed builder, so `ownerOf(id)`
 //! is a compile-checked call rather than hand-packed calldata.
+//!
+//! ## Why agent ids are enumerated by binary search, not by scanning logs
+//!
+//! An earlier version of this module discovered agent ids by scanning
+//! `Registered` logs over `[deploy_block, head]`. That doesn't work on a
+//! free-tier RPC: Alchemy's free tier caps `eth_getLogs` at a **10-block**
+//! range (verbatim: "Under the Free tier plan, you can make eth_getLogs
+//! requests with up to a 10 block range"), and the deploy-to-head span on
+//! Base is on the order of 7.5M blocks — roughly 753,000 calls, which is not
+//! a chunk-size problem to adaptively split around; it's a hard ceiling set
+//! by the plan, not the request.
+//!
+//! Agent ids in this registry are instead contiguous integers starting at 0,
+//! so [`Registry::highest_agent_id`] finds the top of that range by binary
+//! search on `ownerOf` existence (~17 calls for a ~60,000-agent registry,
+//! growing only as O(log population)), and [`Registry::enumerate_agent_ids`]
+//! walks `0..=max`. This also changes what's being counted: it's a census of
+//! agents that *currently exist*, not a replay of everything ever minted —
+//! the right thing for "what does the registry say right now", and
+//! consistent with this crate's read-current-state approach elsewhere.
+//!
+//! The `Registered` event below is kept only as documentation of what the
+//! registry emits on mint; nothing in this module decodes it any more.
 
 use alloy::eips::BlockId;
 use alloy::primitives::{Address, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
-use alloy::rpc::types::Filter;
 use alloy::sol;
-use alloy::sol_types::SolEvent;
 use anyhow::{Context, Result};
 
 sol! {
@@ -20,57 +41,16 @@ sol! {
         function tokenURI(uint256 tokenId) external view returns (string);
     }
 
-    // Discovery only — the state comes from the calls above.
+    // Documents what the registry emits on mint. Not decoded anywhere in this
+    // module — see the module doc comment for why log-based discovery was
+    // abandoned in favour of binary search over `ownerOf`.
     event Registered(uint256 indexed agentId, string agentURI, address indexed owner);
-}
-
-/// Default blocks per `getLogs` call when discovering agent ids. Deliberately
-/// modest: Alchemy's free tier caps a `getLogs` block range at 10, and other
-/// providers reject wide ranges outright by result size. Override with
-/// `CHAIN_BLOCK_BATCH` without recompiling. Mirrors
-/// `crates/indexer/src/ingest.rs::DEFAULT_BLOCK_BATCH_SIZE` / `INDEXER_BLOCK_BATCH`.
-const DEFAULT_BLOCK_BATCH_SIZE: u64 = 500;
-
-fn block_batch_size() -> u64 {
-    std::env::var("CHAIN_BLOCK_BATCH")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_BLOCK_BATCH_SIZE)
-}
-
-/// Does this RPC error mean "your block range is too large / returned too many
-/// results"? Providers cap `getLogs` by result size (Base public RPC: "backend
-/// response too large"; Alchemy: "query returned more than 10000 results") or
-/// by block-range width outright (Alchemy free tier: "up to a 10 block
-/// range"), and the only fix is a narrower range — retrying the same one never
-/// helps. A timeout is NOT this (splitting won't beat a provider that
-/// throttles `getLogs` wholesale), so those strings are deliberately excluded.
-///
-/// Identical matching to `crates/indexer/src/ingest.rs::is_range_too_large`,
-/// which solved this same problem for the ingest loop first — reused here
-/// rather than reinvented, per that module's doc comment.
-///
-/// The "exceed" substring alone would also match Alchemy's throttling message
-/// ("exceeded its compute units per second capacity"), which is a wholly
-/// different problem with a different fix (wait and retry, not narrow the
-/// range) — see [`is_throttled`]. Excluding throttled errors here keeps the
-/// two from competing to explain the same message.
-fn is_range_too_large(e: &impl std::fmt::Display) -> bool {
-    let s = e.to_string().to_lowercase();
-    (s.contains("too large")
-        || s.contains("too many results")
-        || s.contains("response size")
-        || s.contains("limited to")
-        || s.contains("exceed")
-        || s.contains("block range"))
-        && !is_throttled(e)
 }
 
 /// Does this RPC error mean "the provider is throttling us right now", as
 /// opposed to a genuine, permanent problem with the request itself? Alchemy's
 /// free tier returns HTTP 429 with "exceeded its compute units per second
-/// capacity" under sustained load — exactly what a ~2,000-agent sweep
+/// capacity" under sustained load — exactly what a ~60,000-agent sweep
 /// generates. Retrying THIS is correct because the request was fine and the
 /// provider will accept it again shortly; retrying a malformed call or a
 /// contract revert forever would not (those never match here).
@@ -80,6 +60,29 @@ fn is_throttled(e: &impl std::fmt::Display) -> bool {
         || s.contains("compute units per second")
         || s.contains("too many requests")
         || s.contains("rate limit")
+}
+
+/// Does this `ownerOf` failure mean "this token id does not exist" (a
+/// contract revert), as opposed to "we don't know" (a transport error, a
+/// throttled request, a malformed response)? Verified empirically against
+/// Base on 2026-07-27: calling `ownerOf` on a far-out, definitely-unminted id
+/// (999,999,999) returns a JSON-RPC error response with `code: 3` and message
+/// `execution reverted` — exactly the shape ERC-721 registries use for a
+/// non-existent token.
+///
+/// This distinction matters more than it looks: [`Registry::exists`] maps
+/// `is_revert` to `Ok(false)` and everything else to `Err`. If a 429 or a
+/// dropped connection were misread as "does not exist", binary search in
+/// [`Registry::highest_agent_id`] would silently report a far smaller
+/// population than reality — a wrong census that looks like a correct one.
+/// The `!is_throttled` guard is defence in depth, mirroring how
+/// `is_range_too_large` used to exclude throttling in the log-scan approach
+/// this replaced: throttling messages happen not to contain "execution
+/// reverted" today, but the exclusion costs nothing and keeps the two checks
+/// from ever competing to explain the same message.
+fn is_revert(e: &impl std::fmt::Display) -> bool {
+    let s = e.to_string().to_lowercase();
+    s.contains("execution reverted") && !is_throttled(e)
 }
 
 /// How many times to retry a throttled call before giving up and letting the
@@ -137,26 +140,44 @@ where
     }
 }
 
-/// Split `[from, to]` into inclusive, non-overlapping, ascending chunks of at
-/// most `batch` blocks each. Pure and network-free, so it's the part of the
-/// chunking strategy this crate can actually unit-test — the adaptive-split
-/// half (`is_range_too_large`) only shows its behaviour against a real
-/// provider, exercised in Task 8's sweep instead.
-fn chunk_ranges(from: u64, to: u64, batch: u64) -> Vec<(u64, u64)> {
-    let mut out = Vec::new();
-    if from > to || batch == 0 {
-        return out;
-    }
-    let mut lo = from;
+/// Binary-search the boundary between "exists" and "does not exist" over a
+/// predicate `p`, given a starting point `lo` that the caller already knows
+/// exists (`p(lo)` is assumed true — not re-checked here). Returns `(lo, hi)`
+/// with `hi == lo + 1`, `p(lo)` true and `p(hi)` false.
+///
+/// Doubles `hi` from `lo + 1` until it finds a point where `p` is false (a
+/// bracket), then bisects — so the total number of `p` calls is
+/// O(log(final value)) regardless of how large the registry has grown,
+/// rather than a fixed guess that would need retuning as the population
+/// grows.
+///
+/// Kept free of any network type (`p` is a generic async predicate) so the
+/// search logic itself is unit-testable without an RPC connection; see the
+/// tests below.
+async fn find_boundary<P, Fut>(mut lo: u64, mut p: P) -> Result<(u64, u64)>
+where
+    P: FnMut(u64) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let mut hi = lo.checked_add(1).context("id overflowed u64 starting the search bracket")?;
     loop {
-        let hi = lo.saturating_add(batch - 1).min(to);
-        out.push((lo, hi));
-        if hi == to {
+        if !p(hi).await? {
             break;
         }
-        lo = hi + 1;
+        lo = hi;
+        hi = hi
+            .checked_mul(2)
+            .context("agent id search overflowed u64 while doubling the bracket")?;
     }
-    out
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if p(mid).await? {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok((lo, hi))
 }
 
 /// What the chain says about one agent at one block.
@@ -200,56 +221,83 @@ impl Registry {
         Ok(self.provider.get_block_number().await?)
     }
 
-    /// Every agent id ever registered, from `Registered` logs.
+    /// Does agent `agent_id` currently exist, as of `block`? Reads
+    /// `ownerOf(agent_id)` pinned to `block`, routed through
+    /// [`retry_throttled`] so a 429 is retried rather than misread as an
+    /// answer. A revert ([`is_revert`]) means "no such token" and becomes
+    /// `Ok(false)`; any other failure is NOT evidence of non-existence and
+    /// propagates as `Err` — see [`is_revert`]'s doc comment for why
+    /// conflating the two would be dangerous here.
+    async fn exists(&self, agent_id: u64, block: u64) -> Result<bool> {
+        let c = IIdentityRegistry::new(self.address, &self.provider);
+        let token_id = U256::from(agent_id);
+        match retry_throttled(|| async {
+            c.ownerOf(token_id).block(BlockId::from(block)).call().await
+        })
+        .await
+        {
+            Ok(_owner) => Ok(true),
+            Err(e) if is_revert(&e) => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("ownerOf({agent_id}) existence check")),
+        }
+    }
+
+    /// The highest agent id that currently exists as of `block`, `None` if
+    /// id 0 does not exist (an empty registry).
     ///
-    /// A single `eth_getLogs` over the whole deploy-block-to-head range is not
-    /// viable: every provider caps it somehow, and Alchemy's free tier caps
-    /// the *block* range itself at 10 — the deploy-to-head span on Base is on
-    /// the order of 250,000 blocks. So this chunks the range into
-    /// `block_batch_size()`-sized pieces up front, then adaptively halves any
-    /// piece the provider still rejects. Same two-part approach as
-    /// `crates/indexer/src/ingest.rs::fetch_logs` (configurable batch size +
-    /// adaptive splitting on "too large" errors) — that module solved this
-    /// exact problem for the ingest loop and `is_range_too_large` below is the
-    /// same string matching, not a reinvention.
-    pub async fn enumerate_agent_ids(&self, from_block: u64, to_block: u64) -> Result<Vec<u64>> {
-        // Seed a work stack with fixed-size chunks so a well-behaved provider
-        // never even sees a range wider than `batch`. Order doesn't matter —
-        // ids are sorted and deduped at the end regardless of arrival order.
-        let mut stack: Vec<(u64, u64)> = chunk_ranges(from_block, to_block, block_batch_size());
-        let mut ids: Vec<u64> = Vec::new();
-        while let Some((lo, hi)) = stack.pop() {
-            let filter = Filter::new()
-                .address(self.address)
-                .event_signature(Registered::SIGNATURE_HASH)
-                .from_block(lo)
-                .to_block(hi);
-            match retry_throttled(|| self.provider.get_logs(&filter)).await {
-                Ok(logs) => ids.extend(
-                    logs.iter()
-                        .filter_map(|l| l.log_decode::<Registered>().ok())
-                        // `log_decode` returns the RPC `Log<Registered>` wrapper
-                        // (block/tx metadata plus the decoded event). `.data()`
-                        // reaches the decoded event itself — the plain field
-                        // access `d.agentId` (skipping `.data()`) does not
-                        // compile against this alloy version.
-                        .map(|d| d.data().agentId.to::<u64>()),
-                ),
-                // A range still too large for this provider: halve it and
-                // retry both halves. Never retry the SAME range unchanged —
-                // that only wastes a round trip against a doomed request.
-                Err(e) if is_range_too_large(&e) && lo < hi => {
-                    let mid = lo + (hi - lo) / 2;
-                    stack.push((mid + 1, hi));
-                    stack.push((lo, mid));
-                }
-                Err(e) => return Err(e).context("get_logs"),
-            }
+    /// **Contiguity assumption**: this registry mints agent ids as a
+    /// contiguous sequence starting at 0. Verified empirically against Base
+    /// on 2026-07-27 by spot-checking ids 0, 1, 7, 999, 2116, 8888, 15000,
+    /// 27777, 33333, 41000, 52000, 59997 — all existed — while 59998 and
+    /// 60001 both reverted, either side of a binary-search boundary at
+    /// 59997. Neither `totalSupply()` (reverts on this contract) nor
+    /// ERC721Enumerable (`supportsInterface(0x780e9d63)` returns false) is
+    /// available to cross-check this independently.
+    ///
+    /// If ids ever become sparse — some id below the max deliberately never
+    /// minted, or burned and not reused — [`enumerate_agent_ids`] would
+    /// over-report: it walks `0..=max` and would list ids that don't exist.
+    /// This function's boundary assertion below only guards the top of the
+    /// range; it cannot detect a hole in the middle.
+    ///
+    /// [`enumerate_agent_ids`]: Registry::enumerate_agent_ids
+    pub async fn highest_agent_id(&self, block: u64) -> Result<Option<u64>> {
+        if !self.exists(0, block).await? {
+            return Ok(None);
         }
 
-        ids.sort_unstable();
-        ids.dedup();
-        Ok(ids)
+        let (lo, hi) = find_boundary(0, |id| self.exists(id, block)).await?;
+
+        // Assert the boundary independently of the search's own bookkeeping:
+        // `lo` must exist and `lo + 1` must not, or something is wrong (a
+        // race, a bug in `find_boundary`) and a silently wrong population is
+        // worse than a loud error.
+        if !self.exists(lo, block).await? {
+            anyhow::bail!(
+                "highest_agent_id: boundary check failed — {lo} was reported to exist but does not"
+            );
+        }
+        if self.exists(hi, block).await? {
+            anyhow::bail!(
+                "highest_agent_id: boundary check failed — {hi} was reported not to exist but does"
+            );
+        }
+
+        Ok(Some(lo))
+    }
+
+    /// Every agent id that currently exists as of `block`, ascending.
+    ///
+    /// Walks `0..=highest_agent_id(block)` — a contiguous range, not a
+    /// `Registered` event log. See [`highest_agent_id`](Self::highest_agent_id)
+    /// for the contiguity assumption this relies on, how it was verified, and
+    /// what would go wrong if it stopped holding. An empty registry
+    /// (`highest_agent_id` returns `None`) yields an empty vec.
+    pub async fn enumerate_agent_ids(&self, block: u64) -> Result<Vec<u64>> {
+        match self.highest_agent_id(block).await? {
+            None => Ok(Vec::new()),
+            Some(max) => Ok((0..=max).collect()),
+        }
     }
 
     /// Current owner and URI for one agent, both read AT `block`.
@@ -285,87 +333,41 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A ~250,000-block sweep (Base's actual deploy-to-head span) at the
-    /// default batch size must produce many bounded chunks, none wider than
-    /// the batch, that together cover the range with no gap and no overlap.
-    #[test]
-    fn chunk_ranges_covers_a_wide_span_with_no_gaps_or_overlaps() {
-        let chunks = chunk_ranges(41_663_783, 41_663_783 + 250_000, 500);
-        assert!(chunks.len() > 400, "expected many chunks, got {}", chunks.len());
-        for (lo, hi) in &chunks {
-            assert!(hi - lo < 500, "chunk {lo}..{hi} exceeds the batch size");
-        }
-        assert_eq!(chunks.first().unwrap().0, 41_663_783);
-        assert_eq!(chunks.last().unwrap().1, 41_663_783 + 250_000);
-        for w in chunks.windows(2) {
-            assert_eq!(w[0].1 + 1, w[1].0, "gap or overlap between {:?} and {:?}", w[0], w[1]);
-        }
-    }
-
-    /// A range narrower than the batch size is a single chunk, not padded out
-    /// past `to_block` — a smoke-test sweep over a handful of blocks must not
-    /// silently widen the range it was asked to enumerate.
-    #[test]
-    fn chunk_ranges_a_narrow_span_is_one_chunk() {
-        assert_eq!(chunk_ranges(100, 105, 500), vec![(100, 105)]);
-    }
-
-    /// `from > to` (an empty window) yields no chunks and, by extension, no
-    /// `get_logs` call at all — never an inverted or wraparound range.
-    #[test]
-    fn chunk_ranges_empty_window_yields_nothing() {
-        assert_eq!(chunk_ranges(105, 100, 500), Vec::<(u64, u64)>::new());
-    }
-
-    #[test]
-    fn chunk_ranges_exact_multiple_has_no_trailing_empty_chunk() {
-        // 1000 blocks at batch 500 must be exactly two chunks, not three.
-        let chunks = chunk_ranges(0, 999, 500);
-        assert_eq!(chunks, vec![(0, 499), (500, 999)]);
-    }
-
-    /// Alchemy's free tier rejects on block-range width specifically, phrased
-    /// differently from the result-size caps other providers use. Both must
-    /// be recognised as "narrow the range and retry", never as a bare error.
-    #[test]
-    fn recognises_alchemys_block_range_cap_as_too_large() {
-        assert!(is_range_too_large(&"eth_getLogs is limited to a 10 block range"));
-    }
-
-    #[test]
-    fn recognises_result_size_caps_as_too_large() {
-        assert!(is_range_too_large(&"query returned too many results"));
-        assert!(is_range_too_large(&"backend response too large"));
-    }
-
-    /// A timeout is a different failure: splitting the range doesn't help a
-    /// provider that's throttling `getLogs` wholesale, so it must NOT be
-    /// treated as "too large" and endlessly re-split.
-    #[test]
-    fn a_timeout_is_not_treated_as_too_large() {
-        assert!(!is_range_too_large(&"request timed out"));
-    }
-
-    /// The exact Alchemy 429 body observed sweeping Base in Task 8: "compute
-    /// units per second capacity" exceeded. Must be recognised as throttling,
-    /// not as a permanent error and not as "range too large" (it contains
-    /// "exceeded" too, which is why `is_range_too_large` excludes throttling
-    /// explicitly).
-    #[test]
-    fn recognises_alchemys_429_as_throttled_not_as_too_large() {
-        let body = "HTTP error 429 with body: {\"jsonrpc\":\"2.0\",\"id\":232,\"error\":\
-                    {\"code\":429,\"message\":\"Your app has exceeded its compute units \
-                    per second capacity. If you have retries enabled, you can safely \
-                    ignore this message.\"}}";
-        assert!(is_throttled(&body));
-        assert!(!is_range_too_large(&body));
-    }
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn a_genuine_error_is_not_treated_as_throttled() {
         assert!(!is_throttled(&"execution reverted"));
         assert!(!is_throttled(&"invalid address"));
+    }
+
+    /// The exact Alchemy 429 body observed sweeping Base in Task 8: "compute
+    /// units per second capacity" exceeded. Must be recognised as throttling.
+    #[test]
+    fn recognises_alchemys_429_as_throttled() {
+        let body = "HTTP error 429 with body: {\"jsonrpc\":\"2.0\",\"id\":232,\"error\":\
+                    {\"code\":429,\"message\":\"Your app has exceeded its compute units \
+                    per second capacity. If you have retries enabled, you can safely \
+                    ignore this message.\"}}";
+        assert!(is_throttled(&body));
+        assert!(!is_revert(&body));
+    }
+
+    /// The exact shape observed calling `ownerOf` on a definitely-unminted id
+    /// (999,999,999) against Base on 2026-07-27: JSON-RPC error code 3,
+    /// message "execution reverted". Must be recognised as "does not exist".
+    #[test]
+    fn recognises_ownerof_revert_on_a_nonexistent_token() {
+        let body = "server returned an error response: error code 3: execution reverted, \
+                    data: \"0x7e273289000000000000000000000000000000000000000000000000000000003b9ac9ff\"";
+        assert!(is_revert(&body));
+        assert!(!is_throttled(&body));
+    }
+
+    #[test]
+    fn a_timeout_is_not_treated_as_a_revert() {
+        assert!(!is_revert(&"request timed out"));
+        assert!(!is_revert(&"connection reset by peer"));
     }
 
     /// `retry_throttled` must retry a throttled failure until it succeeds,
@@ -374,7 +376,6 @@ mod tests {
     /// retries at a 1ms base is fast regardless.
     #[tokio::test]
     async fn retry_throttled_recovers_after_transient_429s() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         let attempts = AtomicU32::new(0);
         let result: Result<&'static str, &'static str> = retry_throttled(|| {
             let n = attempts.fetch_add(1, Ordering::SeqCst);
@@ -396,7 +397,6 @@ mod tests {
     /// instead of being retried into a multi-minute timeout for no reason.
     #[tokio::test]
     async fn retry_throttled_does_not_retry_genuine_errors() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         let attempts = AtomicU32::new(0);
         let result: Result<(), &'static str> = retry_throttled(|| {
             attempts.fetch_add(1, Ordering::SeqCst);
@@ -413,7 +413,6 @@ mod tests {
     /// constants would take for 8 retries.
     #[tokio::test]
     async fn retry_throttled_gives_up_after_the_retry_budget() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         let attempts = AtomicU32::new(0);
         let max_retries = 3;
         let result: Result<(), &'static str> = retry_throttled_with(max_retries, 1, || {
@@ -423,6 +422,49 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), max_retries + 1);
+    }
+
+    /// A population of exactly one (only id 0 exists) must not trigger any
+    /// doubling — the very first probe at `hi = 1` should already be false.
+    #[tokio::test]
+    async fn find_boundary_a_single_existing_id() {
+        let (lo, hi) = find_boundary(0, |id| async move { Ok(id == 0) }).await.unwrap();
+        assert_eq!((lo, hi), (0, 1));
+    }
+
+    /// Mirrors the real, empirically-observed population: ids 0..=59997
+    /// exist, 59998 does not. Exercises real doubling steps (1, 2, 4, ...,
+    /// 65536) rather than a toy-sized fixture.
+    #[tokio::test]
+    async fn find_boundary_matches_the_observed_base_population() {
+        let (lo, hi) = find_boundary(0, |id| async move { Ok(id <= 59_997) }).await.unwrap();
+        assert_eq!((lo, hi), (59_997, 59_998));
+    }
+
+    /// A population whose size lands exactly on a power of two must not be
+    /// off by one in either direction.
+    #[tokio::test]
+    async fn find_boundary_exact_power_of_two_boundary() {
+        // ids 0..=63 exist (64 agents); 64 does not.
+        let (lo, hi) = find_boundary(0, |id| async move { Ok(id <= 63) }).await.unwrap();
+        assert_eq!((lo, hi), (63, 64));
+    }
+
+    /// A call that fails for a reason other than "does not exist" (the
+    /// analogue of a throttled or malformed response reaching the search)
+    /// must abort the search with an error rather than being interpreted
+    /// either way.
+    #[tokio::test]
+    async fn find_boundary_propagates_a_genuine_error_instead_of_guessing() {
+        let result = find_boundary(0, |id| async move {
+            if id == 4 {
+                anyhow::bail!("simulated transport error")
+            } else {
+                Ok(id <= 100)
+            }
+        })
+        .await;
+        assert!(result.is_err(), "a non-revert failure must not be treated as a boundary");
     }
 
     /// Hits a real RPC endpoint, so it is `#[ignore]` by default:
@@ -456,5 +498,25 @@ mod tests {
             assert!(s.owner.starts_with("0x"), "owner must be hex");
             assert_eq!(s.owner, s.owner.to_lowercase(), "owner must be normalised");
         }
+    }
+
+    /// Hits a real RPC endpoint, so it is `#[ignore]` by default:
+    ///   RPC_URL_BASE=... cargo test -p chain -- --ignored --nocapture
+    /// Confirms the binary search actually finds the registry's real
+    /// population and that its own boundary assertion is satisfied against
+    /// live state, not just the fixtures in `find_boundary_*` above.
+    #[tokio::test]
+    #[ignore]
+    async fn highest_agent_id_matches_base() {
+        let rpc = std::env::var("RPC_URL_BASE").expect("RPC_URL_BASE");
+        let reg = Registry::connect(&rpc, "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432")
+            .await
+            .unwrap();
+        let block = reg.pinned_block().await.unwrap();
+        let max = reg.highest_agent_id(block).await.unwrap();
+        println!("highest_agent_id at block {block}: {max:?}");
+        assert!(max.is_some());
+        let max = max.unwrap();
+        assert!(max >= 59_997, "population appears to have shrunk below a known floor");
     }
 }

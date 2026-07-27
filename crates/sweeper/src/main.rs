@@ -21,7 +21,7 @@ use uuid::Uuid;
 /// RPC endpoint is a shared resource and this is not a race. Lowered from 8
 /// after Task 8's first live sweep hit Alchemy's free-tier "compute units per
 /// second" cap immediately — override with `RPC_CONCURRENCY` without
-/// recompiling, same pattern as `CHAIN_BLOCK_BATCH` in `crates/chain`.
+/// recompiling.
 const DEFAULT_RPC_CONCURRENCY: usize = 3;
 
 fn rpc_concurrency() -> usize {
@@ -30,6 +30,16 @@ fn rpc_concurrency() -> usize {
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_RPC_CONCURRENCY)
+}
+
+/// Sweep only the first N discovered agent ids, if set. Exists so a bounded
+/// pilot run can validate the whole pipeline (DB rows, exports, rerun
+/// command) before committing to a multi-hour full sweep of the real
+/// population. When set, it MUST show up in the run's `rerun_command` —
+/// a run that swept 2,000 of 59,998 agents but whose rerun command implies a
+/// full sweep would misrepresent what was actually measured.
+fn sweep_max_agents() -> Option<usize> {
+    std::env::var("SWEEP_MAX_AGENTS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0)
 }
 
 #[tokio::main]
@@ -55,7 +65,17 @@ async fn main() -> Result<()> {
 
     let run_id = Uuid::new_v4();
     let checker_commit = env!("CHECKER_COMMIT");
-    let rerun = format!("cargo run -p sweeper -- {chain_name}   # at block {pinned}");
+    let max_agents = sweep_max_agents();
+    // The rerun command must describe what THIS run actually swept. A pilot
+    // capped by SWEEP_MAX_AGENTS is not reproduced by the bare command below —
+    // omitting the cap here would make the archived run claim a full sweep it
+    // never did.
+    let rerun = match max_agents {
+        Some(n) => {
+            format!("SWEEP_MAX_AGENTS={n} cargo run -p sweeper -- {chain_name}   # at block {pinned}")
+        }
+        None => format!("cargo run -p sweeper -- {chain_name}   # at block {pinned}"),
+    };
 
     db.open_run(&store::RunMeta {
         run_id,
@@ -68,10 +88,22 @@ async fn main() -> Result<()> {
     })
     .await?;
 
-    let ids = registry
-        .enumerate_agent_ids(deploy_block as u64, pinned)
-        .await?;
-    tracing::info!("{} agent ids discovered", ids.len());
+    // `deploy_block` is no longer used for enumeration (agent ids are found
+    // by binary search on `ownerOf` existence, not by scanning logs from
+    // deploy to head — see crates/chain/src/registry.rs), but the column
+    // still describes the chain and stays wired for chain_config's other
+    // callers.
+    let _ = deploy_block;
+    let mut ids = registry.enumerate_agent_ids(pinned).await?;
+    let discovered = ids.len();
+    if let Some(n) = max_agents {
+        ids.truncate(n);
+    }
+    tracing::info!(
+        "{discovered} agent ids discovered; sweeping {} of them{}",
+        ids.len(),
+        max_agents.map(|n| format!(" (SWEEP_MAX_AGENTS={n})")).unwrap_or_default()
+    );
 
     // Read current state for each id, bounded. `buffer_unordered` keeps at most
     // RPC_CONCURRENCY reads in flight; results arrive out of order, which is
