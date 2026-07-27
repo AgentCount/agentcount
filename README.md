@@ -41,9 +41,8 @@ record is the moat).
 | `crates/indexer`     | binary  | Ingest ERC-8004 registry events from every enabled chain.        |
 | `crates/enricher`    | binary  | Observe endpoints (SSRF-guarded, one fetch per agent), archive metadata snapshots, raise coordination flags with evidence. |
 | `crates/facts`       | library | Pure fact derivation: measurements in, evidence-carrying facts out. |
-| `crates/api`         | binary  | axum web server: JSON facts API + server-rendered explorer.      |
+| `crates/api`         | binary  | axum web server: JSON facts API only (Next.js is the frontend).  |
 | `migrations/`        | —       | sqlx SQL migrations (the database schema).                       |
-| `frontend/`          | —       | askama HTML templates + a little CSS.                            |
 | `scripts/`           | —       | `seed_chains.sql` — the chains (and registry addresses) to index. |
 
 ## Getting a database up

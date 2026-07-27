@@ -19,13 +19,11 @@
 mod error;
 mod facts_view;
 mod routes;
-mod templates;
 
 use anyhow::Context;
 use axum::Router;
 use axum::routing::get;
 use sqlx::postgres::PgPoolOptions;
-use tower_http::services::ServeDir;
 
 /// Application state shared with every request handler.
 ///
@@ -75,13 +73,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/chains", get(routes::chains::list))
         .route("/api/methodology", get(routes::methodology::get))
         .route("/api/stats", get(routes::stats::summary))
-        // Server-rendered HTML pages
-        .route("/", get(routes::pages::explorer))
-        .route("/agent/{chain}/{id}", get(routes::pages::agent_detail))
-        .route("/methodology", get(routes::pages::methodology))
         .route("/healthz", get(healthz))
-        // Static files (the stylesheet) served straight from the frontend dir.
-        .nest_service("/static", ServeDir::new("frontend"))
         // Crude but effective public-endpoint hardening: cap request time and
         // total in-flight requests. Per-IP rate limiting is a fast-follow.
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(

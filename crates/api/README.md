@@ -1,11 +1,10 @@
-# `api` — the public facts API + explorer website
+# `api` — the public facts API
 
 A **binary crate**: the axum web server, and the only crate the outside world
 talks to. It reads observations from Postgres, assembles them into
-evidence-carrying facts via the pure `facts` crate, and serves them as JSON
-and server-rendered HTML. Both surfaces go through the same shared queries —
-per-agent facts via `facts_view::assemble`, the paginated directory via
-`facts_view::list_agents` — so the site can never disagree with the API.
+evidence-carrying facts via the pure `facts` crate, and serves them as JSON.
+The Next.js app in the sibling `ledgerscope-web` repo is the frontend; this
+crate serves JSON only.
 
 ## Endpoints
 
@@ -29,15 +28,6 @@ until this date and now returns the `{items, page}` envelope above.
 `{kind, label, count}` — an array because a chart needs a stable order, and
 with the label attached so no consumer re-derives it.
 
-**Server-rendered pages** (askama templates in `../../frontend`)
-
-| Route | Page |
-|-------|------|
-| `GET /` | Agent directory, newest registration first (a directory, not a leaderboard). |
-| `GET /agent/{chain}/{id}` | Facts with evidence + flags with evidence. |
-| `GET /methodology` | What we measure and how — including the honest limitations. |
-| `GET /static/*` | The stylesheet, served from `frontend/` via `ServeDir`. |
-
 ## Files
 
 | File | What's in it |
@@ -45,33 +35,27 @@ with the label attached so no consumer re-derives it.
 | `src/main.rs` | Router, shared `AppState`, `/healthz`, timeout + concurrency-limit layers. |
 | `src/facts_view.rs` | SQL aggregates → `facts::Fact` values, plus the one shared paginated directory query. The ONLY place queries meet the facts crate. |
 | `src/error.rs` | `ApiError` + `IntoResponse`/`From` impls (so handlers can `?`). |
-| `src/templates.rs` | askama template structs; the display strings they carry are built in `facts::display`, not here. |
 | `src/routes/agents.rs` | The JSON agent endpoints. |
 | `src/routes/chains.rs` | The chain list for frontend filters. |
 | `src/routes/methodology.rs` | The measurement windows, served as data. |
 | `src/routes/stats.rs` | Aggregate counts. |
-| `src/routes/pages.rs` | The HTML page handlers (facts → display rows). |
 
 ## Design notes
 
-- **Templates are kept dumb.** All formatting is done in Rust and passed as
-  ready-to-print fields — no template-language logic to get wrong.
 - **No ranking.** List ordering is explicit and user-visible; a "smart"
   default ranking would be a trust score sneaking back in through the UI.
 - **Hardening.** 10s request timeout, 256 in-flight request cap, clamped page
   sizes. Per-IP rate limiting is a fast-follow.
-- **Static path.** `ServeDir::new("frontend")` resolves relative to the working
-  directory, so run the binary from the workspace root.
 - **Every claim is worded once.** Facts and flags each carry a `display`
   object built by `facts::describe` and `facts::describe_flag` respectively:
   facts have `label`, `statement`, and `evidence_summary`; flags have `label`
   and `statement`. An agent summary carries one too (`status`, `statement`)
   for its endpoint, and `/api/stats` ships each flag kind's `label` beside its
   count — so no consumer ever has to turn a bool or a `snake_case` kind into
-  words itself. The api crate formats nothing, so the JSON API, the askama
-  pages, and any future frontend state each claim in exactly the same words.
-  The raw `value` stays canonical for machine consumers; `display` is additive
-  and can be ignored.
+  words itself. The api crate formats nothing, so the JSON API and the
+  Next.js frontend state each claim in exactly the same words. The raw
+  `value` stays canonical for machine consumers; `display` is additive and
+  can be ignored.
 - **Thresholds are data, not prose.** `facts::LIVENESS_WINDOW_DAYS` and
   `facts::ROT_AFTER_DAYS` are the single definition of the measurement
   windows: the queries use them, `/api/methodology` publishes them, and the

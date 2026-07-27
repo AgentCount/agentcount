@@ -105,11 +105,10 @@ wiremock = "0.6"
 # bounded amount of concurrency (fast, but not a thundering herd).
 futures = "0.3"
 
-# tower middleware for axum. `ServeDir` serves the static stylesheet; the
-# timeout layer caps request time on the public API; the concurrency limit
-# (from `tower` itself) caps total in-flight requests — crude but effective
-# hardening for a free public endpoint.
-tower-http = { version = "0.6", features = ["fs", "timeout"] }
+# tower middleware for axum. The timeout layer caps request time on the
+# public API; the concurrency limit (from `tower` itself) caps total in-flight
+# requests — crude but effective hardening for a free public endpoint.
+tower-http = { version = "0.6", features = ["timeout"] }
 tower = { version = "0.5", features = ["limit"] }
 
 # Error handling, two complementary tools:
@@ -120,11 +119,6 @@ tower = { version = "0.5", features = ["limit"] }
 #               exit). We'll use each where it fits.
 thiserror = "2"
 anyhow = "1"
-
-# Compile-time HTML templates. The template files live in `frontend/` and
-# askama generates a Rust struct method that renders them, so a typo in a
-# template variable is — you guessed it — a compiler error.
-askama = "0.13"
 
 # Small shared helpers used across crates.
 chrono = { version = "0.4", features = ["serde"] }   # dates/times

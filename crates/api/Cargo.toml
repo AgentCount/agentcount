@@ -1,6 +1,5 @@
 # The `api` crate is a BINARY: the axum web server. It's the only crate the
-# outside world talks to. It reads from Postgres, serves a JSON API, and renders
-# server-side HTML with askama.
+# outside world talks to. It reads from Postgres and serves a JSON API.
 
 [package]
 name = "api"
@@ -13,8 +12,8 @@ tokio = { workspace = true }
 # The web framework.
 axum = { workspace = true }
 
-# Serves the static stylesheet from ../../frontend via ServeDir; timeout layer
-# for the public API. `tower` provides the in-flight concurrency limit.
+# Timeout layer for the public API. `tower` provides the in-flight concurrency
+# limit.
 tower-http = { workspace = true }
 tower = { workspace = true }
 
@@ -24,9 +23,6 @@ sqlx = { workspace = true }
 # JSON request/response bodies.
 serde = { workspace = true }
 serde_json = { workspace = true }
-
-# Server-rendered HTML templates (files live in ../../frontend; see askama.toml).
-askama = { workspace = true }
 
 anyhow = { workspace = true }
 chrono = { workspace = true }

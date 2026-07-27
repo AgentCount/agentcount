@@ -59,9 +59,3 @@ impl From<sqlx::Error> for ApiError {
         }
     }
 }
-
-impl From<askama::Error> for ApiError {
-    fn from(e: askama::Error) -> Self {
-        ApiError::Internal(e.to_string())
-    }
-}
