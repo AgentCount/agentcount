@@ -11,6 +11,11 @@ There is deliberately **no trust score**: with no observable ground truth to
 calibrate weights against, any 0–100 number would be aesthetic. We publish
 measurements, not judgments — consumers apply their own thresholds.
 
+See [`METHODOLOGY.md`](METHODOLOGY.md) for what each of the seven rungs
+checks, what evidence backs it, and what it explicitly does not mean —
+published before any findings exist, so the method can be checked before the
+numbers can.
+
 The launch artifact is a research post quantifying *how much on-chain agent
 registry activity is manufactured*.
 
