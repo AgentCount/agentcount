@@ -111,6 +111,39 @@ pub fn describe(f: &Fact) -> FactDisplay {
     }
 }
 
+/// A flag rendered for a human. Flags have no `value`/`evidence` split — the
+/// evidence JSON *is* the claim — so one statement covers it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FlagDisplay {
+    /// e.g. "shared operator"
+    pub label: String,
+    /// e.g. "operated by the same wallet (0x…) as 4 other agent(s)"
+    pub statement: String,
+}
+
+/// Put one flag into words.
+///
+/// `kind` is a `&str`, not an enum, on purpose: `flags.kind` is a TEXT column
+/// and the `FlagKind` enum lives in the `enricher` BINARY, which a library
+/// must not depend on. The stable-string contract already exists
+/// (`FlagKind::label()`); this function is its reader, and an unrecognised
+/// kind degrades to a readable label rather than an error.
+pub fn describe_flag(kind: &str, evidence: &serde_json::Value) -> FlagDisplay {
+    let peers = evidence["peers"].as_array().map(|p| p.len()).unwrap_or(0);
+    let statement = match kind {
+        "shared_operator" => format!(
+            "operated by the same wallet ({}) as {peers} other agent(s)",
+            evidence["address"].as_str().unwrap_or("?")
+        ),
+        "synchronized_registration" => format!(
+            "registered in a burst of {} agents within one window",
+            evidence["count"]
+        ),
+        _ => String::new(),
+    };
+    FlagDisplay { label: kind.replace('_', " "), statement }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +258,56 @@ mod tests {
             evidence: vec![],
         };
         assert_eq!(describe(&f).statement, "answered 2 of 4 probes");
+    }
+
+    #[test]
+    fn shared_operator_names_the_wallet_and_the_peer_count() {
+        let d = describe_flag(
+            "shared_operator",
+            &serde_json::json!({
+                "address": "0xdead",
+                "peers": [
+                    { "chain": "base", "agent_id": 2 },
+                    { "chain": "base", "agent_id": 3 }
+                ]
+            }),
+        );
+        assert_eq!(d.label, "shared operator");
+        assert_eq!(
+            d.statement,
+            "operated by the same wallet (0xdead) as 2 other agent(s)"
+        );
+    }
+
+    #[test]
+    fn synchronized_registration_names_the_burst_size() {
+        let d = describe_flag(
+            "synchronized_registration",
+            &serde_json::json!({
+                "window_from": "2026-05-01T00:00:00Z",
+                "window_to": "2026-05-01T00:10:00Z",
+                "count": 6,
+                "peers": [{ "chain": "base", "agent_id": 2 }]
+            }),
+        );
+        assert_eq!(d.label, "synchronized registration");
+        assert_eq!(
+            d.statement,
+            "registered in a burst of 6 agents within one window"
+        );
+    }
+
+    #[test]
+    fn flag_evidence_with_missing_keys_does_not_panic() {
+        let d = describe_flag("shared_operator", &serde_json::json!({}));
+        assert_eq!(d.label, "shared operator");
+        assert_eq!(d.statement, "operated by the same wallet (?) as 0 other agent(s)");
+    }
+
+    #[test]
+    fn an_unknown_flag_kind_still_gets_a_readable_label() {
+        let d = describe_flag("some_future_signal", &serde_json::json!({}));
+        assert_eq!(d.label, "some future signal");
+        assert_eq!(d.statement, "");
     }
 }

@@ -28,7 +28,7 @@ pub use derive::{
     attestations, endpoint_liveness, metadata_status, payable_endpoint, registered_since,
     validations,
 };
-pub use display::{describe, FactDisplay};
+pub use display::{describe, describe_flag, FactDisplay, FlagDisplay};
 pub use model::{
     AttestationStats, EvidenceRef, Fact, ProbeStats, Registration, SnapshotStats, ValidationStats,
 };
