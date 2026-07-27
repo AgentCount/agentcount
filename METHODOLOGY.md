@@ -196,8 +196,9 @@ feedback entry from an address that is not its own owner?
 - **Does not mean:** that the feedback is genuine, uncoordinated, or positive
   — only that it did not come from the agent's own owner address. Two
   addresses under common control, one feeding the other, would still pass
-  this rung; catching that pattern is a job for the flags this project
-  raises separately with their own evidence, not for this boolean.
+  this rung. Catching that would take clustering inference, which is a
+  different kind of claim than a measurement — if we ever publish it, it goes
+  in a separately-labelled `signals` block, never in a rung.
 
 ## 3. Ladder semantics
 
@@ -364,13 +365,14 @@ you.
   when we happened to fetch it, reads identically to a genuine problem in our
   data. We do not have a second vantage point to cross-check against yet, and
   we say so rather than implying our single view is authoritative.
-- **Absence of a flag is not absolution.** Ledgerscope also raises
-  evidence-backed flags for coordination patterns (shared operators,
-  synchronized registrations, and similar), separately from the seven rungs.
-  An agent with no flag against it has not been *cleared* of anything — it
-  means no pattern we currently look for was found in the data we currently
-  have. New flag types, more data, or a longer observation window can surface
-  something later that isn't visible today.
+- **A clean ladder is not absolution.** Seven passes mean the seven questions
+  above were answered, and nothing more. We do not currently publish any
+  coordination or clustering analysis; if we ever do, it will appear in a
+  separately-labelled `signals` block and will never be presented as a rung,
+  because a heuristic and a measurement are different kinds of claim and
+  deserve different amounts of your trust. Either way, the absence of an
+  adverse finding means no pattern we look for was found in the data we have
+  — not that there is nothing to find.
 - **We measure what the chain and the document say, not what is true.** An
   owner address, a declared endpoint, a feedback author — all of these are
   what the on-chain and off-chain records state. Nothing in this pipeline
