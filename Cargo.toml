@@ -91,6 +91,9 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 # SSRF guard: parse+validate URLs built from on-chain (attacker-controlled) domains.
 url = "2"
 
+# Decode `data:` agent-card URIs (many agents inline their card as base64).
+base64 = "0.22"
+
 # Content hashes for archived metadata snapshots (change detection, dedupe).
 sha2 = "0.10"
 

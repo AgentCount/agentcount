@@ -34,6 +34,9 @@ tracing-subscriber = { workspace = true }
 # SSRF guard: the domains we probe are attacker-controlled on-chain data.
 url = { workspace = true }
 
+# Decode `data:` agent-card URIs inline (no network fetch).
+base64 = { workspace = true }
+
 # sha256 content hashes for archived metadata snapshots.
 sha2 = { workspace = true }
 

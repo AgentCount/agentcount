@@ -44,7 +44,8 @@ impl Db {
     /// Load the agents due for (re-)enrichment: never enriched, or stale.
     pub async fn load_agents_to_enrich(&self) -> Result<Vec<AgentStub>> {
         let agents = sqlx::query_as::<_, AgentStub>(
-            "SELECT chain, agent_id, domain \
+            // `domain` holds the on-chain agentURI; alias it to the field name.
+            "SELECT chain, agent_id, domain AS agent_uri \
              FROM agents \
              WHERE last_enriched_at IS NULL \
                 OR last_enriched_at < now() - interval '6 hours' \
@@ -231,7 +232,7 @@ mod tests {
         .unwrap();
 
         let db = Db { pool: pool.clone() };
-        let agent = AgentStub { chain: "base".into(), agent_id: 1, domain: "agent.example".into() };
+        let agent = AgentStub { chain: "base".into(), agent_id: 1, agent_uri: "https://agent.example/".into() };
         let obs = |outcome: ProbeOutcome, body: Option<serde_json::Value>| Observation {
             agent: agent.clone(),
             url: "https://agent.example/.well-known/agent.json".into(),

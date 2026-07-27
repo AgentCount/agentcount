@@ -102,10 +102,14 @@ async fn run_pass(db: &store::Db, concurrency: usize) -> anyhow::Result<()> {
     //    One shared client for the whole pass: reqwest's Client is an Arc'd
     //    connection pool, so each job borrows it instead of building its own.
     let client = observe::build_client()?;
+    // HTTPS gateway used to resolve ipfs:// agentURIs; override with IPFS_GATEWAY.
+    let ipfs_gateway =
+        std::env::var("IPFS_GATEWAY").unwrap_or_else(|_| "https://ipfs.io/ipfs/".to_string());
     let observations: Vec<observe::Observation> = stream::iter(agents)
         .map(|agent| {
             let client = &client;
-            async move { observe::observe(client, &agent).await }
+            let ipfs_gateway = ipfs_gateway.as_str();
+            async move { observe::observe(client, ipfs_gateway, &agent).await }
         })
         .buffer_unordered(concurrency)
         .collect()
