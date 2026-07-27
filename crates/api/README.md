@@ -55,12 +55,13 @@ until this date and now returns the `{items, page}` envelope above.
   sizes. Per-IP rate limiting is a fast-follow.
 - **Static path.** `ServeDir::new("frontend")` resolves relative to the working
   directory, so run the binary from the workspace root.
-- **Every claim is worded once.** Facts and flags cross the wire with a
-  `display` object (`label`, `statement`, `evidence_summary`) built by
-  `facts::describe`/`describe_flag`. The api crate formats nothing itself, so
-  the JSON API, the askama pages, and any future frontend state each fact in
-  exactly the same words. The raw `value` stays canonical for machine
-  consumers; `display` is additive and can be ignored.
+- **Every claim is worded once.** Facts and flags each carry a `display`
+  object built by `facts::describe` and `facts::describe_flag` respectively:
+  facts have `label`, `statement`, and `evidence_summary`; flags have `label`
+  and `statement`. The api crate formats nothing itself, so the JSON API, the
+  askama pages, and any future frontend state each claim in exactly the same
+  words. The raw `value` stays canonical for machine consumers; `display` is
+  additive and can be ignored.
 
 ## Run it
 
