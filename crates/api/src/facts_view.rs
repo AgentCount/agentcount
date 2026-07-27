@@ -227,3 +227,104 @@ pub async fn assemble(
         flags,
     }))
 }
+
+/// The orderings the directory offers. An enum, not a free string, because
+/// the variant names are what get interpolated into SQL — user input can
+/// never reach the query text.
+///
+/// Every ordering ends in `a.agent_id DESC` so it is TOTAL. Without that
+/// tiebreaker two agents sharing a `registered_at` can swap places between
+/// two paged queries, which shows one of them twice and hides the other.
+#[derive(Debug, Clone, Copy)]
+pub enum Sort {
+    Registered,
+    Alive,
+}
+
+impl Sort {
+    pub fn from_param(s: Option<&str>) -> Self {
+        match s {
+            Some("alive") => Sort::Alive,
+            _ => Sort::Registered,
+        }
+    }
+
+    pub fn order_by(&self) -> &'static str {
+        match self {
+            Sort::Registered => "a.registered_at DESC, a.agent_id DESC",
+            Sort::Alive => "endpoint_alive DESC, a.registered_at DESC, a.agent_id DESC",
+        }
+    }
+}
+
+/// What to list. Built by the JSON route from query params and by the HTML
+/// page from constants — one query serves both.
+#[derive(Debug)]
+pub struct ListFilter {
+    pub chain: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+    pub sort: Sort,
+}
+
+/// Where this page sits in the whole result set. `total` is what lets a UI
+/// render "page 3 of 15" instead of guessing whether a next page exists.
+#[derive(Debug, Serialize)]
+pub struct PageMeta {
+    pub limit: i64,
+    pub offset: i64,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub page: PageMeta,
+}
+
+/// The agent directory, paginated. The ONLY agent-list query in the codebase:
+/// the JSON route and the HTML explorer both call it, so they cannot drift.
+pub async fn list_agents(
+    pool: &PgPool,
+    filter: &ListFilter,
+) -> Result<Page<AgentSummary>, sqlx::Error> {
+    // `order` is interpolated, but only from `Sort`'s fixed arms above.
+    let sql = format!(
+        "SELECT a.chain, a.agent_id, a.domain, a.address_norm AS address, a.registered_at, \
+                COALESCE(e.endpoint_healthy, false) AS endpoint_alive, \
+                COALESCE(fl.n, 0) AS flag_count \
+         FROM agents a \
+         LEFT JOIN agent_enrichment e ON e.chain = a.chain AND e.agent_id = a.agent_id \
+         LEFT JOIN (SELECT chain, agent_id, count(*) AS n FROM flags GROUP BY chain, agent_id) fl \
+                ON fl.chain = a.chain AND fl.agent_id = a.agent_id \
+         WHERE ($2::text IS NULL OR a.chain = $2) \
+         ORDER BY {} \
+         LIMIT $1 OFFSET $3",
+        filter.sort.order_by()
+    );
+    let items = sqlx::query_as::<_, AgentSummary>(&sql)
+        .bind(filter.limit)
+        .bind(&filter.chain)
+        .bind(filter.offset)
+        .fetch_all(pool)
+        .await?;
+
+    // A separate count, deliberately — `count(*) OVER ()` would ride along on
+    // the rows, and so would vanish on an empty page. An offset past the end
+    // is exactly when a UI most needs the total.
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agents a WHERE ($1::text IS NULL OR a.chain = $1)",
+    )
+    .bind(&filter.chain)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Page {
+        items,
+        page: PageMeta {
+            limit: filter.limit,
+            offset: filter.offset,
+            total,
+        },
+    })
+}

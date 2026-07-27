@@ -4,19 +4,21 @@
 //! return type says what I give back." That symmetry is the whole mental model
 //! for axum handlers.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
+use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::facts_view::{self, AgentFacts, AgentSummary};
-use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
     pub chain: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
     /// Explicit, objective orderings only — a "smart" default ranking would be
     /// the scalar score sneaking back in through the UI.
     ///   registered (default) — newest registration first
@@ -29,38 +31,20 @@ fn default_limit() -> i64 {
     100
 }
 
-/// `GET /api/agents` — list agents with facts-summary columns.
+/// `GET /api/agents` — one page of the directory, plus where that page sits.
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AgentSummary>>> {
+) -> ApiResult<Json<facts_view::Page<AgentSummary>>> {
     // Clamp: a missing limit gets a sane default, a hostile one gets a ceiling.
-    let limit = params.limit.clamp(1, 500);
-    let order = match params.sort.as_deref() {
-        Some("alive") => "endpoint_alive DESC, registered_at DESC",
-        _ => "registered_at DESC",
+    // A negative offset is meaningless, not an error — treat it as the start.
+    let filter = facts_view::ListFilter {
+        chain: params.chain,
+        limit: params.limit.clamp(1, 500),
+        offset: params.offset.max(0),
+        sort: facts_view::Sort::from_param(params.sort.as_deref()),
     };
-
-    // `order` is interpolated, but only from the fixed match arms above —
-    // user input never reaches the SQL string.
-    let sql = format!(
-        "SELECT a.chain, a.agent_id, a.domain, a.address_norm AS address, a.registered_at, \
-                COALESCE(e.endpoint_healthy, false) AS endpoint_alive, \
-                COALESCE(fl.n, 0) AS flag_count \
-         FROM agents a \
-         LEFT JOIN agent_enrichment e ON e.chain = a.chain AND e.agent_id = a.agent_id \
-         LEFT JOIN (SELECT chain, agent_id, count(*) AS n FROM flags GROUP BY chain, agent_id) fl \
-                ON fl.chain = a.chain AND fl.agent_id = a.agent_id \
-         WHERE ($2::text IS NULL OR a.chain = $2) \
-         ORDER BY {order} \
-         LIMIT $1"
-    );
-    let rows = sqlx::query_as::<_, AgentSummary>(&sql)
-        .bind(limit)
-        .bind(&params.chain)
-        .fetch_all(&state.db)
-        .await?;
-    Ok(Json(rows))
+    Ok(Json(facts_view::list_agents(&state.db, &filter).await?))
 }
 
 /// `GET /api/agents/{chain}/{id}` — one agent's summary + facts + flags.

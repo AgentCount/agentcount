@@ -9,36 +9,30 @@ use askama::Template;
 use axum::extract::{Path, State};
 use axum::response::Html;
 
+use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::facts_view;
-use crate::templates::{AgentDetailPage, AgentRow, ExplorerPage, FactRow, FlagRow, MethodologyPage};
-use crate::AppState;
+use crate::templates::{
+    AgentDetailPage, AgentRow, ExplorerPage, FactRow, FlagRow, MethodologyPage,
+};
 
 /// `GET /` — all agents, newest registration first. A directory, not a leaderboard.
 pub async fn explorer(State(state): State<AppState>) -> ApiResult<Html<String>> {
-    #[derive(sqlx::FromRow)]
-    struct Row {
-        chain: String,
-        agent_id: i64,
-        domain: String,
-        endpoint_alive: bool,
-        registered_at: chrono::DateTime<chrono::Utc>,
-        flag_count: i64,
-    }
-    let rows = sqlx::query_as::<_, Row>(
-        "SELECT a.chain, a.agent_id, a.domain, a.registered_at, \
-                COALESCE(e.endpoint_healthy, false) AS endpoint_alive, \
-                COALESCE(fl.n, 0) AS flag_count \
-         FROM agents a \
-         LEFT JOIN agent_enrichment e ON e.chain = a.chain AND e.agent_id = a.agent_id \
-         LEFT JOIN (SELECT chain, agent_id, count(*) AS n FROM flags GROUP BY chain, agent_id) fl \
-                ON fl.chain = a.chain AND fl.agent_id = a.agent_id \
-         ORDER BY a.registered_at DESC LIMIT 200",
+    // Same query the JSON route uses. The page keeps its historical 200-row
+    // window; paging lives in the JSON API (and, from Phase B, the new UI).
+    let page = facts_view::list_agents(
+        &state.db,
+        &facts_view::ListFilter {
+            chain: None,
+            limit: 200,
+            offset: 0,
+            sort: facts_view::Sort::Registered,
+        },
     )
-    .fetch_all(&state.db)
     .await?;
 
-    let agents = rows
+    let agents = page
+        .items
         .into_iter()
         .map(|r| AgentRow {
             agent_id: r.agent_id,
