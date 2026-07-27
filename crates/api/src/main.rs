@@ -22,8 +22,8 @@ mod routes;
 mod templates;
 
 use anyhow::Context;
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::services::ServeDir;
 
@@ -41,7 +41,9 @@ pub struct AppState {
 async fn healthz(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<&'static str, error::ApiError> {
-    sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.db).await?;
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.db)
+        .await?;
     Ok("ok")
 }
 
@@ -66,7 +68,11 @@ async fn main() -> anyhow::Result<()> {
         // JSON API — chain is part of every identity path.
         .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
-        .route("/api/agents/{chain}/{id}/facts", get(routes::agents::get_facts))
+        .route(
+            "/api/agents/{chain}/{id}/facts",
+            get(routes::agents::get_facts),
+        )
+        .route("/api/chains", get(routes::chains::list))
         .route("/api/stats", get(routes::stats::summary))
         // Server-rendered HTML pages
         .route("/", get(routes::pages::explorer))

@@ -3,6 +3,7 @@
 //! Splitting handlers into files by resource keeps `main.rs`'s router readable
 //! and each file focused:
 //!   * [`agents`] — JSON endpoints about individual agents.
+//!   * [`chains`] — the chain list a frontend filter needs.
 //!   * [`stats`]  — the aggregate "how much reputation is fake" numbers.
 //!   * [`pages`]  — the server-rendered HTML explorer.
 //!
@@ -10,5 +11,6 @@
 //! handlers when building the router, e.g. `routes::agents::list`.
 
 pub mod agents;
+pub mod chains;
 pub mod pages;
 pub mod stats;
