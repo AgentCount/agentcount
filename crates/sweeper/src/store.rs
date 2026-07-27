@@ -2,6 +2,8 @@
 //! are never updated, because a changed result with the same run_id would
 //! make the archive lie.
 
+use std::borrow::Cow;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPoolOptions;
@@ -20,6 +22,36 @@ pub struct RunMeta {
     pub checker_commit: String,
     pub spec_commit: String,
     pub rerun_command: String,
+}
+
+/// Postgres `TEXT` (and `JSONB`) refuse a literal NUL byte outright —
+/// `invalid byte sequence for encoding "UTF8": 0x00` — and this is real:
+/// agent 16791's `tokenURI()` on Base returns a `data:` URI with an embedded
+/// NUL. Silently dropping the byte (as `crates/enricher`'s `strip_nuls` does
+/// for fetched card bodies) would make the stored value diverge from what the
+/// chain actually returned, which is exactly the kind of quiet substitution
+/// this project exists not to do for the values it persists as fact.
+///
+/// Instead, escape each NUL as the six-character sequence a backslash
+/// followed by the four digits `0000` — the same escape JSON itself would use
+/// for the character (see [`escape_nuls_for_postgres`]'s own implementation
+/// below for the exact literal). That is lossless (a reader can reconstruct
+/// the exact on-chain bytes by reversing the substitution) and safe for
+/// `TEXT`. Returns the input unchanged (no allocation) when there is nothing
+/// to escape.
+///
+/// Deliberately placed in `crates/sweeper`, not `crates/chain`: a
+/// `chain::AgentSnapshot.agent_uri` must keep the true bytes so the export and
+/// any future consumer see reality. Only the database write — the boundary
+/// where Postgres's constraint actually bites — escapes.
+fn escape_nuls_for_postgres(agent_id: u64, uri: &str) -> Cow<'_, str> {
+    if !uri.contains('\0') {
+        return Cow::Borrowed(uri);
+    }
+    tracing::warn!(
+        "agent {agent_id}: agent_uri contains a NUL byte — escaping as \\u0000 before writing to Postgres"
+    );
+    Cow::Owned(uri.replace('\0', "\\u0000"))
 }
 
 impl Db {
@@ -57,6 +89,7 @@ impl Db {
         chain: &str,
         s: &chain::AgentSnapshot,
     ) -> Result<()> {
+        let agent_uri = escape_nuls_for_postgres(s.agent_id, &s.agent_uri);
         sqlx::query(
             "INSERT INTO agent_snapshots \
                (run_id, chain, agent_id, token_id, owner, agent_uri, block_number) \
@@ -67,7 +100,7 @@ impl Db {
         .bind(s.agent_id as i64)
         .bind(s.token_id.to_string())
         .bind(&s.owner)
-        .bind(&s.agent_uri)
+        .bind(agent_uri.as_ref())
         .bind(s.block_number as i64)
         .execute(&self.pool)
         .await
@@ -125,5 +158,50 @@ impl Db {
         .await
         .with_context(|| format!("no enabled chain named {chain}"))?;
         Ok(row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The literal on-chain hazard this whole fix responds to: agent 16791's
+    /// real `tokenURI()` on Base is a `data:application/json;base64,...`
+    /// string with a raw NUL embedded in it. A string with no NUL at all must
+    /// pass through untouched (and without allocating — `Cow::Borrowed`).
+    #[test]
+    fn a_uri_without_a_nul_is_returned_unchanged() {
+        let uri = "data:application/json;base64,eyJuYW1lIjoiYWdlbnQifQ==";
+        let escaped = escape_nuls_for_postgres(1, uri);
+        assert_eq!(escaped.as_ref(), uri);
+        assert!(matches!(escaped, Cow::Borrowed(_)));
+    }
+
+    /// The core guarantee: escaping is lossless and reversible. A reader who
+    /// splits the stored value on the six-character escape sequence and
+    /// substitutes a real NUL back in reconstructs EXACTLY the bytes the
+    /// chain returned — nothing invented, nothing dropped.
+    #[test]
+    fn a_nul_byte_round_trips_through_the_escape() {
+        let original = "data:application/json;base64,eyJhIjoxfQ==\0trailing-garbage-after-nul";
+        let escaped = escape_nuls_for_postgres(16791, original);
+
+        // The stored form must contain no raw NUL — that's the whole point,
+        // it's what Postgres rejects.
+        assert!(!escaped.contains('\0'));
+
+        // And it must be reconstructible back to the original bytes exactly.
+        let roundtripped = escaped.replace("\\u0000", "\0");
+        assert_eq!(roundtripped, original);
+    }
+
+    /// Multiple NULs in one URI must each survive the round trip
+    /// independently, not just the first one.
+    #[test]
+    fn multiple_nuls_all_round_trip() {
+        let original = "\0first\0second\0";
+        let escaped = escape_nuls_for_postgres(2, original);
+        assert!(!escaped.contains('\0'));
+        assert_eq!(escaped.replace("\\u0000", "\0"), original);
     }
 }
