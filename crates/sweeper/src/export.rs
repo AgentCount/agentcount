@@ -34,6 +34,14 @@ pub struct RunManifest<'a> {
     /// ABSENT from this run. A reader who has only this directory — no
     /// database — must be able to see that the census is incomplete.
     pub unreadable: Option<usize>,
+    /// How many were read successfully but could not be WRITTEN — the
+    /// per-agent database transaction was rolled back (a permanent error, or
+    /// a transient one that never succeeded within the retry budget) — and
+    /// are therefore ALSO absent from this run, for a different reason than
+    /// `unreadable`. Reported the same way: a reader with only this
+    /// directory must be able to see the census is incomplete without
+    /// querying `runs`.
+    pub unwritable: Option<usize>,
     /// Set only once the sweep completed. Its absence means the run was
     /// interrupted, and the counts above are whatever it reached.
     pub finished_at: Option<String>,

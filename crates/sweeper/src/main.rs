@@ -311,7 +311,10 @@ async fn main() -> Result<()> {
     // many we managed: the incompleteness would be discoverable only by
     // counting rows, which is exactly what this project promises never to
     // make someone do.
-    let manifest = |swept: Option<usize>, unreadable: Option<usize>, finished: Option<String>| {
+    let manifest = |swept: Option<usize>,
+                     unreadable: Option<usize>,
+                     unwritable: Option<usize>,
+                     finished: Option<String>| {
         export::RunManifest {
             run_id: run_id.to_string(),
             chain: &chain_name,
@@ -327,10 +330,11 @@ async fn main() -> Result<()> {
             agent_count: planned,
             swept,
             unreadable,
+            unwritable,
             finished_at: finished,
         }
     };
-    export::write_manifest(&manifest(None, None, None))?;
+    export::write_manifest(&manifest(None, None, None, None))?;
 
     // Persist each agent AS IT ARRIVES rather than collecting the whole
     // population first. At 60,000 agents a sweep runs for hours, and a
@@ -371,11 +375,21 @@ async fn main() -> Result<()> {
     // Session-local, but see the `planned` comment above: because `ids` here
     // is exactly `planned` minus `already_swept`, every id in it is attempted
     // exactly once (success or failure), so `already_swept.len() + swept +
-    // unreadable == planned` holds whether this is a fresh run (already_swept
-    // empty) or a resumed one — no need to have persisted a prior session's
-    // failure count anywhere to report the true cumulative totals below.
+    // unreadable + unwritable == planned` holds whether this is a fresh run
+    // (already_swept empty) or a resumed one — no need to have persisted a
+    // prior session's failure count anywhere to report the true cumulative
+    // totals below.
     let mut swept = 0usize;
     let mut unreadable = 0usize;
+    // Read fine, but the per-agent database TRANSACTION never committed —
+    // either a permanent error (bad data, a constraint violation) or a
+    // transient one that never succeeded within `store::retry_transient`'s
+    // budget. Counted and reported the same way `unreadable` is: absent from
+    // this run, never recorded as a `fail`, never a reason to abort the
+    // remaining agents. See the write site below for why `swept` is NOT
+    // incremented for these — the transaction rolled back, so nothing about
+    // this agent was actually persisted.
+    let mut unwritable = 0usize;
 
     while let Some((id, result)) = stream.next().await {
         let (s, outcome) = match result {
@@ -501,19 +515,63 @@ async fn main() -> Result<()> {
         }
         let results = checks::run_ladder(rungs);
 
-        db.write_snapshot(run_id, &chain_name, s).await?;
-        db.write_archive(
+        // All three writes — snapshot, archive, check results — land in ONE
+        // transaction (see `store::Db::write_agent`), retried with bounded
+        // backoff only while `store::classify_error` says the failure is
+        // transient. A permanent error (bad data, a constraint violation)
+        // comes back on the first attempt.
+        //
+        // Deliberately NOT `?` here: propagating would abort the entire
+        // multi-hour run over one agent, which is exactly the failure mode
+        // that has already cost two restarts. Instead: roll back (automatic
+        // — the transaction was never committed), log loudly with the agent
+        // id and SQLSTATE, count the agent unwritable, and move on to the
+        // next one. `swept` is NOT incremented below for this agent: the
+        // transaction rolled back, so nothing about it was actually
+        // persisted, and `runs.agent_count` must keep meaning "agents
+        // actually written," not "agents attempted."
+        // Named (not a literal built inline in the closure below): the
+        // closure is called more than once on retry, and each call must
+        // borrow the SAME long-lived value across its `.await` rather than a
+        // fresh temporary that would be dropped as soon as the closure
+        // expression finished evaluating.
+        let write = store::AgentWrite {
             run_id,
-            &chain_name,
-            s.agent_id,
-            &s.agent_uri,
-            &scheme,
-            &outcome,
-        )
-        .await?;
-        db.write_results(run_id, &chain_name, s.agent_id, &results)
-            .await?;
+            chain: &chain_name,
+            snapshot: s,
+            requested_uri: &s.agent_uri,
+            scheme: &scheme,
+            outcome: &outcome,
+            results: &results,
+        };
+        let write_result = store::retry_transient(|| db.write_agent(&write)).await;
+        if let Err(e) = write_result {
+            let sqlstate = e
+                .as_database_error()
+                .and_then(|d| d.code())
+                .map(|c| c.into_owned());
+            // Either classification ends up here: a Permanent error returned
+            // on its first attempt, or a Transient one that never succeeded
+            // within `retry_transient`'s budget. Both mean the SAME thing to
+            // the run: this agent's transaction never committed.
+            let why = match store::classify_error(&e) {
+                store::Classification::Permanent => "permanent error",
+                store::Classification::Transient => "transient error, retries exhausted",
+            };
+            tracing::error!(
+                "agent {}: database write did not succeed ({why}, sqlstate={sqlstate:?}): {e:#} \
+                 — rolled back, counting unwritable, continuing to the next agent",
+                s.agent_id
+            );
+            unwritable += 1;
+            continue;
+        }
 
+        // The export file is written ONLY after the transaction above
+        // committed. A filesystem write cannot join a database transaction,
+        // so this ordering — never writing the file first — is what
+        // guarantees no orphan JSON file can exist for an agent the database
+        // rejected.
         export::write_agent(&export::AgentDocument {
             run_id: run_id.to_string(),
             chain: &chain_name,
@@ -535,7 +593,8 @@ async fn main() -> Result<()> {
         swept += 1;
         if swept % 500 == 0 {
             tracing::info!(
-                "{swept}/{remaining} agents swept this session ({unreadable} unreadable this session)"
+                "{swept}/{remaining} agents swept this session \
+                 ({unreadable} unreadable, {unwritable} unwritable this session)"
             );
         }
     }
@@ -549,6 +608,7 @@ async fn main() -> Result<()> {
     export::write_manifest(&manifest(
         Some(total_swept),
         Some(unreadable),
+        Some(unwritable),
         Some(finished.to_rfc3339()),
     ))?;
     if unreadable > 0 {
@@ -559,7 +619,21 @@ async fn main() -> Result<()> {
              and are ABSENT from this run — not recorded as failures"
         );
     }
-    tracing::info!("run {run_id} complete: {total_swept} of {planned} agents");
+    if unwritable > 0 {
+        // Same principle, different failure point: these agents WERE read
+        // successfully, but their database transaction never committed (a
+        // permanent error, or a transient one that exhausted its retries).
+        // Reported exactly like `unreadable` — loudly, at the end, never
+        // discoverable only by counting rows.
+        tracing::warn!(
+            "run {run_id}: {unwritable} of {planned} agents were read but could not be \
+             WRITTEN (database) and are ABSENT from this run — not recorded as failures"
+        );
+    }
+    tracing::info!(
+        "run {run_id} complete: {total_swept} of {planned} agents \
+         ({unreadable} unreadable, {unwritable} unwritable)"
+    );
     println!("{run_id}");
     Ok(())
 }
