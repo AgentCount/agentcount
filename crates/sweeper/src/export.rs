@@ -53,6 +53,17 @@ pub struct AgentDocument<'a> {
     /// must be self-describing without the manifest beside it.
     pub checker_commit: &'a str,
     pub spec_commit: &'a str,
+    /// The `http_archive` summary — everything about what was fetched EXCEPT
+    /// the body itself, which lives only in the database (`http_archive.body`)
+    /// and can be up to 1 MiB. A reader of this file can see what happened
+    /// (status, content-type, size, hash, where redirects landed) without a
+    /// database connection, but re-fetching or looking up the archive row is
+    /// required to see the bytes themselves.
+    pub http_status: Option<u16>,
+    pub content_type: Option<&'a str>,
+    pub body_bytes: Option<usize>,
+    pub body_sha256: Option<&'a str>,
+    pub final_url: Option<&'a str>,
 }
 
 pub fn run_dir(run_id: &str) -> PathBuf {

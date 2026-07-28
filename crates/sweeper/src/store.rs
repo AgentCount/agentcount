@@ -185,6 +185,61 @@ impl Db {
         Ok(())
     }
 
+    /// Persist what one agent's fetch actually returned — the durable record
+    /// `http_archive` exists for. Written in the SAME per-agent unit as
+    /// `write_snapshot`/`write_results` below (called right beside them in
+    /// the sweeper's loop), never batched separately: a crash between the two
+    /// must not leave a snapshot with no archive row or vice versa.
+    ///
+    /// `scheme` is the caller's ALREADY-NORMALISED bucket (`"empty"` |
+    /// `"unsupported"` | `"data"` | `"http"` | `"https"` | `"ipfs"` — see
+    /// `main::checks_scheme`), not `outcome.scheme` verbatim; the two can
+    /// disagree for a malformed `data:`/`ipfs://` URI, and this column is
+    /// documented (migration 0010) to hold the same six buckets rung 2 judges.
+    pub async fn write_archive(
+        &self,
+        run_id: Uuid,
+        chain: &str,
+        agent_id: u64,
+        requested_uri: &str,
+        scheme: &str,
+        outcome: &probe::FetchOutcome,
+    ) -> Result<()> {
+        // Same on-chain-controlled-string hazard `write_snapshot` guards
+        // against: `requested_uri` is the identical `tokenURI()` value stored
+        // there, so a raw NUL must be escaped the same lossless way before it
+        // reaches this TEXT column.
+        let requested_uri = escape_nuls_for_postgres(agent_id, requested_uri);
+        let body_bytes = outcome.body.as_ref().map(|b| b.len() as i32);
+        sqlx::query(
+            "INSERT INTO http_archive \
+               (run_id, chain, agent_id, requested_uri, scheme, request_url, final_url, \
+                http_status, content_type, headers, body, body_bytes, body_sha256, \
+                truncated, error, elapsed_ms) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+        )
+        .bind(run_id)
+        .bind(chain)
+        .bind(agent_id as i64)
+        .bind(requested_uri.as_ref())
+        .bind(scheme)
+        .bind(&outcome.request_url)
+        .bind(&outcome.final_url)
+        .bind(outcome.http_status.map(i32::from))
+        .bind(&outcome.content_type)
+        .bind(&outcome.headers)
+        .bind(outcome.body.as_deref())
+        .bind(body_bytes)
+        .bind(&outcome.body_sha256)
+        .bind(outcome.truncated)
+        .bind(&outcome.error)
+        .bind(outcome.elapsed_ms.map(|ms| ms as i32))
+        .execute(&self.pool)
+        .await
+        .context("writing http archive")?;
+        Ok(())
+    }
+
     pub async fn write_results(
         &self,
         run_id: Uuid,

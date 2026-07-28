@@ -23,15 +23,23 @@
 # otherwise fall back to an older, dumber resolver.
 resolver = "3"
 
-# The four crates that make up Ledgerscope. Each path is a directory containing
-# its own `Cargo.toml`. Data flows indexer → (Postgres) → enricher → scoring →
-# api, but note the members are listed alphabetically — Cargo does not care
-# about order, it works out the real build order from the dependency graph.
+# The crates that make up Ledgerscope. Each path is a directory containing
+# its own `Cargo.toml`. Data flows indexer → (Postgres) → sweeper (chain +
+# probe + checks) → api, but note the members are listed alphabetically —
+# Cargo does not care about order, it works out the real build order from the
+# dependency graph.
+#
+# `crates/enricher` (the old availability-model observer) is gone as of the
+# conformance-ladder rewrite: its HTTP-fetching job is now `crates/probe`, its
+# per-agent judgment job is now `crates/checks`, and its orchestration job is
+# now `crates/sweeper`. `crates/facts` is left in place even though it now
+# only serves the retired availability model — `crates/api` (rewritten Day 3)
+# is still its only consumer, and deleting `facts` now would break `api`'s
+# build before its replacement exists.
 members = [
     "crates/chain",
     "crates/checks",
     "crates/indexer",
-    "crates/enricher",
     "crates/facts",
     "crates/probe",
     "crates/api",
@@ -87,9 +95,10 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTTP client. The enricher uses it to observe agent endpoints. The "stream"
-# feature enables chunk-by-chunk body reads, which is how we cap response size
-# (a hostile endpoint must not be able to OOM the enricher).
+# HTTP client. `crates/probe` uses it to fetch agents' declared registration
+# documents. The "stream" feature enables chunk-by-chunk body reads, which is
+# how we cap response size (a hostile endpoint must not be able to OOM the
+# prober).
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # SSRF guard: parse+validate URLs built from on-chain (attacker-controlled) domains.
@@ -104,9 +113,10 @@ sha2 = "0.10"
 # Recorded-HTTP test server: probe tests run against a local mock, not the network.
 wiremock = "0.6"
 
-# Combinators for working with many futures at once. The enricher uses
-# `futures::stream::StreamExt::buffer_unordered` to probe many endpoints with a
-# bounded amount of concurrency (fast, but not a thundering herd).
+# Combinators for working with many futures at once. `crates/sweeper` uses
+# `futures::stream::StreamExt::buffer_unordered` to read the chain and probe
+# many endpoints with a bounded amount of concurrency (fast, but not a
+# thundering herd).
 futures = "0.3"
 
 # tower middleware for axum. The timeout layer caps request time on the

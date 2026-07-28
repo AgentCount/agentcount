@@ -7,9 +7,18 @@
 //! [`sweep_resume`]) does not break that: it adds rows to a run that never
 //! finished, it never edits a row already written.
 //!
-//! Day 1 answers rung 1 only. Rungs 2-7 are ABSENT from the output rather than
-//! reported as `skipped` — "we did not ask" and "we could not ask" are
+//! Day 2 wires in the probe layer: after each agent's chain snapshot, its
+//! declared `tokenURI()` is fetched via `probe::Prober`, archived to
+//! `http_archive`, and judged by rungs 2-5 (`resolvable`, `parseable`,
+//! `conformant`, `bound`). Rungs 6-7 are still ABSENT from the output rather
+//! than reported as `skipped` — "we did not ask" and "we could not ask" are
 //! different claims and the schema keeps them different.
+//!
+//! Two independent concurrency budgets drive the pipeline, on purpose (see
+//! [`rpc_concurrency`] and [`fetch_concurrency`]): the RPC endpoint throttles
+//! hard (a public free-tier provider), while HTTP fetches are limited
+//! per-host by `probe` itself. Collapsing them into one shared number would
+//! mean tuning one starves the other.
 
 mod export;
 mod store;
@@ -34,6 +43,74 @@ fn rpc_concurrency() -> usize {
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_RPC_CONCURRENCY)
+}
+
+/// How many `probe.fetch()` calls this stage keeps in flight at once. Kept
+/// SEPARATE from [`rpc_concurrency`] — the RPC endpoint and the population of
+/// HTTP hosts being fetched are different resources with different limits,
+/// and collapsing them into one shared number would mean neither budget could
+/// be tuned without affecting the other.
+///
+/// Reads the SAME `PROBE_CONCURRENCY` env var (and default) that
+/// `probe::Prober` itself uses for its internal global semaphore — not a
+/// second, independent knob — so this stage's own throttle can never be
+/// tighter than the budget `Prober` was actually built with (which would
+/// silently waste it) nor so loose that it stops being the number a reader
+/// tuning `PROBE_CONCURRENCY` expects to be in effect.
+fn fetch_concurrency() -> usize {
+    std::env::var("PROBE_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(probe::DEFAULT_GLOBAL_CONCURRENCY)
+}
+
+/// The published contact string from `METHODOLOGY.md` (search
+/// `ledgerscope-probe`) — the single source for the User-Agent's contact
+/// portion. Declared here, not in `crates/probe`, and passed into
+/// [`probe::Prober::new`] as a parameter, so the crate that actually sends
+/// the header never hardcodes it and cannot drift from what METHODOLOGY.md
+/// promises.
+const PROBE_CONTACT_URL: &str =
+    "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io";
+
+/// HTTPS gateway `ipfs://` URIs are rewritten onto before fetching.
+/// Overridable via `IPFS_GATEWAY` for anyone who wants a different (or
+/// self-hosted) gateway; the evidence records which one served each agent
+/// (`via_gateway`) so a reader can tell an agent's failure from the
+/// gateway's.
+fn ipfs_gateway() -> String {
+    std::env::var("IPFS_GATEWAY").unwrap_or_else(|_| "https://ipfs.io/ipfs/".to_string())
+}
+
+/// Reduce a `probe::FetchOutcome`'s raw scheme label to the six buckets
+/// `checks::ResolvableInput` and the `http_archive.scheme` column agree on:
+/// `"empty"`, `"unsupported"`, `"data"`, `"http"`, `"https"`, `"ipfs"`.
+///
+/// `FetchOutcome::scheme` alone is ambiguous for `data:` and `ipfs://`: a
+/// MALFORMED one carries the SAME label as a genuine one (see
+/// `probe::resolve::Target::Unsupported`'s doc comment — `probe` only knows
+/// which scheme it tried to parse, not whether parsing succeeded), so
+/// `scheme == "data"` alone cannot tell a decoded inline document from a
+/// `data:` URI with no comma separator. `request_url` disambiguates: it is
+/// set if, and only if, an actual HTTP(s) request was attempted — `fetch_http`
+/// sets it as its very first action, before the netguard, robots check, or
+/// the request itself can fail — so a malformed `ipfs://` (which never
+/// reaches `fetch_http`) is caught here rather than misread as a passing
+/// rung 2. A malformed `data:` URI is caught the same way via `body`: only a
+/// successfully decoded inline payload ever has one.
+fn checks_scheme(outcome: &probe::FetchOutcome) -> String {
+    if outcome.scheme.is_empty() {
+        "empty".to_string()
+    } else if outcome.request_url.is_some() {
+        // A real HTTP(s) request was attempted (http, https, or ipfs via the
+        // gateway) — keep whichever of those labels probe already assigned.
+        outcome.scheme.clone()
+    } else if outcome.scheme == "data" && outcome.body.is_some() {
+        outcome.scheme.clone()
+    } else {
+        "unsupported".to_string()
+    }
 }
 
 /// Sweep only the first N discovered agent ids, if set. Exists so a bounded
@@ -104,6 +181,13 @@ async fn main() -> Result<()> {
     let rpc_url = std::env::var(&rpc_var).with_context(|| format!("{rpc_var} must be set"))?;
     let (chain_id, registry_addr, deploy_block) = db.chain_config(&chain_name).await?;
     let registry = chain::Registry::connect(&rpc_url, &registry_addr).await?;
+
+    // One shared prober for the whole run. `chain_id`/`registry_addr` above
+    // are the SAME values rung 5 compares each document's declared binding
+    // against below — a single source so rung 1's provenance and rung 5's
+    // "reality" can never quietly disagree.
+    let gateway = ipfs_gateway();
+    let prober = probe::Prober::new(PROBE_CONTACT_URL, &gateway)?;
 
     // `deploy_block` is no longer used for enumeration (agent ids are found
     // by binary search on `ownerOf` existence, not by scanning logs from
@@ -254,12 +338,35 @@ async fn main() -> Result<()> {
     // Ctrl-C at hour three discards every read — plus the database shows
     // nothing until the very end, so there is no way to tell a working sweep
     // from a wedged one.
+    // Two chained stages, each with its OWN `buffer_unordered` — and
+    // therefore its own concurrency budget — rather than one pipeline shared
+    // end to end. Stage 1 reads the chain (bounded by `rpc_concurrency`);
+    // stage 2 fetches the agent's declared document over HTTP (bounded by
+    // `fetch_concurrency`, independent of stage 1 and matched to
+    // `probe::Prober`'s own internal global cap — see that function's doc).
+    // An RPC failure is carried through stage 2 as `Err` rather than
+    // filtered out beforehand: filtering here would need a shared mutable
+    // counter reached from inside the stream combinators, and threading the
+    // failure through as data is simpler and cannot lose the error message.
     let mut stream = stream::iter(ids)
         .map(|id| {
             let registry = &registry;
             async move { (id, registry.snapshot(id, pinned).await) }
         })
-        .buffer_unordered(rpc_concurrency());
+        .buffer_unordered(rpc_concurrency())
+        .map(|(id, result)| {
+            let prober = &prober;
+            async move {
+                match result {
+                    Ok(s) => {
+                        let outcome = prober.fetch(&s.agent_uri).await;
+                        (id, Ok((s, outcome)))
+                    }
+                    Err(e) => (id, Err(e)),
+                }
+            }
+        })
+        .buffer_unordered(fetch_concurrency());
 
     // Session-local, but see the `planned` comment above: because `ids` here
     // is exactly `planned` minus `already_swept`, every id in it is attempted
@@ -271,8 +378,8 @@ async fn main() -> Result<()> {
     let mut unreadable = 0usize;
 
     while let Some((id, result)) = stream.next().await {
-        let s = match result {
-            Ok(s) => s,
+        let (s, outcome) = match result {
+            Ok(pair) => pair,
             Err(e) => {
                 // An RPC failure is OUR problem, not the agent's: leave the
                 // agent out of this run rather than recording a `fail` about
@@ -285,6 +392,12 @@ async fn main() -> Result<()> {
         };
         let s = &s;
         let now = Utc::now();
+
+        // The scheme bucket every downstream rung and the archive row agree
+        // on — see `checks_scheme`'s doc comment for why this can't just be
+        // `outcome.scheme` verbatim.
+        let scheme = checks_scheme(&outcome);
+
         let rung1 = checks::registered(
             &checks::RegisteredInput {
                 chain_id: chain_id as u64,
@@ -298,9 +411,86 @@ async fn main() -> Result<()> {
             },
             now,
         );
-        let results = checks::run_ladder(vec![rung1]);
+
+        let inline_bytes = if scheme == "data" {
+            outcome.body.as_ref().map(Vec::len)
+        } else {
+            None
+        };
+        let rung2 = checks::resolvable(
+            &checks::ResolvableInput {
+                uri: s.agent_uri.clone(),
+                scheme: scheme.clone(),
+                request_url: outcome.request_url.clone(),
+                final_url: outcome.final_url.clone(),
+                http_status: outcome.http_status,
+                elapsed_ms: outcome.elapsed_ms,
+                error: outcome.error.clone(),
+                inline_bytes,
+                via_gateway: outcome.via_gateway.clone(),
+            },
+            now,
+        );
+
+        let (rung3, document) = checks::parseable(
+            &checks::ParseableInput {
+                body: outcome.body.clone(),
+                content_type: outcome.content_type.clone(),
+                body_sha256: outcome.body_sha256.clone(),
+                truncated: outcome.truncated,
+            },
+            now,
+        );
+
+        // Rungs 4 and 5 need a parsed document, and only rung 3 produces one.
+        // When `document` is `None` they are simply not constructed — NOT
+        // constructed-and-failed, and NOT marked `Skipped` here either: that
+        // is `run_ladder`'s job alone (see the module doc). A document that
+        // never parsed cannot be judged missing a field or unbound; it can
+        // only be a question this ladder never got to ask.
+        let rung4 = document.as_ref().map(|doc| {
+            checks::conformant(
+                &checks::ConformantInput {
+                    document: doc.clone(),
+                },
+                spec_commit,
+                now,
+            )
+        });
+        let rung5 = document.as_ref().map(|doc| {
+            checks::bound(
+                &checks::BoundInput {
+                    document: doc.clone(),
+                    // The SAME chain_id/registry rung 1 was judged against —
+                    // one source, so the two rungs can never disagree about
+                    // what "on-chain reality" was for this agent.
+                    actual_agent_id: s.agent_id,
+                    actual_chain_id: chain_id as u64,
+                    actual_registry: registry_addr.clone(),
+                },
+                now,
+            )
+        });
+
+        let mut rungs = vec![rung1, rung2, rung3];
+        if let Some(r4) = rung4 {
+            rungs.push(r4);
+        }
+        if let Some(r5) = rung5 {
+            rungs.push(r5);
+        }
+        let results = checks::run_ladder(rungs);
 
         db.write_snapshot(run_id, &chain_name, s).await?;
+        db.write_archive(
+            run_id,
+            &chain_name,
+            s.agent_id,
+            &s.agent_uri,
+            &scheme,
+            &outcome,
+        )
+        .await?;
         db.write_results(run_id, &chain_name, s.agent_id, &results)
             .await?;
 
@@ -315,6 +505,11 @@ async fn main() -> Result<()> {
             checks: &results,
             checker_commit,
             spec_commit,
+            http_status: outcome.http_status,
+            content_type: outcome.content_type.as_deref(),
+            body_bytes: outcome.body.as_ref().map(Vec::len),
+            body_sha256: outcome.body_sha256.as_deref(),
+            final_url: outcome.final_url.as_deref(),
         })?;
 
         swept += 1;

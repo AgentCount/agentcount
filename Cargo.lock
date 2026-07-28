@@ -1950,26 +1950,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enricher"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "chrono",
- "futures",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "wiremock",
-]
-
-[[package]]
 name = "enum-ordinalize"
 version = "4.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4816,6 +4796,7 @@ dependencies = [
  "checks",
  "chrono",
  "futures",
+ "probe",
  "serde",
  "serde_json",
  "sqlx",
