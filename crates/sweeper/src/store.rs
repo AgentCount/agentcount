@@ -7,8 +7,8 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 pub struct Db {
@@ -109,16 +109,24 @@ impl Db {
     /// doesn't exist, or if it predates migration 0009 and has no
     /// `pinned_block` recorded (nothing safe to resume against).
     pub async fn load_run(&self, run_id: Uuid) -> Result<ResumedRun> {
-        let row: (String, Option<i64>, i32, String, String, String, String, DateTime<Utc>) =
-            sqlx::query_as(
-                "SELECT chain, pinned_block, schema_version, checker_version, \
+        let row: (
+            String,
+            Option<i64>,
+            i32,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+        ) = sqlx::query_as(
+            "SELECT chain, pinned_block, schema_version, checker_version, \
                         checker_commit, spec_commit, rerun_command, started_at \
                  FROM runs WHERE run_id = $1",
-            )
-            .bind(run_id)
-            .fetch_one(&self.pool)
-            .await
-            .with_context(|| format!("no run {run_id} to resume"))?;
+        )
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .with_context(|| format!("no run {run_id} to resume"))?;
         let pinned_block = row.1.with_context(|| {
             format!(
                 "run {run_id} has no pinned_block recorded — it predates migration 0009 \
@@ -142,14 +150,13 @@ impl Db {
     /// the extra predicate costs nothing and matches how every other query
     /// here addresses `agent_snapshots`).
     pub async fn swept_agent_ids(&self, run_id: Uuid, chain: &str) -> Result<HashSet<u64>> {
-        let rows: Vec<(i64,)> = sqlx::query_as(
-            "SELECT agent_id FROM agent_snapshots WHERE run_id = $1 AND chain = $2",
-        )
-        .bind(run_id)
-        .bind(chain)
-        .fetch_all(&self.pool)
-        .await
-        .context("loading already-swept agent ids")?;
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT agent_id FROM agent_snapshots WHERE run_id = $1 AND chain = $2")
+                .bind(run_id)
+                .bind(chain)
+                .fetch_all(&self.pool)
+                .await
+                .context("loading already-swept agent ids")?;
         Ok(rows.into_iter().map(|(id,)| id as u64).collect())
     }
 

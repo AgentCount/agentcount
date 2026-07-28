@@ -66,8 +66,13 @@ pub fn parseable(
         // We capped it ourselves; judging the (possibly cut-mid-token) JSON
         // invalid would be our bug reported as their failure.
         evidence["reason"] = json!("body_truncated");
-        let result =
-            CheckResult { rung: 3, name: "parseable", status: CheckStatus::Error, evidence, checked_at: now };
+        let result = CheckResult {
+            rung: 3,
+            name: "parseable",
+            status: CheckStatus::Error,
+            evidence,
+            checked_at: now,
+        };
         return (result, None);
     }
 
@@ -75,8 +80,13 @@ pub fn parseable(
         // Defence in depth: rung 2 should already have stopped the ladder
         // before we get here with no body at all.
         evidence["reason"] = json!("no_body");
-        let result =
-            CheckResult { rung: 3, name: "parseable", status: CheckStatus::Error, evidence, checked_at: now };
+        let result = CheckResult {
+            rung: 3,
+            name: "parseable",
+            status: CheckStatus::Error,
+            evidence,
+            checked_at: now,
+        };
         return (result, None);
     };
 
@@ -84,14 +94,24 @@ pub fn parseable(
 
     match serde_json::from_slice::<serde_json::Value>(to_parse) {
         Ok(value) => {
-            let result =
-                CheckResult { rung: 3, name: "parseable", status: CheckStatus::Pass, evidence, checked_at: now };
+            let result = CheckResult {
+                rung: 3,
+                name: "parseable",
+                status: CheckStatus::Pass,
+                evidence,
+                checked_at: now,
+            };
             (result, Some(value))
         }
         Err(e) => {
             evidence["parse_error"] = json!(e.to_string());
-            let result =
-                CheckResult { rung: 3, name: "parseable", status: CheckStatus::Fail, evidence, checked_at: now };
+            let result = CheckResult {
+                rung: 3,
+                name: "parseable",
+                status: CheckStatus::Fail,
+                evidence,
+                checked_at: now,
+            };
             (result, None)
         }
     }
@@ -129,7 +149,9 @@ mod tests {
         let (r, doc) = parseable(&input_with(b"{not json"), t());
         assert_eq!(r.status, CheckStatus::Fail);
         assert!(doc.is_none());
-        let msg = r.evidence["parse_error"].as_str().expect("parse_error must be a string");
+        let msg = r.evidence["parse_error"]
+            .as_str()
+            .expect("parse_error must be a string");
         assert!(!msg.is_empty());
     }
 

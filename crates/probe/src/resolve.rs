@@ -136,14 +136,15 @@ fn percent_decode(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 3 <= bytes.len()
+        if bytes[i] == b'%'
+            && i + 3 <= bytes.len()
             && let Ok(byte) =
                 u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
-            {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
+        {
+            out.push(byte);
+            i += 3;
+            continue;
+        }
         out.push(bytes[i]);
         i += 1;
     }

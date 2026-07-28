@@ -127,7 +127,13 @@ pub fn resolvable(input: &ResolvableInput, now: DateTime<Utc>) -> CheckResult {
         }
     };
 
-    CheckResult { rung: 2, name: "resolvable", status, evidence: Value::Object(evidence), checked_at: now }
+    CheckResult {
+        rung: 2,
+        name: "resolvable",
+        status,
+        evidence: Value::Object(evidence),
+        checked_at: now,
+    }
 }
 
 #[cfg(test)]

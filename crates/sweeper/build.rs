@@ -21,7 +21,11 @@ fn main() {
 
     // A sweep from a dirty tree is not reproducible; say so in the stamp
     // rather than pretending the commit describes what ran.
-    let stamp = if dirty { format!("{commit}-dirty") } else { commit };
+    let stamp = if dirty {
+        format!("{commit}-dirty")
+    } else {
+        commit
+    };
     println!("cargo:rustc-env=CHECKER_COMMIT={stamp}");
 
     // Re-run triggers. Watching only `.git/HEAD` is NOT enough, and getting

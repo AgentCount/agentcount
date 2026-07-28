@@ -124,7 +124,12 @@ struct EntryEval {
     score: u8,
 }
 
-fn evaluate_entry(entry: &Value, actual_agent_id: u64, actual_chain_id: u64, actual_registry: &str) -> EntryEval {
+fn evaluate_entry(
+    entry: &Value,
+    actual_agent_id: u64,
+    actual_chain_id: u64,
+    actual_registry: &str,
+) -> EntryEval {
     let declared_agent_id = entry.get("agentId").cloned().unwrap_or(Value::Null);
     let declared_registry = entry.get("agentRegistry").cloned().unwrap_or(Value::Null);
 
@@ -134,7 +139,9 @@ fn evaluate_entry(entry: &Value, actual_agent_id: u64, actual_chain_id: u64, act
     let namespace_ok = parsed.as_ref().is_some_and(|(ns, _, _)| ns == "eip155");
     let chain_id = parsed.as_ref().and_then(|(_, cid, _)| *cid);
     let chain_match = chain_id == Some(actual_chain_id);
-    let address_match = parsed.as_ref().is_some_and(|(_, _, addr)| addr.eq_ignore_ascii_case(actual_registry));
+    let address_match = parsed
+        .as_ref()
+        .is_some_and(|(_, _, addr)| addr.eq_ignore_ascii_case(actual_registry));
 
     let is_match = agent_id_match && namespace_ok && chain_match && address_match;
     let score = agent_id_match as u8 + namespace_ok as u8 + chain_match as u8 + address_match as u8;
@@ -149,7 +156,11 @@ fn evaluate_entry(entry: &Value, actual_agent_id: u64, actual_chain_id: u64, act
 }
 
 pub fn bound(input: &BoundInput, now: DateTime<Utc>) -> CheckResult {
-    let entries = input.document.get("registrations").filter(|v| !v.is_null()).and_then(Value::as_array);
+    let entries = input
+        .document
+        .get("registrations")
+        .filter(|v| !v.is_null())
+        .and_then(Value::as_array);
 
     let Some(entries) = entries.filter(|e| !e.is_empty()) else {
         // Absent, non-array, null, or empty: no binding claim to check at
@@ -163,19 +174,42 @@ pub fn bound(input: &BoundInput, now: DateTime<Utc>) -> CheckResult {
             "match": false,
             "registrations_seen": 0,
         });
-        return CheckResult { rung: 5, name: "bound", status: CheckStatus::Fail, evidence, checked_at: now };
+        return CheckResult {
+            rung: 5,
+            name: "bound",
+            status: CheckStatus::Fail,
+            evidence,
+            checked_at: now,
+        };
     };
 
-    let evals: Vec<EntryEval> =
-        entries.iter().map(|e| evaluate_entry(e, input.actual_agent_id, input.actual_chain_id, &input.actual_registry)).collect();
+    let evals: Vec<EntryEval> = entries
+        .iter()
+        .map(|e| {
+            evaluate_entry(
+                e,
+                input.actual_agent_id,
+                input.actual_chain_id,
+                &input.actual_registry,
+            )
+        })
+        .collect();
 
     // The best entry: highest score wins; first entry wins ties. Any exact
     // match necessarily has the maximum possible score, so if one exists it
     // is exactly the one reported.
-    let best =
-        evals.iter().enumerate().max_by_key(|(i, e)| (e.score, std::cmp::Reverse(*i))).map(|(_, e)| e).expect("non-empty entries");
+    let best = evals
+        .iter()
+        .enumerate()
+        .max_by_key(|(i, e)| (e.score, std::cmp::Reverse(*i)))
+        .map(|(_, e)| e)
+        .expect("non-empty entries");
 
-    let status = if best.is_match { CheckStatus::Pass } else { CheckStatus::Fail };
+    let status = if best.is_match {
+        CheckStatus::Pass
+    } else {
+        CheckStatus::Fail
+    };
 
     let evidence = json!({
         "declared_agent_id": best.declared_agent_id,
@@ -185,7 +219,13 @@ pub fn bound(input: &BoundInput, now: DateTime<Utc>) -> CheckResult {
         "registrations_seen": entries.len(),
     });
 
-    CheckResult { rung: 5, name: "bound", status, evidence, checked_at: now }
+    CheckResult {
+        rung: 5,
+        name: "bound",
+        status,
+        evidence,
+        checked_at: now,
+    }
 }
 
 #[cfg(test)]
@@ -341,7 +381,12 @@ mod tests {
 
     #[test]
     fn a_registrations_value_that_is_not_an_array_fails_not_panics() {
-        for bad in [json!("eip155:1:0xabc"), json!(42), json!({"agentId": 22}), json!(true)] {
+        for bad in [
+            json!("eip155:1:0xabc"),
+            json!(42),
+            json!({"agentId": 22}),
+            json!(true),
+        ] {
             let doc = doc_with_registrations(bad);
             let r = bound(&input(doc), t());
             assert_eq!(r.status, CheckStatus::Fail);

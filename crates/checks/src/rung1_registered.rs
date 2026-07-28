@@ -47,7 +47,13 @@ pub fn registered(input: &RegisteredInput, now: DateTime<Utc>) -> CheckResult {
         CheckStatus::Pass
     };
 
-    CheckResult { rung: 1, name: "registered", status, evidence, checked_at: now }
+    CheckResult {
+        rung: 1,
+        name: "registered",
+        status,
+        evidence,
+        checked_at: now,
+    }
 }
 
 #[cfg(test)]
@@ -79,9 +85,15 @@ mod tests {
         assert_eq!(r.status, CheckStatus::Pass);
         // Every field the product spec lists as rung-1 evidence.
         assert_eq!(r.evidence["chain_id"], 8453);
-        assert_eq!(r.evidence["registry"], "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432");
+        assert_eq!(
+            r.evidence["registry"],
+            "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432"
+        );
         assert_eq!(r.evidence["token_id"], "42");
-        assert_eq!(r.evidence["owner"], "0xabc0000000000000000000000000000000000001");
+        assert_eq!(
+            r.evidence["owner"],
+            "0xabc0000000000000000000000000000000000001"
+        );
         assert_eq!(r.evidence["block_number"], 41_817_815u64);
         assert_eq!(r.evidence["tx_hash"], "0xdead");
     }

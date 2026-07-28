@@ -274,12 +274,11 @@ impl Prober {
         let mut robots_checked = false;
 
         for hop in 0..=MAX_REDIRECTS {
-            if validate_hops
-                && let Err(reason) = self.validate_hop(&current).await {
-                    out.error = Some(format!("ssrf_blocked: {reason}"));
-                    out.elapsed_ms = Some(elapsed_ms(start));
-                    return out;
-                }
+            if validate_hops && let Err(reason) = self.validate_hop(&current).await {
+                out.error = Some(format!("ssrf_blocked: {reason}"));
+                out.elapsed_ms = Some(elapsed_ms(start));
+                return out;
+            }
 
             if !robots_checked {
                 robots_checked = true;
@@ -313,22 +312,24 @@ impl Prober {
             };
 
             let is_redirect = (300..400).contains(&resp.status);
-            if is_redirect && hop < MAX_REDIRECTS
-                && let Some(loc) = &resp.location {
-                    match current.join(loc) {
-                        Ok(next) => {
-                            current = next;
-                            continue;
-                        }
-                        Err(e) => {
-                            out.error = Some(format!("bad_redirect_location: {e}"));
-                            out.elapsed_ms = Some(elapsed_ms(start));
-                            return out;
-                        }
+            if is_redirect
+                && hop < MAX_REDIRECTS
+                && let Some(loc) = &resp.location
+            {
+                match current.join(loc) {
+                    Ok(next) => {
+                        current = next;
+                        continue;
+                    }
+                    Err(e) => {
+                        out.error = Some(format!("bad_redirect_location: {e}"));
+                        out.elapsed_ms = Some(elapsed_ms(start));
+                        return out;
                     }
                 }
-                // 3xx with no (or unusable) Location header: nothing to
-                // follow, fall through and record it as the terminal response.
+            }
+            // 3xx with no (or unusable) Location header: nothing to
+            // follow, fall through and record it as the terminal response.
 
             out.final_url = Some(current.to_string());
             out.http_status = Some(resp.status);

@@ -159,7 +159,9 @@ where
     P: FnMut(u64) -> Fut,
     Fut: std::future::Future<Output = Result<bool>>,
 {
-    let mut hi = lo.checked_add(1).context("id overflowed u64 starting the search bracket")?;
+    let mut hi = lo
+        .checked_add(1)
+        .context("id overflowed u64 starting the search bracket")?;
     loop {
         if !p(hi).await? {
             break;
@@ -315,7 +317,10 @@ impl Registry {
         .await
         .with_context(|| format!("ownerOf({agent_id})"))?;
         let agent_uri = retry_throttled(|| async {
-            c.tokenURI(token_id).block(BlockId::from(block)).call().await
+            c.tokenURI(token_id)
+                .block(BlockId::from(block))
+                .call()
+                .await
         })
         .await
         .with_context(|| format!("tokenURI({agent_id})"))?;
@@ -428,7 +433,9 @@ mod tests {
     /// doubling — the very first probe at `hi = 1` should already be false.
     #[tokio::test]
     async fn find_boundary_a_single_existing_id() {
-        let (lo, hi) = find_boundary(0, |id| async move { Ok(id == 0) }).await.unwrap();
+        let (lo, hi) = find_boundary(0, |id| async move { Ok(id == 0) })
+            .await
+            .unwrap();
         assert_eq!((lo, hi), (0, 1));
     }
 
@@ -437,7 +444,9 @@ mod tests {
     /// 65536) rather than a toy-sized fixture.
     #[tokio::test]
     async fn find_boundary_matches_the_observed_base_population() {
-        let (lo, hi) = find_boundary(0, |id| async move { Ok(id <= 59_997) }).await.unwrap();
+        let (lo, hi) = find_boundary(0, |id| async move { Ok(id <= 59_997) })
+            .await
+            .unwrap();
         assert_eq!((lo, hi), (59_997, 59_998));
     }
 
@@ -446,7 +455,9 @@ mod tests {
     #[tokio::test]
     async fn find_boundary_exact_power_of_two_boundary() {
         // ids 0..=63 exist (64 agents); 64 does not.
-        let (lo, hi) = find_boundary(0, |id| async move { Ok(id <= 63) }).await.unwrap();
+        let (lo, hi) = find_boundary(0, |id| async move { Ok(id <= 63) })
+            .await
+            .unwrap();
         assert_eq!((lo, hi), (63, 64));
     }
 
@@ -464,7 +475,10 @@ mod tests {
             }
         })
         .await;
-        assert!(result.is_err(), "a non-revert failure must not be treated as a boundary");
+        assert!(
+            result.is_err(),
+            "a non-revert failure must not be treated as a boundary"
+        );
     }
 
     /// Hits a real RPC endpoint, so it is `#[ignore]` by default:
@@ -517,6 +531,9 @@ mod tests {
         println!("highest_agent_id at block {block}: {max:?}");
         assert!(max.is_some());
         let max = max.unwrap();
-        assert!(max >= 59_997, "population appears to have shrunk below a known floor");
+        assert!(
+            max >= 59_997,
+            "population appears to have shrunk below a known floor"
+        );
     }
 }

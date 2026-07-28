@@ -43,7 +43,10 @@ fn rpc_concurrency() -> usize {
 /// a run that swept 2,000 of 59,998 agents but whose rerun command implies a
 /// full sweep would misrepresent what was actually measured.
 fn sweep_max_agents() -> Option<usize> {
-    std::env::var("SWEEP_MAX_AGENTS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0)
+    std::env::var("SWEEP_MAX_AGENTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
 }
 
 /// Resume an existing run instead of opening a new one. Set to a `run_id` a
@@ -54,9 +57,9 @@ fn sweep_max_agents() -> Option<usize> {
 /// starting over from agent 0.
 fn sweep_resume() -> Result<Option<Uuid>> {
     match std::env::var("SWEEP_RESUME") {
-        Ok(s) => Ok(Some(
-            Uuid::parse_str(&s).with_context(|| format!("SWEEP_RESUME={s} is not a valid run id"))?,
-        )),
+        Ok(s) => Ok(Some(Uuid::parse_str(&s).with_context(|| {
+            format!("SWEEP_RESUME={s} is not a valid run id")
+        })?)),
         Err(_) => Ok(None),
     }
 }
@@ -65,12 +68,13 @@ fn sweep_resume() -> Result<Option<Uuid>> {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let chain_arg = std::env::args().nth(1).unwrap_or_else(|| "base".to_string());
+    let chain_arg = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "base".to_string());
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
     let db = store::Db::connect(&database_url).await?;
 
@@ -91,7 +95,10 @@ async fn main() -> Result<()> {
         }
         None => None,
     };
-    let chain_name = resumed.as_ref().map(|(_, r)| r.chain.clone()).unwrap_or(chain_arg);
+    let chain_name = resumed
+        .as_ref()
+        .map(|(_, r)| r.chain.clone())
+        .unwrap_or(chain_arg);
 
     let rpc_var = format!("RPC_URL_{}", chain_name.to_uppercase());
     let rpc_url = std::env::var(&rpc_var).with_context(|| format!("{rpc_var} must be set"))?;
@@ -105,71 +112,80 @@ async fn main() -> Result<()> {
     // callers.
     let _ = deploy_block;
 
-    let (run_id, pinned, schema_version, checker_version, checker_commit, spec_commit, rerun, started_at, already_swept) =
-        match resumed {
-            Some((run_id, r)) => {
-                let already_swept = db.swept_agent_ids(run_id, &chain_name).await?;
-                tracing::info!(
-                    "resuming run {run_id} on {chain_name} at pinned block {} — \
+    let (
+        run_id,
+        pinned,
+        schema_version,
+        checker_version,
+        checker_commit,
+        spec_commit,
+        rerun,
+        started_at,
+        already_swept,
+    ) = match resumed {
+        Some((run_id, r)) => {
+            let already_swept = db.swept_agent_ids(run_id, &chain_name).await?;
+            tracing::info!(
+                "resuming run {run_id} on {chain_name} at pinned block {} — \
                      {} agent(s) already swept, resuming the remainder",
-                    r.pinned_block,
-                    already_swept.len()
-                );
-                (
-                    run_id,
-                    r.pinned_block,
-                    r.schema_version,
-                    r.checker_version,
-                    r.checker_commit,
-                    r.spec_commit,
-                    r.rerun_command,
-                    r.started_at.to_rfc3339(),
-                    already_swept,
-                )
-            }
-            None => {
-                let pinned = registry.pinned_block().await?;
-                tracing::info!("sweeping {chain_name} at block {pinned}");
+                r.pinned_block,
+                already_swept.len()
+            );
+            (
+                run_id,
+                r.pinned_block,
+                r.schema_version,
+                r.checker_version,
+                r.checker_commit,
+                r.spec_commit,
+                r.rerun_command,
+                r.started_at.to_rfc3339(),
+                already_swept,
+            )
+        }
+        None => {
+            let pinned = registry.pinned_block().await?;
+            tracing::info!("sweeping {chain_name} at block {pinned}");
 
-                let run_id = Uuid::new_v4();
-                let checker_commit = env!("CHECKER_COMMIT").to_string();
-                let max_agents = sweep_max_agents();
-                // The rerun command must describe what THIS run actually
-                // swept. A pilot capped by SWEEP_MAX_AGENTS is not reproduced
-                // by the bare command below — omitting the cap here would
-                // make the archived run claim a full sweep it never did.
-                let rerun = match max_agents {
-                    Some(n) => format!(
-                        "SWEEP_MAX_AGENTS={n} cargo run -p sweeper -- {chain_name}   # at block {pinned}"
-                    ),
-                    None => format!("cargo run -p sweeper -- {chain_name}   # at block {pinned}"),
-                };
+            let run_id = Uuid::new_v4();
+            let checker_commit = env!("CHECKER_COMMIT").to_string();
+            let max_agents = sweep_max_agents();
+            // The rerun command must describe what THIS run actually
+            // swept. A pilot capped by SWEEP_MAX_AGENTS is not reproduced
+            // by the bare command below — omitting the cap here would
+            // make the archived run claim a full sweep it never did.
+            let rerun = match max_agents {
+                Some(n) => format!(
+                    "SWEEP_MAX_AGENTS={n} cargo run -p sweeper -- {chain_name}   # at block {pinned}"
+                ),
+                None => format!("cargo run -p sweeper -- {chain_name}   # at block {pinned}"),
+            };
 
-                db.open_run(&store::RunMeta {
-                    run_id,
-                    chain: chain_name.clone(),
-                    pinned_block: pinned,
-                    schema_version: checks::SCHEMA_VERSION,
-                    checker_version: checks::CHECKER_VERSION.to_string(),
-                    checker_commit: checker_commit.clone(),
-                    spec_commit: checks::SPEC_COMMIT.to_string(),
-                    rerun_command: rerun.clone(),
-                })
-                .await?;
+            db.open_run(&store::RunMeta {
+                run_id,
+                chain: chain_name.clone(),
+                pinned_block: pinned,
+                schema_version: checks::SCHEMA_VERSION,
+                checker_version: checks::CHECKER_VERSION.to_string(),
+                checker_commit: checker_commit.clone(),
+                spec_commit: checks::SPEC_COMMIT.to_string(),
+                rerun_command: rerun.clone(),
+            })
+            .await?;
 
-                (
-                    run_id,
-                    pinned,
-                    checks::SCHEMA_VERSION,
-                    checks::CHECKER_VERSION.to_string(),
-                    checker_commit,
-                    checks::SPEC_COMMIT.to_string(),
-                    rerun,
-                    Utc::now().to_rfc3339(),
-                    HashSet::new(),
-                )
-            }
-        };
+            (
+                run_id,
+                pinned,
+                checks::SCHEMA_VERSION,
+                checks::CHECKER_VERSION.to_string(),
+                checker_commit,
+                checks::SPEC_COMMIT.to_string(),
+                rerun,
+                Utc::now().to_rfc3339(),
+                HashSet::new(),
+            )
+        }
+    };
     let checker_commit = checker_commit.as_str();
     let checker_version = checker_version.as_str();
     let spec_commit = spec_commit.as_str();
@@ -195,7 +211,9 @@ async fn main() -> Result<()> {
         "{discovered} agent ids discovered; {planned} in scope for this run \
          ({} already swept, {remaining} remaining this session){}",
         already_swept.len(),
-        max_agents.map(|n| format!(" (SWEEP_MAX_AGENTS={n})")).unwrap_or_default()
+        max_agents
+            .map(|n| format!(" (SWEEP_MAX_AGENTS={n})"))
+            .unwrap_or_default()
     );
 
     // Read current state for each id, bounded. `buffer_unordered` keeps at most
@@ -283,7 +301,8 @@ async fn main() -> Result<()> {
         let results = checks::run_ladder(vec![rung1]);
 
         db.write_snapshot(run_id, &chain_name, s).await?;
-        db.write_results(run_id, &chain_name, s.agent_id, &results).await?;
+        db.write_results(run_id, &chain_name, s.agent_id, &results)
+            .await?;
 
         export::write_agent(&export::AgentDocument {
             run_id: run_id.to_string(),
@@ -300,7 +319,9 @@ async fn main() -> Result<()> {
 
         swept += 1;
         if swept % 500 == 0 {
-            tracing::info!("{swept}/{remaining} agents swept this session ({unreadable} unreadable this session)");
+            tracing::info!(
+                "{swept}/{remaining} agents swept this session ({unreadable} unreadable this session)"
+            );
         }
     }
 

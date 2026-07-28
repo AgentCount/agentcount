@@ -44,8 +44,15 @@ pub struct ConformantInput {
 /// requires unconditionally. See `spec/REQUIRED_FIELDS.md` §"Unconditionally
 /// REQUIRED" — this list must stay in lockstep with that file, not with the
 /// spec directly.
-const UNCONDITIONAL_FIELDS: [&str; 7] =
-    ["type", "name", "description", "image", "services", "x402Support", "active"];
+const UNCONDITIONAL_FIELDS: [&str; 7] = [
+    "type",
+    "name",
+    "description",
+    "image",
+    "services",
+    "x402Support",
+    "active",
+];
 
 /// The two sub-fields spec line 123 ("all fields in the registration are
 /// mandatory") requires on every entry of `registrations`, when that array
@@ -79,7 +86,11 @@ pub fn conformant(input: &ConformantInput, spec_commit: &str, now: DateTime<Utc>
     // the same "presence, not shape" restraint this rung applies everywhere
     // else; a later rung can decide whether that shape itself is wrong.
     let mut registrations_checked: u64 = 0;
-    if let Some(entries) = doc.get("registrations").filter(|v| !v.is_null()).and_then(|v| v.as_array()) {
+    if let Some(entries) = doc
+        .get("registrations")
+        .filter(|v| !v.is_null())
+        .and_then(|v| v.as_array())
+    {
         for (i, entry) in entries.iter().enumerate() {
             registrations_checked += 1;
             for field in REGISTRATION_ENTRY_FIELDS {
@@ -90,7 +101,11 @@ pub fn conformant(input: &ConformantInput, spec_commit: &str, now: DateTime<Utc>
         }
     }
 
-    let status = if fields_missing.is_empty() { CheckStatus::Pass } else { CheckStatus::Fail };
+    let status = if fields_missing.is_empty() {
+        CheckStatus::Pass
+    } else {
+        CheckStatus::Fail
+    };
 
     let evidence = json!({
         "fields_found": fields_found,
@@ -99,7 +114,13 @@ pub fn conformant(input: &ConformantInput, spec_commit: &str, now: DateTime<Utc>
         "registrations_checked": registrations_checked,
     });
 
-    CheckResult { rung: 4, name: "conformant", status, evidence, checked_at: now }
+    CheckResult {
+        rung: 4,
+        name: "conformant",
+        status,
+        evidence,
+        checked_at: now,
+    }
 }
 
 #[cfg(test)]
@@ -138,7 +159,12 @@ mod tests {
         assert_eq!(r.rung, 4);
         assert_eq!(r.name, "conformant");
         assert_eq!(r.status, CheckStatus::Pass);
-        let found: Vec<&str> = r.evidence["fields_found"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let found: Vec<&str> = r.evidence["fields_found"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         for field in UNCONDITIONAL_FIELDS {
             assert!(found.contains(&field), "expected {field} in fields_found");
         }
@@ -153,10 +179,22 @@ mod tests {
             let mut doc = complete_document();
             doc.as_object_mut().unwrap().remove(field);
             let r = conformant(&input(doc), SPEC_COMMIT, t());
-            assert_eq!(r.status, CheckStatus::Fail, "removing {field} should fail the rung");
-            let missing: Vec<&str> =
-                r.evidence["fields_missing"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-            assert_eq!(missing, vec![field], "removing {field} should name exactly that field");
+            assert_eq!(
+                r.status,
+                CheckStatus::Fail,
+                "removing {field} should fail the rung"
+            );
+            let missing: Vec<&str> = r.evidence["fields_missing"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(
+                missing,
+                vec![field],
+                "removing {field} should name exactly that field"
+            );
         }
     }
 
@@ -166,10 +204,19 @@ mod tests {
         doc["name"] = serde_json::Value::Null;
         let r = conformant(&input(doc), SPEC_COMMIT, t());
         assert_eq!(r.status, CheckStatus::Fail);
-        let missing: Vec<&str> =
-            r.evidence["fields_missing"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let missing: Vec<&str> = r.evidence["fields_missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(missing, vec!["name"]);
-        let found: Vec<&str> = r.evidence["fields_found"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let found: Vec<&str> = r.evidence["fields_found"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert!(!found.contains(&"name"));
     }
 
@@ -201,8 +248,12 @@ mod tests {
         let r = conformant(&input(doc), SPEC_COMMIT, t());
         assert_eq!(r.status, CheckStatus::Fail);
         assert_eq!(r.evidence["registrations_checked"], 1);
-        let missing: Vec<&str> =
-            r.evidence["fields_missing"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let missing: Vec<&str> = r.evidence["fields_missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(missing, vec!["registrations[0].agentRegistry"]);
     }
 
@@ -216,8 +267,12 @@ mod tests {
         ]);
         let r = conformant(&input(doc), SPEC_COMMIT, t());
         assert_eq!(r.status, CheckStatus::Fail);
-        let missing: Vec<&str> =
-            r.evidence["fields_missing"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let missing: Vec<&str> = r.evidence["fields_missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(missing, vec!["registrations[0].agentId"]);
     }
 
@@ -231,8 +286,12 @@ mod tests {
         let r = conformant(&input(doc), SPEC_COMMIT, t());
         assert_eq!(r.status, CheckStatus::Fail);
         assert_eq!(r.evidence["registrations_checked"], 2);
-        let missing: Vec<&str> =
-            r.evidence["fields_missing"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let missing: Vec<&str> = r.evidence["fields_missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(missing, vec!["registrations[1].agentRegistry"]);
     }
 
@@ -240,8 +299,12 @@ mod tests {
     fn a_json_array_document_fails_rather_than_panics() {
         let r = conformant(&input(json!([1, 2, 3])), SPEC_COMMIT, t());
         assert_eq!(r.status, CheckStatus::Fail);
-        let missing: Vec<&str> =
-            r.evidence["fields_missing"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let missing: Vec<&str> = r.evidence["fields_missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         for field in UNCONDITIONAL_FIELDS {
             assert!(missing.contains(&field));
         }

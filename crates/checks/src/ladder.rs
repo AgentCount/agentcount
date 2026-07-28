@@ -48,7 +48,13 @@ mod tests {
     }
 
     fn res(rung: u8, name: &'static str, status: CheckStatus) -> CheckResult {
-        CheckResult { rung, name, status, evidence: serde_json::json!({}), checked_at: t() }
+        CheckResult {
+            rung,
+            name,
+            status,
+            evidence: serde_json::json!({}),
+            checked_at: t(),
+        }
     }
 
     #[test]
