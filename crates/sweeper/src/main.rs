@@ -10,9 +10,13 @@
 //! Day 2 wires in the probe layer: after each agent's chain snapshot, its
 //! declared `tokenURI()` is fetched via `probe::Prober`, archived to
 //! `http_archive`, and judged by rungs 2-5 (`resolvable`, `parseable`,
-//! `conformant`, `bound`). Rungs 6-7 are still ABSENT from the output rather
-//! than reported as `skipped` — "we did not ask" and "we could not ask" are
-//! different claims and the schema keeps them different.
+//! `conformant`, `bound`). Day 3 adds rung 7 (`independent`), constructed
+//! ONLY for the agents that reach it — those that passed rungs 1-5 — so a
+//! Reputation Registry read (`chain::Reputation::feedback`) happens for the
+//! ~2% of the population it can possibly matter for, never all of it. Rung 6
+//! is still ABSENT from the output rather than reported as `skipped` — "we
+//! did not ask" and "we could not ask" are different claims and the schema
+//! keeps them different.
 //!
 //! Two independent concurrency budgets drive the pipeline, on purpose (see
 //! [`rpc_concurrency`] and [`fetch_concurrency`]): the RPC endpoint throttles
@@ -179,8 +183,21 @@ async fn main() -> Result<()> {
 
     let rpc_var = format!("RPC_URL_{}", chain_name.to_uppercase());
     let rpc_url = std::env::var(&rpc_var).with_context(|| format!("{rpc_var} must be set"))?;
-    let (chain_id, registry_addr, deploy_block) = db.chain_config(&chain_name).await?;
+    let (chain_id, registry_addr, reputation_registry_addr, deploy_block) =
+        db.chain_config(&chain_name).await?;
     let registry = chain::Registry::connect(&rpc_url, &registry_addr).await?;
+
+    // Rung 7 needs a Reputation Registry client — but only if this chain
+    // actually has one. `reputation_registry_addr` is `None` exactly when
+    // `chains.reputation_registry` is NULL (e.g. no registry deployed yet on
+    // some future chain); Base has one. Connecting is cheap (no RPC call
+    // happens here, only `Registry::connect`-equivalent setup), so it is done
+    // once up front, same as `registry` and `prober` above — never
+    // reconnected per agent.
+    let reputation = match reputation_registry_addr.as_deref() {
+        Some(addr) => Some(chain::Reputation::connect(&rpc_url, addr).await?),
+        None => None,
+    };
 
     // One shared prober for the whole run. `chain_id`/`registry_addr` above
     // are the SAME values rung 5 compares each document's declared binding
@@ -506,12 +523,81 @@ async fn main() -> Result<()> {
             )
         });
 
+        // Rung 7 sits ABOVE rung 5: in the reference census only 1,425 of
+        // 60,037 agents pass rungs 1-5, so gating the Reputation Registry
+        // read on that (rather than always reading it and letting
+        // `run_ladder` discard the result) is what keeps the sweep's RPC
+        // cost near ~1,425 extra call pairs instead of ~120,000. Checked via
+        // `.as_ref()` so `rung4`/`rung5` are not yet moved — they still need
+        // to go into `rungs` below.
+        let reaches_rung7 = rung1.status == checks::CheckStatus::Pass
+            && rung2.status == checks::CheckStatus::Pass
+            && rung3.status == checks::CheckStatus::Pass
+            && rung4
+                .as_ref()
+                .is_some_and(|r| r.status == checks::CheckStatus::Pass)
+            && rung5
+                .as_ref()
+                .is_some_and(|r| r.status == checks::CheckStatus::Pass);
+
+        // `None` here means one of two different things, and the branches
+        // below keep them distinct:
+        //   - rungs 1-5 didn't all pass → rung 7 is simply not asked, and
+        //     `run_ladder` will mark it `Skipped` on its own (never
+        //     synthesised here — see the module doc on `run_ladder`).
+        //   - rungs 1-5 DID all pass but the feedback read itself failed →
+        //     that's OUR problem, not the agent's, so — same as an
+        //     unreadable snapshot above — this agent is left out of the run
+        //     entirely (`continue`) rather than recording anything false
+        //     about it.
+        let rung7 = if !reaches_rung7 {
+            None
+        } else if let Some(rep) = &reputation {
+            match rep.feedback(s.agent_id, pinned).await {
+                Ok(fr) => Some(checks::independent(
+                    &checks::IndependentInput {
+                        owner: s.owner.clone(),
+                        clients: fr.clients,
+                        feedback_count: fr.feedback_count,
+                        registry_available: true,
+                    },
+                    now,
+                )),
+                Err(e) => {
+                    tracing::warn!(
+                        "agent {}: reputation feedback read failed: {e:#} — leaving this \
+                         agent out of the run rather than recording anything false about it",
+                        s.agent_id
+                    );
+                    unreadable += 1;
+                    continue;
+                }
+            }
+        } else {
+            // `chains.reputation_registry` is NULL for this chain: we cannot
+            // check, which is our limitation, not the agent's — `Error`,
+            // never `Fail`. No RPC call is made; `checks::independent` alone
+            // decides the status from `registry_available: false`.
+            Some(checks::independent(
+                &checks::IndependentInput {
+                    owner: s.owner.clone(),
+                    clients: Vec::new(),
+                    feedback_count: 0,
+                    registry_available: false,
+                },
+                now,
+            ))
+        };
+
         let mut rungs = vec![rung1, rung2, rung3];
         if let Some(r4) = rung4 {
             rungs.push(r4);
         }
         if let Some(r5) = rung5 {
             rungs.push(r5);
+        }
+        if let Some(r7) = rung7 {
+            rungs.push(r7);
         }
         let results = checks::run_ladder(rungs);
 

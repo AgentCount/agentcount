@@ -113,4 +113,54 @@ mod tests {
         assert_eq!(out[1].status, CheckStatus::Skipped);
         assert_eq!(out[2].status, CheckStatus::Skipped);
     }
+
+    /// The first place this gap occurs in production: rung 6 (`live`) is not
+    /// implemented at all (deferred to Day 4) — this is not "rung 6 skipped",
+    /// it is "rung 6 was never asked", and the input vector reflects that by
+    /// simply never containing a rung-6 element. `run_ladder` must not
+    /// invent one to fill the gap, and it must not let the gap confuse
+    /// skip-propagation for rung 7, which sits directly above it.
+    #[test]
+    fn a_sparse_ladder_missing_rung_6_does_not_invent_a_row_for_it() {
+        let out = run_ladder(vec![
+            res(1, "registered", CheckStatus::Pass),
+            res(2, "resolvable", CheckStatus::Pass),
+            res(3, "parseable", CheckStatus::Pass),
+            res(4, "conformant", CheckStatus::Pass),
+            res(5, "bound", CheckStatus::Pass),
+            res(7, "independent", CheckStatus::Pass),
+        ]);
+        // Exactly six rows in, six rows out — no rung 6 materialised.
+        assert_eq!(out.len(), 6);
+        assert!(
+            !out.iter().any(|r| r.rung == 6),
+            "rung 6 is absent, not present with any status"
+        );
+        assert_eq!(
+            out.iter().map(|r| r.rung).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 7]
+        );
+        // All passing (including the gap) stays all passing — the missing
+        // rung 6 must not itself trip skip-propagation for rung 7.
+        assert!(out.iter().all(|r| r.status == CheckStatus::Pass));
+    }
+
+    /// Same sparse shape, but rung 5 fails: rung 7 (the only rung above the
+    /// gap) must be `Skipped` — never `Fail`, and never silently dropped —
+    /// even though there is no rung 6 row sitting between them.
+    #[test]
+    fn a_sparse_ladder_still_propagates_skip_across_the_rung_6_gap() {
+        let out = run_ladder(vec![
+            res(1, "registered", CheckStatus::Pass),
+            res(2, "resolvable", CheckStatus::Pass),
+            res(3, "parseable", CheckStatus::Pass),
+            res(4, "conformant", CheckStatus::Pass),
+            res(5, "bound", CheckStatus::Fail),
+            res(7, "independent", CheckStatus::Pass),
+        ]);
+        assert_eq!(out.len(), 6);
+        let rung7 = out.iter().find(|r| r.rung == 7).unwrap();
+        assert_eq!(rung7.status, CheckStatus::Skipped);
+        assert_eq!(rung7.evidence["skipped_because_rung"], 5);
+    }
 }
