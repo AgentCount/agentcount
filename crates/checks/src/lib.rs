@@ -15,6 +15,7 @@ mod rung1_registered;
 mod rung2_resolvable;
 mod rung3_parseable;
 mod rung4_conformant;
+mod rung5_bound;
 mod version;
 
 pub use ladder::run_ladder;
@@ -23,4 +24,5 @@ pub use rung1_registered::{RegisteredInput, registered};
 pub use rung2_resolvable::{ResolvableInput, resolvable};
 pub use rung3_parseable::{ParseableInput, parseable};
 pub use rung4_conformant::{ConformantInput, conformant};
+pub use rung5_bound::{BoundInput, bound};
 pub use version::{CHECKER_VERSION, SCHEMA_VERSION, SPEC_COMMIT};
