@@ -87,11 +87,48 @@ The registration file MUST have the following structure (line 54). These seven f
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 61: `"image": "https://example.com/agentimage.png",`
 - Type: string (URI)
 
-### `services`
-- JSON path: `$.services`
+### `services` (legacy alias: `endpoints` — P0 FIX 1, 2026-07-28)
+- JSON path: `$.services`, or `$.endpoints` when `services` is absent
 - Spec line: 54 (governing MUST), field appears at line 62
 - Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 62: `"services": [`
 - Type: array. Rung 4 checks only that the key is present (an array, possibly empty) — its contents are explicitly unconstrained: "The number and type of *endpoints* are fully customizable, allowing developers to add as many as they wish." (line 115)
+
+**Legacy alias — why `endpoints` is accepted here.** The schema block that
+establishes the line-54 MUST names the field `services` (line 62), but the
+surrounding prose never caught up: it says "endpoints" instead, repeatedly —
+"The number and type of *endpoints* are fully customizable" (line 115),
+"Agents MAY advertise their endpoints" (line 117), "Since endpoints can
+point to domains not controlled by the agent owner" (line 121), "a flexible
+registration file including a list where endpoints can be added at will"
+(line 402, Rationale section), and "communication endpoints (MCP, A2A,
+others)" (line 416, inside the commented-out Test Cases block — noted here
+because the work order cited it, but it is editorial scratch text, not
+published normative prose; it does not change the conclusion since lines
+115/117/121/402 already establish the pattern outside any comment). This is
+internally inconsistent — the schema key and the prose noun disagree — and
+corroborates the field being renamed in a January-2026 update to the spec
+without every prose reference being updated to match.
+
+8004scan's metadata profile
+(`best-practices.8004scan.io/docs/01-agent-metadata-standard.html`)
+documents this migration directly: both `services` and `endpoints` are
+accepted, `services` takes precedence when both are present, and using only
+the legacy `endpoints` name produces a warning (`WA031`) rather than a
+failure — with no deprecation date set for `endpoints`.
+
+**Rung 4's rule:** `services.or(endpoints)`. A document is never failed
+solely for using the legacy name.
+- Only `services` present → used; nothing further recorded.
+- Only `endpoints` present → used, rung 4 **passes** this field, evidence
+  records `legacy_endpoints_field: true`.
+- Both present → `services` is used (matching 8004scan precedence),
+  evidence records `both_fields_present: true`.
+- Neither present → fails, same as before this fix.
+
+Evidence also always carries `services_field_source` (`"services"` /
+`"endpoints"` / `"neither"`) so the population's migration rate — how many
+agents still declare only the legacy name — is queryable from stored
+results without a re-sweep.
 
 ### `x402Support`
 - JSON path: `$.x402Support`
