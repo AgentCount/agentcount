@@ -208,24 +208,82 @@ HEAD or GET request?
   and answering. A single unreachable endpoint among several still fails the
   whole rung; a document that declares zero endpoints is a rung-4 concern
   (`services` presence), not this one.
+- **Not yet implemented.** The pass/fail conditions and evidence shape above
+  are final, but no code executes this rung yet — `crates/checks` has no
+  `rung6` module, and `checks::run_ladder` never calls one. **This rung
+  produces no row for any agent in any run to date.** An absent rung 6 means
+  exactly what Section 4 says an absent rung always means: we did not ask,
+  not that every agent's endpoints failed to answer. Do not read a rung-6
+  gap in a report as a rung-6 failure — it is not in the data at all.
 
 ### Rung 7 — `independent`
 
 **Question:** Has this agent received at least one Reputation Registry
 feedback entry from an address that is not its own owner?
 
-- **Pass:** at least one distinct feedback author differs from the current
-  owner address.
-- **Fail:** zero feedback entries exist, or every entry that exists was
-  authored by the owner itself.
+- **Pass:** at least one distinct feedback author (from `getClients`) differs
+  from the current owner address (from `ownerOf`, the same snapshot every
+  other rung uses).
+- **Fail, `no_feedback`:** `getClients` returns zero addresses — nobody, self
+  or otherwise, has left this agent feedback.
+- **Fail, `only_self_feedback`:** `getClients` returns one or more addresses,
+  and every one of them equals the owner address.
+- **Error, `no_reputation_registry`:** the chain has no Reputation Registry
+  deployed at all. This is resolved once per chain, before the rung runs for
+  any agent on it, and it is recorded as `error`, never `fail` — the agent
+  did nothing wrong; the infrastructure to ask the question doesn't exist on
+  that chain. Precedence is absolute: even if the input happens to contain a
+  non-owner client address, an unavailable registry still errors rather than
+  passing, because a read that couldn't have happened isn't trustworthy
+  evidence either way.
+- **How the data is read:** `getClients(agentId)` is called first, at the
+  same pinned block every other rung's chain state is read at, to get the
+  registry's own list of who has ever left this agent feedback. Only if that
+  list is non-empty is `getSummary(agentId, clientAddresses, "", "")` called,
+  passing the exact client list back in as the filter — `getSummary` with an
+  empty `clientAddresses` array reverts on this contract rather than
+  returning zero, so an empty `getClients` result short-circuits before
+  `getSummary` is ever called. `feedback_count` comes from `getSummary`'s
+  total entry count across the supplied clients; `distinct_authors` and
+  `authors_equal_to_owner` are computed from the `getClients` list itself,
+  de-duplicated and compared case-insensitively so that address casing never
+  affects the verdict.
 - **Evidence:** `feedback_count`, `distinct_authors`,
-  `authors_equal_to_owner`, `self_feedback_ratio`.
+  `authors_equal_to_owner`, `self_feedback_ratio`, and `reason` (present only
+  on `fail`/`error`: `no_feedback`, `only_self_feedback`, or
+  `no_reputation_registry`).
 - **Does not mean:** that the feedback is genuine, uncoordinated, or positive
   — only that it did not come from the agent's own owner address. Two
   addresses under common control, one feeding the other, would still pass
   this rung. Catching that would take clustering inference, which is a
   different kind of claim than a measurement — if we ever publish it, it goes
   in a separately-labelled `signals` block, never in a rung.
+
+**`self_feedback_ratio` needs its own paragraph, because a ratio in a
+product that just spent Section 1 explaining why it publishes no score
+invites exactly one question: isn't this a score in disguise? It is not,
+for the same reason `body_bytes` in rung 3 or `registrations_checked` in
+rung 4 aren't: it is per-rung evidence describing **one measurement** —
+what fraction of *this agent's* distinct feedback authors is the owner —
+not a number that combines several rungs, or several agents, into a
+verdict. It is defined as `authors_equal_to_owner / distinct_authors`, and a
+reader can recompute it from those two other evidence fields without
+trusting our arithmetic, the same falsifiability bar every other field in
+this document is held to. Nothing about it ranks agents against each other,
+weighs anything, or produces a single figure meant to stand in for "how
+trustworthy is this agent" — it stays scoped to the one rung, the one
+agent, the one measurement it describes.
+
+It is **`null`, never `0.0`, when `distinct_authors` is `0`.** A measured
+zero and an unmeasurable quantity are different claims: "every author we
+found happens not to be the owner" (a zero we actually observed) is not the
+same statement as "there were no authors to check in the first place" (a
+ratio with nothing to divide). Writing `0.0` for the second case would read,
+to anyone who didn't check `distinct_authors` too, as the friendlier of the
+two claims when it is actually the absence of any claim at all — exactly
+the kind of silent wrongness Section 1 says this project exists to avoid.
+`no_feedback` agents (`distinct_authors: 0`) always carry a `null` ratio;
+only agents with at least one client ever carry a numeric one.
 
 ## 3. Ladder semantics
 
@@ -268,15 +326,18 @@ they are not interchangeable:
   see a rung for an agent, the honest reading is "not yet checked," full
   stop — not "presumed to fail."
 
-**Current implementation status, stated plainly:** at the time of this
-Day-1 release, rung 1 (`registered`) is implemented and is the only rung a
-sweep actually runs. Rungs 2 through 7 are fully specified above — their
-pass/fail conditions and evidence shapes are final — but no code executes
-them yet. Every agent in the current data has rows for rung 1 only; rungs 2–7
-are absent for every agent, meaning exactly what absence means above: not yet
-checked, not failed. This document describes the full ladder ahead of the
-remaining six rungs shipping, on purpose — see the note at the top of this
-file.
+**Current implementation status, stated plainly:** rungs 1 (`registered`),
+2 (`resolvable`), 3 (`parseable`), 4 (`conformant`), 5 (`bound`), and 7
+(`independent`) are implemented and run in every sweep. **Rung 6 (`live`) is
+not implemented** — it is fully specified above, its pass/fail conditions
+and evidence shape are final, but no code executes it, and it writes no row
+for any agent. A run's data therefore has, for every agent, rows for rungs
+1, 2, 3, 4, 5, and 7, and no row at all for rung 6 — meaning exactly what
+Section 4 says an absent rung means: not yet checked, not failed. This
+document described the full ladder ahead of rungs 2–7 shipping; that has
+since happened for all but rung 6, and this paragraph is updated each time
+the implemented set changes rather than left to describe a state that no
+longer holds.
 
 ## 5. How to recompute any result
 
@@ -300,8 +361,9 @@ cargo run -p sweeper -- base   # at block 41817815
 Re-running that command against the same chain state (the pinned block makes
 this exact — every agent's owner and URI are read at one block, so the
 population a run measures is the population that existed simultaneously, not
-one assembled from reads taken minutes apart) reproduces the same rung-1
-result set from the same code. If a `checker_commit` or `spec_commit` differs
+one assembled from reads taken minutes apart) reproduces the same result set
+— across every rung the sweep implements at that commit — from the same
+code. If a `checker_commit` or `spec_commit` differs
 between two runs, that is expected: the code or the spec changed. What must
 never differ is a run's ability to point at the exact commit and spec version
 that produced it — a result that cannot name what generated it is an
