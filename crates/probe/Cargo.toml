@@ -1,0 +1,46 @@
+# The `probe` crate owns HTTP and nothing else: it fetches an agent's declared
+# registration document (and, via `ipfs://`, its gateway equivalent), politely
+# and defensively, and hands back a `FetchOutcome` as plain data. It does not
+# judge that data — no rung logic, no pass/fail/error — that is `crates/checks`'
+# job, kept pure by never importing this crate's networking.
+
+[package]
+name = "probe"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+
+# The one shared HTTP client every fetch goes through.
+reqwest = { workspace = true }
+
+# `bytes_stream()` on a response is a `futures::Stream`; StreamExt::next()
+# drives the capped body read one chunk at a time.
+futures = { workspace = true }
+
+# SSRF guard: hosts pulled from on-chain `tokenURI()` strings are
+# attacker-controlled, and `url::Url` is how both the guard and the redirect
+# handler parse/compare them.
+url = { workspace = true }
+
+# Decode `data:` agent-card URIs inline (no network fetch).
+base64 = { workspace = true }
+
+# sha256 over the (possibly truncated) bytes we keep, for provenance.
+sha2 = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Local mock HTTP server — every probe test runs against wiremock, never the
+# real network. Note wiremock binds 127.0.0.1, which the netguard rightly
+# refuses; tests that exercise fetch mechanics (redirects, body cap, timeouts,
+# the per-host cap) call the crate-internal fetch path directly rather than
+# through the full guarded `Prober::fetch`, exactly as the enricher's tests
+# did before this crate replaced it.
+wiremock = { workspace = true }
