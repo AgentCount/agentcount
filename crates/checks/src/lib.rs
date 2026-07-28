@@ -24,7 +24,9 @@ pub use model::{CheckResult, CheckStatus};
 pub use rung1_registered::{RegisteredInput, registered};
 pub use rung2_resolvable::{ResolvableInput, resolvable};
 pub use rung3_parseable::{ParseableInput, parseable};
-pub use rung4_conformant::{ConformantInput, conformant};
+pub use rung4_conformant::{
+    ConformantInput, REGISTRATION_ENTRY_FIELDS, UNCONDITIONAL_FIELDS, conformant,
+};
 pub use rung5_bound::{BoundInput, bound};
 pub use rung7_independent::{IndependentInput, independent};
 pub use version::{CHECKER_VERSION, SCHEMA_VERSION, SPEC_COMMIT};

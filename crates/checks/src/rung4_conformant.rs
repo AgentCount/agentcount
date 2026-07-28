@@ -44,7 +44,7 @@ pub struct ConformantInput {
 /// requires unconditionally. See `spec/REQUIRED_FIELDS.md` §"Unconditionally
 /// REQUIRED" — this list must stay in lockstep with that file, not with the
 /// spec directly.
-const UNCONDITIONAL_FIELDS: [&str; 7] = [
+pub const UNCONDITIONAL_FIELDS: [&str; 7] = [
     "type",
     "name",
     "description",
@@ -58,7 +58,7 @@ const UNCONDITIONAL_FIELDS: [&str; 7] = [
 /// mandatory") requires on every entry of `registrations`, when that array
 /// is present at all. See `spec/REQUIRED_FIELDS.md` §"Conditionally
 /// REQUIRED".
-const REGISTRATION_ENTRY_FIELDS: [&str; 2] = ["agentId", "agentRegistry"];
+pub const REGISTRATION_ENTRY_FIELDS: [&str; 2] = ["agentId", "agentRegistry"];
 
 /// A key is "present" only if it exists and is not JSON `null`.
 fn is_present(value: &serde_json::Value, key: &str) -> bool {

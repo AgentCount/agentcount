@@ -1,10 +1,18 @@
-//! # api — serve the facts to the world
+//! # api — serve the conformance census to the world
 //!
 //! The public face of Ledgerscope: the JSON API and the only crate the outside
-//! world talks to. It reads observations from Postgres (which the indexer and
-//! enricher populate), assembles them into evidence-carrying facts via the pure
-//! `facts` crate, and serves them as JSON. The Next.js app in the sibling
-//! `ledgerscope-web` repo is the frontend.
+//! world talks to. It reads runs, agent snapshots, check results, and the HTTP
+//! archive straight from Postgres (which `crates/sweeper` writes) and serves
+//! them as JSON — no scoring, no judgment folded in along the way. The Next.js
+//! app in the sibling `ledgerscope-web` repo is the frontend.
+//!
+//! This is a rewrite, not a patch: the previous version of this crate served a
+//! retired availability model whose tables (`probe_history`,
+//! `metadata_snapshots`, `flags`, `agent_enrichment`) were dropped in migration
+//! 0008, so every one of its endpoints had been returning 500s. Nothing here
+//! reads those tables or the pure library crate that used to word them into
+//! prose — that crate is deleted along with this crate's own module that
+//! called into it.
 //!
 //! ## Rust concepts this crate is here to teach
 //!
@@ -18,7 +26,6 @@
 //!   a clean 500 instead of a crashed process.
 
 mod error;
-mod facts_view;
 mod routes;
 
 use anyhow::Context;
@@ -64,16 +71,14 @@ async fn main() -> anyhow::Result<()> {
     //    handler; `.with_state(state)` makes `AppState` reachable from all of
     //    them via the `State` extractor. Note axum 0.8's `{param}` path syntax.
     let app = Router::new()
-        // JSON API — chain is part of every identity path.
+        // JSON API — chain is part of every agent identity path, and every
+        // endpoint below is scoped to one run (explicit `?run=`, or the
+        // latest completed one).
+        .route("/api/runs", get(routes::runs::list))
+        .route("/api/runs/{id}/rates", get(routes::rates::get))
         .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
-        .route(
-            "/api/agents/{chain}/{id}/facts",
-            get(routes::agents::get_facts),
-        )
-        .route("/api/chains", get(routes::chains::list))
         .route("/api/methodology", get(routes::methodology::get))
-        .route("/api/stats", get(routes::stats::summary))
         .route("/healthz", get(healthz))
         // Crude but effective public-endpoint hardening: cap request time and
         // total in-flight requests. Per-IP rate limiting is a fast-follow.

@@ -32,15 +32,14 @@ resolver = "3"
 # `crates/enricher` (the old availability-model observer) is gone as of the
 # conformance-ladder rewrite: its HTTP-fetching job is now `crates/probe`, its
 # per-agent judgment job is now `crates/checks`, and its orchestration job is
-# now `crates/sweeper`. `crates/facts` is left in place even though it now
-# only serves the retired availability model — `crates/api` (rewritten Day 3)
-# is still its only consumer, and deleting `facts` now would break `api`'s
-# build before its replacement exists.
+# now `crates/sweeper`. `crates/facts` is gone as of `api`'s own
+# conformance-ladder rewrite: it existed only to word the retired
+# availability model's facts, `api` was its only consumer, and `api` no
+# longer reads that model at all.
 members = [
     "crates/chain",
     "crates/checks",
     "crates/indexer",
-    "crates/facts",
     "crates/probe",
     "crates/api",
     "crates/sweeper",

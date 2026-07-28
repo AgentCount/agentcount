@@ -26,10 +26,12 @@ serde_json = { workspace = true }
 
 anyhow = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# A path dependency on our own pure library. The API assembles SQL aggregates
-# into its input structs and lets it decide the phrasing of every published
-# fact — the one place a measurement becomes a claim.
-facts = { path = "../facts" }
+# A path dependency on the pure conformance-checks library — not for running
+# checks (only the sweeper does that), but so `/api/methodology` can publish
+# the exact provenance constants and rung-4 required-field list the checker
+# itself uses, rather than restating them and risking drift.
+checks = { path = "../checks" }
