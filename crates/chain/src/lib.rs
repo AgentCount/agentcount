@@ -5,4 +5,6 @@
 //! came from.
 
 pub mod registry;
+pub mod reputation;
 pub use registry::{AgentSnapshot, Registry};
+pub use reputation::{FeedbackReads, Reputation};
