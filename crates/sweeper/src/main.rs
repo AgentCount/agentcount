@@ -417,9 +417,17 @@ async fn main() -> Result<()> {
         } else {
             None
         };
+        // The URI goes into rung 2's evidence, which is a `jsonb` column, and
+        // Postgres rejects ` ` in jsonb outright — so the same escape the
+        // TEXT writes use has to be applied here too, or an agent with a NUL
+        // in its tokenURI aborts the run AFTER its snapshot row has landed.
+        // Escaping once here means the store and the checks cannot disagree
+        // about what the URI was.
+        let uri_for_evidence =
+            store::escape_nuls_for_postgres(s.agent_id, &s.agent_uri).into_owned();
         let rung2 = checks::resolvable(
             &checks::ResolvableInput {
-                uri: s.agent_uri.clone(),
+                uri: uri_for_evidence,
                 scheme: scheme.clone(),
                 request_url: outcome.request_url.clone(),
                 final_url: outcome.final_url.clone(),
@@ -441,6 +449,18 @@ async fn main() -> Result<()> {
             },
             now,
         );
+
+        // Same jsonb hazard, one layer deeper. A document may legally contain
+        // ` ` inside a string, which serde_json parses into a real NUL —
+        // and rungs 4 and 5 copy document-derived values (field names,
+        // `declared_registry`) straight into their evidence. Escaping the
+        // parsed document once here keeps every downstream evidence object
+        // insertable. Field PRESENCE is unaffected: the escape only rewrites
+        // string contents, so a key named `name` is still named `name`.
+        let document = document.map(|mut d| {
+            store::escape_nuls_in_json(&mut d);
+            d
+        });
 
         // Rungs 4 and 5 need a parsed document, and only rung 3 produces one.
         // When `document` is `None` they are simply not constructed — NOT
