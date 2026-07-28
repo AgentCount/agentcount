@@ -57,11 +57,19 @@ listed under "Explicitly NOT checked" below.
 
 **Decision:** The project owner has ruled that line 123's SHOULD applies to the `registrations` key itself (presence is recommended, not required), so a document lacking `registrations` entirely does not fail rung 4. However, the same sentence also says "all fields in the registration are mandatory"—meaning `agentId` and `agentRegistry` are required only within entries of a present `registrations` array. Rung 4 checks these two sub-fields conditionally: if `registrations` is present, every entry must have both; if absent, rung 4 does not check.
 
+### Ruling 3 — `x402Support` and `active` are NOT required (decided 2026-07-28, P0 FIX 2 — reverses the original extraction)
+
+**Ambiguity:** Line 54 says "The registration file MUST have the following structure" and the JSON block that follows includes `"x402Support": false,` (line 99) and `"active": true,` (line 100) as top-level keys, alongside `type`/`name`/`description`/`image`/`services`. The original extraction (this file, first pass) treated every key of that block as REQUIRED unless a more specific sentence downgraded it, and found no such downgrade for these two — so both were listed as unconditionally REQUIRED.
+
+**Why that reading was revisited:** neither field is mentioned anywhere in the spec's prose with a normative keyword (`MUST`, `SHOULD`, `MAY`, `mandatory`, `OPTIONAL`) — they appear *only* inside the illustrative example JSON, at lines 99 and 100, and nowhere else in the document. Treating an example's every key as mandatory is already a strained extension of line 54's MUST (it makes the *structure* of the example normative, not just its documented fields); it becomes especially strained for `x402Support`, where the consequence is that an agent is judged non-conformant for failing to affirmatively declare that it does *not* support a payment protocol — a MUST that would require every agent on the ecosystem to take a position on a specific, optional payment extension. 8004scan's metadata profile classifies both fields as MAY, corroborating that the ecosystem itself does not treat them as mandatory.
+
+**Decision:** the project owner has ruled that a bare appearance inside the example block, with no corroborating normative sentence, does not establish a MUST. `x402Support` and `active` are removed from rung 4's unconditionally-required set and move to "Explicitly NOT checked" below. FIX 3 gives them a formal MAY classification (alongside `supportedTrust` and `updatedAt`); this ruling only removes them from the required set.
+
 ---
 
-## Unconditionally REQUIRED (7 fields)
+## Unconditionally REQUIRED (5 fields)
 
-The registration file MUST have the following structure (line 54). These seven fields are checked on every document by rung 4:
+The registration file MUST have the following structure (line 54). These five fields are checked on every document by rung 4. (Two fields formerly listed here — `x402Support` and `active` — were removed 2026-07-28; see Ruling 3 and "Explicitly NOT checked" below.)
 
 ### `type`
 - JSON path: `$.type`
@@ -130,18 +138,6 @@ Evidence also always carries `services_field_source` (`"services"` /
 agents still declare only the legacy name — is queryable from stored
 results without a re-sweep.
 
-### `x402Support`
-- JSON path: `$.x402Support`
-- Spec line: 54 (governing MUST), field appears at line 99
-- Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 99: `"x402Support": false,`
-- Type: boolean
-
-### `active`
-- JSON path: `$.active`
-- Spec line: 54 (governing MUST), field appears at line 100
-- Verbatim: "The registration file MUST have the following structure:" (line 54), schema line 100: `"active": true,`
-- Type: boolean
-
 ---
 
 ## Conditionally REQUIRED (2 fields when `registrations` is present)
@@ -184,6 +180,23 @@ decision rather than an oversight:
   `"skills": [], // OPTIONAL`
 - `services[].domains` (OASF service entries) — inline comment, line 82:
   `"domains": [] // OPTIONAL`
+- `x402Support` (P0 FIX 2, 2026-07-28, decided as Ruling 3 above) — appears
+  only inside the example JSON block, at schema line 99:
+  `"x402Support": false,`. Never mentioned in prose with a normative
+  keyword — no MUST, SHOULD, MAY, or "mandatory" sentence names it anywhere
+  else in the spec. The original extraction treated its appearance in the
+  line-54 example as sufficient to make it REQUIRED; that reading is
+  reversed here as strained, particularly because it would fail an agent
+  for not affirmatively declaring the *absence* of support for an optional
+  payment protocol. 8004scan's metadata profile classifies it MAY. Rung 4
+  no longer checks it; FIX 3 gives it a formal MAY classification.
+- `active` (P0 FIX 2, 2026-07-28, decided as Ruling 3 above) — appears only
+  inside the example JSON block, at schema line 100: `"active": true,`.
+  Same reasoning as `x402Support`: no normative-keyword sentence anywhere
+  else in the spec names it, the original REQUIRED classification rested
+  solely on its presence in the illustrative example, and 8004scan
+  classifies it MAY. Rung 4 no longer checks it; FIX 3 gives it a formal
+  MAY classification.
 
 Out of scope entirely (different document, not the agent registration
 file — see "Scope" above), not counted as "NOT checked" for this document:
@@ -221,7 +234,7 @@ sentence at line 54 ("The registration file MUST have the following
 structure:"), reinforced by the resolution requirement at line 52
 ("*agentURI* MUST resolve to the agent registration file") — and, once,
 the word "mandatory" (line 123, for the two `registrations[]` sub-fields)
-for that purpose. The 9 fields checked by rung 4 (7 unconditional + 2
+for that purpose. The 7 fields checked by rung 4 (5 unconditional + 2
 conditionally required) are built from those MUST/mandatory statements —
 see "Extraction methodology" above — not from the 4 grep hits. The
 `registrations` key itself is not checked (SHOULD, not MUST). Nothing was

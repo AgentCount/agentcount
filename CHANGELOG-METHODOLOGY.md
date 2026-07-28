@@ -74,3 +74,73 @@ non-UTF8 / non-JSON bodies (2,046 documents fail rung 3 for exactly this
 reason) so malformed bodies are counted separately rather than aborting the
 query; zero such bodies appeared among the rung-4 failures queried here,
 since a rung-4 failure implies rung 3 (`parseable`) already passed.
+
+---
+
+## 2026-07-28 — FIX 2: remove `x402Support` and `active` from required
+
+**What changed.** Rung 4 (`conformant`) no longer checks `x402Support` or
+`active`. `UNCONDITIONAL_FIELDS` drops from seven entries to five:
+`type`, `name`, `description`, `image`, `services`. Neither field is
+reported in `fields_missing` any more, and a document lacking one or both
+no longer fails the rung on their account.
+
+**Why.** The first census (run `1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`)
+failed 6,269 documents at rung 4 on `x402Support` alone. Verified against
+the pinned spec (`spec/ERC8004SPEC.md`, commit `68fc676`): both fields
+appear *only* inside the illustrative example JSON block (lines 99 and
+100) and are never mentioned anywhere in the prose with a normative
+keyword (no MUST, SHOULD, MAY, or "mandatory" sentence names either one).
+The original extraction (`spec/REQUIRED_FIELDS.md`) had treated every key
+of that example as REQUIRED under line 54's governing MUST, absent a more
+specific downgrade — a strained reading in general, and especially so for
+`x402Support`, where it means an agent is judged non-conformant for
+failing to affirmatively declare that it does *not* support a payment
+protocol it may have no reason to mention at all. 8004scan's metadata
+profile classifies both fields MAY. Full citation trail and the reversed
+ruling: `spec/REQUIRED_FIELDS.md` Ruling 3. FIX 3 will give both fields a
+formal MAY classification; this fix only removes them from the required
+set.
+
+**Measured effect.** Re-judged directly against the archived response
+bodies in `http_archive` for run `1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`
+(60,049 agents; no re-sweep). Of the 25,636 documents that failed rung 4
+in that run:
+
+> **6,573 agents** flip from `fail` to `pass` under **FIX 2 alone**
+> (dropping `x402Support`/`active` from the required set, `services`
+> still checked under its literal name only — no legacy alias).
+>
+> **6,932 agents** flip from `fail` to `pass` under **FIX 1 + FIX 2
+> combined** (the legacy `endpoints` alias plus dropping
+> `x402Support`/`active`). This is 359 more than FIX 2 alone: of the 525
+> agents FIX 1 identified as declaring only the legacy `endpoints` field,
+> 287 already flip under FIX 1 by itself; the other 238 stayed `fail`
+> because they were also missing at least one other unconditionally
+> required field — 72 of those 238 were missing only `x402Support`
+> and/or `active` in addition to using the legacy field name, and it is
+> exactly those 72 (plus the 287) — 359 in total — that additionally flip
+> once both fixes apply together.
+
+Combined with the 4,175 agents that already passed rung 4 in the archived
+run, applying FIX 1 + FIX 2 together against that same archived evidence
+yields:
+
+> **11,107 / 60,049 conformant — 18.5%**, up from the archived run's 7.0%
+> (4,175 / 60,049).
+
+The work order's stated expectation was "`conformant` moves ~7.0%
+(4,175) → ~17% (~10,400)." The measured combined figure, 18.5%
+(11,107), is higher than that estimate by about 1.5 percentage points —
+roughly 700 more agents passing than predicted. This is reported as
+measured, not adjusted to match the estimate; the estimate undercounted,
+most likely because it did not account for the 359-agent overlap between
+the two fixes (agents whose only obstacles were the legacy field name
+*and* the two now-dropped fields, who need both fixes together to flip).
+
+Query methodology (guarding non-UTF8/non-JSON bodies, non-object
+documents, and the conditional `registrations[].agentId`/`agentRegistry`
+check, which is unaffected by this fix and reapplied unchanged) follows
+the same approach established in the FIX 1 entry above; zero unparseable
+bodies appeared among the 25,636 rung-4 failures queried, consistent with
+a rung-4 failure implying rung 3 (`parseable`) already passed.

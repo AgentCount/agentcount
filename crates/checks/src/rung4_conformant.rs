@@ -8,11 +8,22 @@
 //! nothing inferred from outside knowledge of ERC-8004.
 //!
 //! **Presence, not type.** A key existing is all this rung asks. Whether
-//! `services` actually holds an array, or `x402Support` actually holds a
-//! boolean, is a question the field-list extraction explicitly deferred
+//! `services` actually holds an array, or `image` actually holds a URI, is a
+//! question the field-list extraction explicitly deferred
 //! (`REQUIRED_FIELDS.md` records the spec's stated types precisely so a
 //! later rung can check them) — enforcing it here would fail agents against
 //! a rule this rung never published.
+//!
+//! **`x402Support` and `active` are not required (P0 FIX 2).** Both keys
+//! appear only inside the spec's illustrative example JSON block (lines 99
+//! and 100) and are never mentioned in prose with a normative keyword.
+//! Treating every key of an example as mandatory was a strained reading —
+//! especially for `x402Support`, where it meant an agent could be judged
+//! non-conformant for failing to declare that it does *not* support a
+//! payment protocol it may have no reason to mention at all. 8004scan's
+//! metadata profile classifies both as MAY. See
+//! `spec/REQUIRED_FIELDS.md` §"Explicitly NOT checked" for the full
+//! citation trail; FIX 3 gives them a formal MAY classification.
 //!
 //! **`services` accepts the legacy `endpoints` alias (P0 FIX 1).** The
 //! schema block (spec line 62) names the field `services`, but the prose
@@ -36,7 +47,7 @@
 //! doc) and leaves the "is this even shaped like a document" question to
 //! this rung. `serde_json::Value::get(&str)` is defined on every variant —
 //! it simply returns `None` for anything that is not an object — so no
-//! explicit `is_object()` guard is needed: all seven top-level fields read
+//! explicit `is_object()` guard is needed: all five top-level fields read
 //! as absent on a non-object document, which fails the rung via the same
 //! `fields_missing` path as an object that genuinely omits them, with no
 //! risk of a panic.
@@ -53,10 +64,15 @@ pub struct ConformantInput {
     pub document: serde_json::Value,
 }
 
-/// The seven fields the registration file's governing MUST (spec line 54)
+/// The five fields the registration file's governing MUST (spec line 54)
 /// requires unconditionally. See `spec/REQUIRED_FIELDS.md` §"Unconditionally
 /// REQUIRED" — this list must stay in lockstep with that file, not with the
 /// spec directly.
+///
+/// `x402Support` and `active` are deliberately absent (P0 FIX 2) — both
+/// appear only inside the spec's example JSON, never in prose with a
+/// normative keyword; see the module doc and `REQUIRED_FIELDS.md`
+/// §"Explicitly NOT checked".
 ///
 /// `"services"` names the field this list requires; it is still checked on
 /// every document (this array feeds the public field-listing at
@@ -64,14 +80,12 @@ pub struct ConformantInput {
 /// is special-cased below to also accept the legacy `endpoints` name — see
 /// the module doc's "P0 FIX 1" note — so it is skipped in the generic loop
 /// and handled separately.
-pub const UNCONDITIONAL_FIELDS: [&str; 7] = [
+pub const UNCONDITIONAL_FIELDS: [&str; 5] = [
     "type",
     "name",
     "description",
     "image",
     "services",
-    "x402Support",
-    "active",
 ];
 
 /// The two sub-fields spec line 123 ("all fields in the registration are
@@ -186,8 +200,10 @@ mod tests {
 
     const SPEC_COMMIT: &str = "68fc6765761a10fb26f0692df21c8a6f9d12b1be";
 
-    /// A document carrying all seven unconditional fields and nothing else —
-    /// the minimal fully-conformant document, no `registrations` key.
+    /// A document carrying all five unconditional fields, no `registrations`
+    /// key, plus `x402Support`/`active` — present here because real
+    /// documents commonly carry them, but neither is required (P0 FIX 2);
+    /// see `x402support_missing_still_passes` and `active_missing_still_passes`.
     fn complete_document() -> serde_json::Value {
         json!({
             "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
@@ -205,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn all_seven_fields_present_passes() {
+    fn all_unconditional_fields_present_passes() {
         let r = conformant(&input(complete_document()), SPEC_COMMIT, t());
         assert_eq!(r.rung, 4);
         assert_eq!(r.name, "conformant");
@@ -309,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn all_seven_present_but_a_registration_entry_missing_agent_id_still_fails() {
+    fn all_unconditional_fields_present_but_a_registration_entry_missing_agent_id_still_fails() {
         // Guards against a bug where the top-level pass short-circuits the
         // registrations walk.
         let mut doc = complete_document();
@@ -468,5 +484,84 @@ mod tests {
 
         assert_eq!(r.status, CheckStatus::Fail);
         assert_eq!(r.evidence["services_field_source"], "neither");
+    }
+
+    // --- P0 FIX 2: `x402Support` / `active` are no longer required -------
+
+    #[test]
+    fn a_document_missing_only_x402support_still_passes() {
+        let mut doc = complete_document();
+        doc.as_object_mut().unwrap().remove("x402Support");
+
+        let r = conformant(&input(doc), SPEC_COMMIT, t());
+
+        assert_eq!(
+            r.status,
+            CheckStatus::Pass,
+            "x402Support is no longer part of the unconditional set"
+        );
+        assert!(
+            r.evidence["fields_missing"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v.as_str() != Some("x402Support")),
+            "x402Support must never be reported missing"
+        );
+    }
+
+    #[test]
+    fn a_document_missing_only_active_still_passes() {
+        let mut doc = complete_document();
+        doc.as_object_mut().unwrap().remove("active");
+
+        let r = conformant(&input(doc), SPEC_COMMIT, t());
+
+        assert_eq!(
+            r.status,
+            CheckStatus::Pass,
+            "active is no longer part of the unconditional set"
+        );
+        assert!(
+            r.evidence["fields_missing"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v.as_str() != Some("active")),
+            "active must never be reported missing"
+        );
+    }
+
+    #[test]
+    fn a_document_missing_both_x402support_and_active_still_passes() {
+        let mut doc = complete_document();
+        doc.as_object_mut().unwrap().remove("x402Support");
+        doc.as_object_mut().unwrap().remove("active");
+
+        let r = conformant(&input(doc), SPEC_COMMIT, t());
+
+        assert_eq!(r.status, CheckStatus::Pass);
+        assert!(r.evidence["fields_missing"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_document_missing_a_still_required_field_alongside_x402support_and_active_fails() {
+        // Guards against a regression where removing x402Support/active from
+        // the checked set accidentally loosened an unrelated field too.
+        let mut doc = complete_document();
+        doc.as_object_mut().unwrap().remove("x402Support");
+        doc.as_object_mut().unwrap().remove("active");
+        doc.as_object_mut().unwrap().remove("image");
+
+        let r = conformant(&input(doc), SPEC_COMMIT, t());
+
+        assert_eq!(r.status, CheckStatus::Fail);
+        let missing: Vec<&str> = r.evidence["fields_missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(missing, vec!["image"]);
     }
 }
