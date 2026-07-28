@@ -12,9 +12,11 @@
 mod ladder;
 mod model;
 mod rung1_registered;
+mod rung2_resolvable;
 mod version;
 
 pub use ladder::run_ladder;
 pub use model::{CheckResult, CheckStatus};
 pub use rung1_registered::{RegisteredInput, registered};
+pub use rung2_resolvable::{ResolvableInput, resolvable};
 pub use version::{CHECKER_VERSION, SCHEMA_VERSION, SPEC_COMMIT};
