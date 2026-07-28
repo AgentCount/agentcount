@@ -112,8 +112,15 @@ for the agent registration file?
 
 - **Pass:** every field in the checklist below is present.
 - **Fail:** one or more is missing.
-- **Evidence:** `fields_found[]`, `fields_missing[]`, `spec_version` (the
-  pinned spec commit this check was run against).
+- **Evidence:** `fields_found[]`, `fields_missing[]`, `spec_commit` (the
+  pinned spec commit this check was run against), `registrations_checked`
+  (how many `registrations[]` entries were validated; 0 when the key is
+  absent). *Naming note: an earlier draft of this document called this
+  evidence field `spec_version`. The implementation uses `spec_commit`
+  instead, matching the field the run already carries elsewhere in this
+  document (see the run-provenance table below) — a SHA is what makes the
+  claim checkable, and one name for one thing avoids the two fields drifting
+  apart.*
 - **Does not mean:** that the field values are truthful, well-formed, or
   point anywhere real — only that the key exists in the document. A `name`
   field containing an empty string still counts as present; content quality
