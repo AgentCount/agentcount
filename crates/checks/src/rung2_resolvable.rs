@@ -2,12 +2,14 @@
 //! retrieved at all?
 //!
 //! `Fail` is reserved for facts about what the agent published: no `tokenURI`,
-//! a scheme we don't support, or an HTTP status that means the document
-//! itself is unavailable (402, 404, 500, ...). `Error` is reserved for OUR
-//! limitations: a timeout, a DNS/TLS failure, robots.txt being unreachable,
-//! or our IPFS gateway failing. Getting this backwards publishes a false
-//! accusation about a real project, so every branch below is judged against
-//! that line, not against "did we get a 200".
+//! a scheme we don't support, a URI that does not resolve or resolves only to
+//! a private/loopback/link-local address (`ssrf_blocked: ...` — no third
+//! party could have retrieved it either), or an HTTP status that means the
+//! document itself is unavailable (402, 404, 500, ...). `Error` is reserved
+//! for OUR limitations: a timeout, a TLS failure, robots.txt being
+//! unreachable or disallowing us, or our IPFS gateway failing. Getting this
+//! backwards publishes a false accusation about a real project, so every
+//! branch below is judged against that line, not against "did we get a 200".
 //!
 //! Three decisions worth spelling out because they are easy to get wrong:
 //!
@@ -48,9 +50,11 @@ pub struct ResolvableInput {
     pub final_url: Option<String>,
     pub http_status: Option<u16>,
     pub elapsed_ms: Option<u32>,
-    /// Plain text describing OUR failure to get a usable response — timeout,
-    /// DNS, TLS, robots.txt disallow/unreachable, IPFS gateway failure.
-    /// Never a verdict; this rung is the only place that turns it into one.
+    /// Plain text describing why no usable response came back — timeout,
+    /// TLS, robots.txt disallow/unreachable, IPFS gateway failure (all OURS),
+    /// or an `ssrf_blocked: ...` netguard rejection (the agent's fact, since
+    /// no third party could have fetched it either). Never a verdict; this
+    /// rung is the only place that turns it into one.
     pub error: Option<String>,
     /// Decoded byte count for a `data:` URI. Only meaningful when
     /// `scheme == "data"`.
@@ -101,11 +105,26 @@ pub fn resolvable(input: &ResolvableInput, now: DateTime<Utc>) -> CheckResult {
             }
 
             if let Some(err) = &input.error {
-                // OUR failure: we could not establish permission, reach the
-                // host, complete TLS, or get an answer from the gateway.
-                // That is never the agent's fault.
-                evidence.insert("reason".into(), json!(err));
-                CheckStatus::Error
+                if let Some(reason) = err.strip_prefix("ssrf_blocked: ") {
+                    // The netguard is why WE never attempted the request —
+                    // but the reason it was unattemptable (doesn't resolve,
+                    // or resolves only to a private/loopback/link-local
+                    // address) is a fact about the URI the agent published,
+                    // not a limitation of ours. No third party could have
+                    // retrieved this document either; that's the same
+                    // category as an empty URI, which already fails. Keep
+                    // `robots_unavailable`/`robots_disallowed` out of this
+                    // branch: there we genuinely could not establish
+                    // permission, and that constraint is ours.
+                    evidence.insert("reason".into(), json!(format!("ssrf_blocked: {reason}")));
+                    CheckStatus::Fail
+                } else {
+                    // OUR failure: we could not establish permission, reach
+                    // the host, complete TLS, or get an answer from the
+                    // gateway. That is never the agent's fault.
+                    evidence.insert("reason".into(), json!(err));
+                    CheckStatus::Error
+                }
             } else if let Some(code) = input.http_status {
                 if (200..300).contains(&code) {
                     CheckStatus::Pass
@@ -287,6 +306,61 @@ mod tests {
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Error);
         assert_ne!(r.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn robots_unavailable_is_still_error() {
+        // A robots.txt we could not establish permission for (5xx, timeout,
+        // connection failure, or an unfollowable redirect) is OUR
+        // limitation, never the agent's.
+        let mut i = http_pass_input();
+        i.http_status = None;
+        i.error = Some("robots_unavailable: robots.txt returned HTTP 503".into());
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Error);
+        assert_eq!(
+            r.evidence["reason"],
+            "robots_unavailable: robots.txt returned HTTP 503"
+        );
+    }
+
+    #[test]
+    fn robots_disallowed_is_still_error() {
+        let mut i = http_pass_input();
+        i.http_status = None;
+        i.error = Some("robots_disallowed".into());
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Error);
+        assert_eq!(r.evidence["reason"], "robots_disallowed");
+    }
+
+    #[test]
+    fn dns_resolution_failure_via_the_netguard_fails_not_errors() {
+        // The project owner's ruling: an agentURI that does not resolve is a
+        // fact about what the agent published — the same category as an
+        // empty URI (which already fails) — not a limitation of ours.
+        let mut i = http_pass_input();
+        i.http_status = None;
+        i.error = Some("ssrf_blocked: dns resolution failed: no record found".into());
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Fail);
+        assert_eq!(
+            r.evidence["reason"],
+            "ssrf_blocked: dns resolution failed: no record found"
+        );
+    }
+
+    #[test]
+    fn non_public_address_via_the_netguard_fails_not_errors() {
+        let mut i = http_pass_input();
+        i.http_status = None;
+        i.error = Some("ssrf_blocked: resolves to a non-public address".into());
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Fail);
+        assert_eq!(
+            r.evidence["reason"],
+            "ssrf_blocked: resolves to a non-public address"
+        );
     }
 
     #[test]

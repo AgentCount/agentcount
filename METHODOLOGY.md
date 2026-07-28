@@ -74,8 +74,28 @@ successful HTTP response within the timeout?
 - **Pass:** the URI dereferences (`https://`, `data:`, or `ipfs://` via a
   gateway) and, for a network fetch, the origin responds with HTTP **2xx**
   inside the configured timeout.
-- **Fail:** the URI is empty, malformed, unresolvable, times out, or returns
-  any non-2xx status.
+- **Fail:** the URI is empty or malformed, or returns any non-2xx status.
+  Also **fail**, not error: a hostname that fails DNS resolution, or that
+  resolves only to a private, loopback, or link-local address (the classic
+  SSRF targets, `169.254.169.254` and similar). An agent-published URI that
+  no third party can retrieve — because it does not resolve, or resolves
+  only to an address nobody outside its own network can reach — is a fact
+  about that document, the same category as an empty URI. Our SSRF guard is
+  why *we* never attempted the request, but the reason it was unattemptable
+  belongs to the agent, not to us; the evidence carries the one-line reason
+  (`ssrf_blocked: dns resolution failed`, `ssrf_blocked: resolves to a
+  non-public address`) so this is checkable, not asserted.
+- **`robots.txt` is honored, redirects included.** Before fetching the
+  document itself, we fetch and honor `/robots.txt` for that origin. A
+  redirect on `robots.txt` (`http`→`https`, `www`→apex, and the like) is
+  completely ordinary, so we follow up to **5** redirect hops — per RFC 9309
+  §2.3.1.2, which asks clients to follow at least five — re-validating the
+  SSRF guard on every hop the same way a redirect on the document itself is
+  validated. A 2xx `robots.txt` is parsed and applied; a 4xx means no
+  restriction and we proceed; a 5xx, a timeout, a connection failure, or a
+  redirect chain that loops or runs past 5 hops means we could not establish
+  permission — that is **our** limitation, so it is recorded as this rung's
+  `error`, never as the agent's `fail`.
 - **HTTP 402 fails this rung.** This is a deliberate ruling, not an
   oversight, and reverses an earlier design of this project that treated 402
   as "alive." A 402 response is a payment challenge, not the agent
@@ -297,12 +317,11 @@ downloaded and diffed without a database connection.
 
 Rungs 2 and 6 fetch resources we do not control: an agent's declared document
 and its declared service endpoints. This is the policy that behavior commits
-to. Stated plainly first: **as of this writing, no component of this project
-fetches an agent's document under the seven-rung model at all** — rungs 2 and
-6 are specified (Section 2) but not yet implemented (Section 4). The commitments
-below are what the probe layer landing next will implement; where an older,
-soon-to-be-retired component in this codebase already behaves differently,
-that's called out rather than glossed over.
+to. The probe layer described below (`crates/probe`) now implements rung 2's
+fetching, robots.txt handling, and redirect-following; rung 6 (checking each
+declared service endpoint) is still specified (Section 2) but not yet
+implemented. Where an older, retired component in this codebase used to
+behave differently, that's called out rather than glossed over.
 
 - **User-Agent:** every request will identify itself, e.g.
   `ledgerscope-probe/0.2 (+https://ledgerscope.io/methodology; contact: probes@ledgerscope.io)`
@@ -328,17 +347,23 @@ that's called out rather than glossed over.
   HEAD, falling back to GET, for rung 6 (checking each declared service
   endpoint). Probing does not crawl beyond the single declared document and
   the service endpoints it lists — nothing here is meant to spider a site.
-- **What is not yet handled:** `robots.txt` is not yet checked or honored, and
-  there is no per-host request cap independent of overall sweep concurrency.
-  Both are planned for the probe layer; this document will be updated when
-  they ship, not before.
+- **`robots.txt` is checked and honored**, including its own redirects: a
+  301/302 on `/robots.txt` (`http`→`https`, `www`→apex, and the like) is
+  followed for up to 5 hops, per RFC 9309 §2.3.1.2, before the 2xx/4xx/5xx
+  mapping in Rung 2 is applied to whatever response is left standing. There
+  is also a per-host request cap (independent of, and tighter than, overall
+  sweep concurrency) so one host never sees more than a couple of our
+  requests in flight at once, no matter how busy the rest of the sweep is.
 - **Safety guard carried forward from the retiring enricher:** requests are
   only ever made to public IP addresses. An `agentURI` pointing at a private,
   loopback, link-local, or cloud-metadata address (`169.254.169.254` and
-  similar) is refused before any connection is attempted, and redirects are
-  not followed — so a registered agent cannot use a probe to reach, or bounce
-  a request into, an internal network. This guard already exists in the
-  current codebase and its replacement is expected to keep it.
+  similar) is refused before any connection is attempted. Redirects on the
+  document itself, and on `robots.txt`, ARE followed — disabling them
+  outright made an ordinary redirect (behind which a large share of the
+  registry sits) indistinguishable from a real failure — but every hop is
+  re-validated against this same guard before it is fetched, exactly like
+  the first request, so a registered agent cannot use a redirect to bounce
+  a request into an internal network.
 
 > **This URL needs human confirmation before any probing goes live.**
 > `ledgerscope.io` and the `probes@` mailbox are the proposed values recorded

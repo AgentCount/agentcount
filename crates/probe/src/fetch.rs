@@ -282,7 +282,10 @@ impl Prober {
 
             if !robots_checked {
                 robots_checked = true;
-                match self.check_robots(&current, current.path()).await {
+                match self
+                    .check_robots(&current, current.path(), validate_hops)
+                    .await
+                {
                     RobotsDecision::Allowed => {}
                     RobotsDecision::Disallowed => {
                         out.error = Some("robots_disallowed".into());
@@ -355,7 +358,11 @@ impl Prober {
         unreachable!("the loop above always returns before exhausting 0..=MAX_REDIRECTS")
     }
 
-    async fn validate_hop(&self, url: &url::Url) -> Result<(), String> {
+    /// Re-validate one hop (initial URL or a redirect target) against the
+    /// netguard's SSRF check. `pub(crate)` so `robots.rs` can apply the exact
+    /// same guard to robots.txt's own redirect hops — a redirect there is
+    /// just as attacker-controlled as a redirect on the main document.
+    pub(crate) async fn validate_hop(&self, url: &url::Url) -> Result<(), String> {
         match netguard::resolve(url.as_str(), &self.ipfs_gateway).await {
             netguard::Resolution::Fetch(_) => Ok(()),
             netguard::Resolution::Reject(reason) => Err(reason),
