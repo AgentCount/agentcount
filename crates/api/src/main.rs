@@ -30,7 +30,7 @@ mod routes;
 
 use anyhow::Context;
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use sqlx::postgres::PgPoolOptions;
 
 /// Application state shared with every request handler.
@@ -80,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
         .route("/api/methodology", get(routes::methodology::get))
+        // The one endpoint that writes nothing and reads no run: it judges a
+        // document the caller supplies, with the same checker the sweep uses.
+        .route("/api/validate", post(routes::validate::post))
         .route("/healthz", get(healthz))
         // Crude but effective public-endpoint hardening: cap request time and
         // total in-flight requests. Per-IP rate limiting is a fast-follow.

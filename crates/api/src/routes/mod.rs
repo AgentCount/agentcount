@@ -9,6 +9,8 @@
 //!     numbers the census leads with. Still counts, still no score.
 //!   * [`agents`] — the directory and single-agent detail.
 //!   * [`methodology`] — the provenance constants and rung-4 field list, as data.
+//!   * [`validate`] — the pre-flight checker: judge a draft document before it
+//!     is minted, using `crates/checks` unmodified.
 //!
 //! `pub mod` (rather than plain `mod`) because `main.rs` needs to name these
 //! handlers when building the router, e.g. `routes::agents::list`.
@@ -18,3 +20,4 @@ pub mod findings;
 pub mod methodology;
 pub mod rates;
 pub mod runs;
+pub mod validate;

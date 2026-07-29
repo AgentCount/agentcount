@@ -24,6 +24,10 @@ sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Hashing the pasted document for /api/validate, so a builder can match a
+# pre-flight answer to the exact bytes they checked.
+sha2 = { workspace = true }
+
 anyhow = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
