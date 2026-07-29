@@ -1,0 +1,25 @@
+[package]
+name = "census"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone analysis scratch tool — NOT a member of the main Ledgerscope
+# workspace (see the empty [workspace] table below, which stops Cargo from
+# trying to fold this into ../../Cargo.toml). It exists to answer one
+# question for analysis/attestation-rate.md: enumerate getClients(agentId)
+# for every rung-7 `attested` agent in a pinned run, at the exact block that
+# run judged. It reuses crates/chain's `Reputation::feedback` verbatim (same
+# retry/backoff every production sweep uses) via a path dependency — no
+# check-logic, no chain-crate, no production-schema changes anywhere.
+[workspace]
+
+[dependencies]
+chain = { path = "../../crates/chain" }
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+futures = "0.3"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }

@@ -1,5 +1,13 @@
 # Payments: what the spec actually says, and how to measure "has ever been paid"
 
+> **SUPERSEDED IN PART by the identity-role audit — see
+> [`identity-role-audit.md`](identity-role-audit.md).** Two headline numbers in
+> §6 are wrong and must not be published: "313 agents paid" is attribution-
+> unsafe (the defensible figure is **190**), and "one operator earned 97.9%" is
+> false (the 148 payment contracts are controlled by **126 distinct addresses**,
+> none of them the registrant). The method in §5 stands; the counts in §6 do
+> not. Corrected figures live in the audit.
+
 **Analysis and design. No check logic, crate code, or schema was touched.**
 Every count below comes from archived bodies and stored `check_results` for the
 reference run `cfbfcc01-fdaf-409f-9bed-abf706d865c7` (Base, pinned block
