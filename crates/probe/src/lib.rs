@@ -8,9 +8,10 @@
 //!
 //! Roughly 23,744 of the ~60,000 agents in the population need a real
 //! network request (`https://`, `http://`, or `ipfs://` via a gateway); the
-//! rest resolve to `Empty`, `Inline` (decoded `data:` payload), or
-//! `Unsupported` without ever touching the network. See [`resolve::resolve`]
-//! for the classification and [`fetch::Prober`] for the guarded fetch path.
+//! rest resolve to `Empty`, `Inline` (decoded `data:` payload, five fallback
+//! decode paths, P0 FIX 7), or `Unsupported`/`UnsupportedCompression`
+//! without ever touching the network. See [`resolve::resolve`] for the
+//! classification and [`fetch::Prober`] for the guarded fetch path.
 
 mod fetch;
 mod netguard;
@@ -20,7 +21,7 @@ mod robots;
 pub use fetch::{
     DEFAULT_GLOBAL_CONCURRENCY, FetchOutcome, MAX_BODY_BYTES, MAX_REDIRECTS, PER_HOST_CAP, Prober,
 };
-pub use resolve::{Target, resolve};
+pub use resolve::{DataUriDecode, Target, resolve};
 
 /// Re-exported at crate root for anything (tests, future crates) that wants
 /// the exact product token this prober identifies itself with, without

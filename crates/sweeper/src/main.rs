@@ -125,14 +125,21 @@ fn ipfs_gateway() -> String {
 /// reaches `fetch_http`) is caught here rather than misread as a passing
 /// rung 2. A malformed `data:` URI is caught the same way via `body`: only a
 /// successfully decoded inline payload ever has one.
+///
+/// **P0 FIX 7:** a `data:` URI declaring an unsupported `enc=` compression
+/// algorithm also carries no `body` (there is nothing decoded to hand
+/// forward) but DOES carry `.error` — that must still land in the `"data"`
+/// bucket, not `"unsupported"`, so rung 2 can tell OUR limitation apart from
+/// a malformed document (see `checks::resolvable`'s `"data"` match arm).
 fn checks_scheme(outcome: &probe::FetchOutcome) -> String {
     if outcome.scheme.is_empty() {
         "empty".to_string()
     } else if outcome.request_url.is_some() {
-        // A real HTTP(s) request was attempted (http, https, or ipfs via the
-        // gateway) — keep whichever of those labels probe already assigned.
+        // A real HTTP(s) request was attempted (http, https, or ipfs via one
+        // of the gateways) — keep whichever of those labels probe already
+        // assigned.
         outcome.scheme.clone()
-    } else if outcome.scheme == "data" && outcome.body.is_some() {
+    } else if outcome.scheme == "data" && (outcome.body.is_some() || outcome.error.is_some()) {
         outcome.scheme.clone()
     } else {
         "unsupported".to_string()
@@ -430,9 +437,9 @@ async fn main() -> Result<()> {
     // counting rows, which is exactly what this project promises never to
     // make someone do.
     let manifest = |swept: Option<usize>,
-                     unreadable: Option<usize>,
-                     unwritable: Option<usize>,
-                     finished: Option<String>| {
+                    unreadable: Option<usize>,
+                    unwritable: Option<usize>,
+                    finished: Option<String>| {
         export::RunManifest {
             run_id: run_id.to_string(),
             chain: &chain_name,
@@ -568,6 +575,14 @@ async fn main() -> Result<()> {
                 error: outcome.error.clone(),
                 inline_bytes,
                 via_gateway: outcome.via_gateway.clone(),
+                inline_decode_variant: outcome
+                    .inline_decode
+                    .as_ref()
+                    .map(|d| d.variant.to_string()),
+                inline_decode_algorithm: outcome
+                    .inline_decode
+                    .as_ref()
+                    .and_then(|d| d.algorithm.clone()),
             },
             now,
         );

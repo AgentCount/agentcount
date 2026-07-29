@@ -23,7 +23,14 @@
 ///   `rung7_attested`'s module doc).
 /// - Rung 7 is ungated: it now runs for every agent that passes rung 1,
 ///   not only those that also pass rungs 2 through 5.
-pub const SCHEMA_VERSION: i32 = 3;
+///
+/// 4 (P0 FIX 7, 2026-07-29): rung 2's (`resolvable`) evidence gains
+/// `data_uri_variant`/`data_uri_algorithm` for a `"data"`-scheme result —
+/// which of the five `data:` decode fallback paths produced the bytes, and
+/// the compression algorithm when one was involved. No field is removed and
+/// no existing field changes meaning; old rows remain readable without
+/// either key present.
+pub const SCHEMA_VERSION: i32 = 4;
 
 /// The checks crate's own version — the semantics of the rungs.
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");

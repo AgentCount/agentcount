@@ -109,6 +109,13 @@ base64 = "0.22"
 # Content hashes for archived metadata snapshots (change detection, dedupe).
 sha2 = "0.10"
 
+# Decompress `data:` agent-card URIs declaring `enc=gzip` (P0 FIX 7). gzip is
+# the only compression algorithm actually observed in the reference
+# population (399 of 60,049 agents) — zstd/brotli/lz4 appear in the ecosystem
+# spec but zero times in the real data, so no dependency was added for them;
+# see CHANGELOG-METHODOLOGY.md's FIX-7 entry.
+flate2 = "1"
+
 # Recorded-HTTP test server: probe tests run against a local mock, not the network.
 wiremock = "0.6"
 

@@ -107,8 +107,38 @@ successful HTTP response within the timeout?
   body accompanied it are archived verbatim regardless of the verdict; x402
   support may return later as its own labelled signal, but it is never a
   substitute for this rung passing.
+- **`data:` URIs are decoded through five fallback paths, in order (P0 FIX
+  7, 2026-07-29).** The ecosystem's convention is
+  `data:application/json;enc=<algorithm>[;level=<n>];base64,<payload>` with
+  zstd, gzip, brotli, or lz4 compression; production also uses several
+  non-standard variants. The parser tries, in this order: (1) an `enc=`
+  parameter — decompress with the named algorithm, then use the result; (2)
+  any `;base64,` meta at all, regardless of declared MIME type or charset
+  (`data:text/plain;base64,`, `data:;base64,`,
+  `data:application/json;charset=utf-8;base64,` all decode identically); (3)
+  no `;base64,` token — the payload is literal/percent-encoded text; (4) a
+  payload that *claims* base64 but plainly starts with `{` or `[` — the
+  decode is skipped and the payload used as-is (some real-world tooling
+  forgets to actually encode); (5) no `data:` scheme at all — the on-chain
+  URI string itself is raw JSON, treated the same as any other already-in-hand
+  payload. Evidence always records which path succeeded
+  (`data_uri_variant`) and, for a compressed payload, which algorithm
+  (`data_uri_algorithm`) — which path succeeded is itself worth publishing.
+  **Only `gzip` decompression is implemented.** Measured against the
+  reference population (60,049 agents), every `enc=` occurrence (399 of
+  them) declares `gzip`; zstd/brotli/lz4 — the ecosystem's *recommended*
+  algorithm among them — have zero occurrences, so no dependency was added
+  to decode them. **A `data:` URI declaring a compression algorithm this
+  parser does not implement is this rung's `error`, not `fail`**: we
+  understood exactly what was declared, we simply cannot decode it — that is
+  our limitation, not a defect in the agent's document. See
+  `CHANGELOG-METHODOLOGY.md`'s FIX-7 entry for the full measurement.
+- **`ipfs://` goes through one named gateway.** The evidence records which
+  one via `via_gateway`, so a reader can distinguish "this agent's content
+  is unavailable" from "our gateway had a bad day".
 - **Evidence:** `uri` (from `tokenURI()`), `final_url` actually fetched,
-  `http_status`, `elapsed_ms`, `fetched_at`.
+  `http_status`, `elapsed_ms`, `fetched_at`, and, where applicable,
+  `data_uri_variant`/`data_uri_algorithm` (inline `data:` documents).
 - **Does not mean:** that the response body is the agent document, is JSON,
   or contains anything meaningful — only that something answered. That is
   rung 3's question.

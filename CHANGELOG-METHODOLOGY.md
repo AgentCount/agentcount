@@ -752,3 +752,158 @@ all):
 the FIX 4/5 track boundary (Document vs. Reputation) survives this change,
 per the work order's explicit warning that a rung-2 failure must never mark
 `attested` skipped.
+
+---
+
+## 2026-07-29 — FIX 7: `data:` URI coverage (five decode fallback paths)
+
+**What changed.** `crates/probe`'s `data:` URI decoder (`resolve.rs`) tries
+five paths, in order, recording which one succeeded:
+
+1. `enc=<algorithm>[;level=<n>]` present — decompress with the named
+   algorithm, then use the result. **Only `gzip` is implemented.**
+2. Any `;base64,` meta at all, regardless of declared MIME type or charset
+   (`data:text/plain;base64,`, `data:;base64,`,
+   `data:application/json;charset=utf-8;base64,` all decode identically) —
+   plain base64 decode. This path already existed before this fix; it is
+   unchanged, just now explicitly named and fixtured.
+3. No `;base64,` token at all — literal/percent-encoded text. Also
+   pre-existing and unchanged; explicitly named and fixtured.
+4. A payload that *claims* base64 but plainly starts with `{` or `[` — the
+   decode is skipped and the payload used as-is.
+5. No `data:` scheme at all — the on-chain URI string itself is raw JSON
+   (`{...}`/`[...]`), treated as an already-in-hand payload the same as any
+   `data:` URI's decoded bytes.
+
+Every fallback path is recorded in rung 2's evidence
+(`data_uri_variant`, one of `"compressed"`, `"base64"`, `"plain"`,
+`"base64_claimed_but_raw_json"`, `"plain_json_without_uri_scheme"`; plus
+`data_uri_algorithm` when compression was involved) — which path succeeded
+is itself data worth publishing, per the work order.
+
+**A `data:` URI declaring a compression algorithm this parser does not
+implement is `checks::CheckStatus::Error`, never `Fail`.** We understood
+exactly what was declared (the `enc=` value is recorded verbatim in the
+`error` reason, `"unsupported_compression: <algorithm>"`), we simply cannot
+decode it — that is our limitation, not a defect in the agent's document.
+This is a new `Target::UnsupportedCompression` classification in
+`crates/probe`, distinct from the pre-existing `Target::Unsupported` a
+genuinely malformed `data:` URI (no comma separator, base64 that fails to
+decode and isn't the raw-JSON case above) still produces — that case is
+unchanged and still `Fail`.
+
+`ipfs://` classification moved out of `resolve()` entirely, into a new
+`ipfs_cid_and_path()` — a mechanical consequence of FIX 8 below (picking a
+gateway now takes live network attempts, which `resolve()` deliberately
+never makes), not a FIX 7 change in its own right.
+
+**Why.** The ecosystem's documented convention is
+`data:application/json;enc=<algorithm>[;level=<n>];base64,<payload>` with
+zstd, gzip, brotli, or lz4 compression, plus several non-standard variants
+observed in production. The first census's decoder only handled plain
+base64 and literal payloads; an `enc=`-compressed payload base64-decoded
+into opaque binary that then failed rung 3's JSON parse — reporting our own
+missing decompression support as the agent's malformed document.
+
+**Measure first, then implement (per the work order's explicit
+instruction).** Queried `agent_snapshots.agent_uri` directly for the
+reference run (`1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`, 60,049 agents; no
+re-sweep) for every variant named in the work order, before writing any
+decompression code:
+
+| Variant | Population count |
+|---|---:|
+| `enc=` parameter present | 399 (all declare `gzip` — zero `zstd`, `brotli`, or `lz4`) |
+| `data:text/plain;base64,` | 0 |
+| `data:;base64,` (no MIME) | 0 |
+| `data:application/json;charset=utf-8;base64,` | 0 |
+| Plain (non-base64) `data:` URI | 50 |
+| Base64 meta whose payload is actually raw JSON | 0 |
+| Raw JSON, no `data:` scheme at all | 127 |
+
+**zstd/brotli/lz4: implemented as classification only, no dependency
+added.** zstd is the ecosystem's *recommended* algorithm, yet it has zero
+occurrences in 60,049 agents, as do brotli and lz4. Adding `zstd`'s (or
+brotli's, or lz4's) decoding crate to decode zero real documents was
+deliberately not done, per the work order's explicit instruction — an
+`enc=` value of any of these three (or any other, unrecognised string) is
+classified `UnsupportedCompression` (evidence-only, no decode attempted) and
+reported here rather than silently added. **Only `gzip` — the one algorithm
+that actually appears — got a real dependency (`flate2`).** The three
+already-working paths (plain base64 regardless of declared MIME/charset,
+literal/percent-encoded payloads, and the base64-claims-raw-JSON fallback)
+were cheap to implement/verify and are fixtured even where the reference
+population shows zero occurrences (the base64-claims-raw-JSON case), per
+the work order's "implement it anyway, note it's untested against real
+data" instruction.
+
+**Measured effect — re-judged against the archived response bodies for the
+reference run (60,049 agents; no re-sweep).** Rung 3 (`parseable`) currently
+fails 2,046 documents; broken down by `http_archive.scheme` and, within
+`scheme = 'data'`, by the exact URI pattern:
+
+| Population | Count | Disposition under this fix |
+|---|---:|---|
+| `enc=gzip` (base64-decodes to valid gzip, decompresses to valid JSON — verified for all 399, not sampled) | 399 | **flips `fail` → `pass`** |
+| `data:`-scheme fails NOT explained by `enc=` (base64-decodes cleanly to non-JSON bytes — literal `-n {...}` shell-quoting artifacts in the payload, an unrelated defect in whatever tool produced them) | 76 | unchanged — genuinely malformed, correctly stays `fail` |
+| `https:`-scheme fails (malformed bodies from web fetches — outside this fix's scope entirely) | 1,566 | unchanged |
+| `ipfs:`-scheme fails | 5 | unchanged |
+| **Total rung-3 fails accounted for** | **2,046** | matches exactly |
+
+> **399 of the 2,046 rung-3 failures (19.5%) are attributable to
+> unsupported gzip compression and flip to `pass` under this fix.** The
+> remaining 1,647 are genuine malformed-document failures (76 `data:`-scheme,
+> 1,566 `https:`-scheme, 5 `ipfs:`-scheme), unaffected by this fix and
+> correctly still `fail`.
+
+**A second, larger population effect this fix produces, outside the
+"rung-3 failures" framing the work order used:** the 127 raw-JSON-no-scheme
+agents currently fail **rung 2** (`unsupported_scheme`), not rung 3, because
+today's parser never recognizes a scheme-less string as a document at all.
+Checked each of the 127 raw `agent_uri` strings directly (not sampled):
+
+> **105 of 127 (82.7%) are themselves valid JSON** and flip from rung-2
+> `fail` all the way to rung-2 `pass` **and** rung-3 `pass` under this fix.
+> **22 of 127 (17.3%) are not valid JSON** (truncated strings, an
+> unescaped/embedded control character, or a bare bracketed URL like
+> `[https://gmgn.ai/]`) — these flip from rung-2 `fail` (`unsupported_scheme`)
+> to rung-2 `pass` / rung-3 `fail` (a real `parse_error`, correctly
+> attributed to the agent's document, not this project's parser
+> limitation).
+
+The 50 plain (non-base64) `data:` URIs already passed both rung 2 and rung
+3 before this fix (verified against the archived run) — that fallback path
+already existed; this fix adds no population change for it, only the
+explicit `data_uri_variant: "plain"` label and a dedicated fixture.
+
+**Schema.** `schema_version` bumps 3 → 4: rung 2's evidence gains
+`data_uri_variant`/`data_uri_algorithm` for a `"data"`-scheme result.
+`checker_version` bumps 0.3.0 → 0.4.0 (`crates/checks/Cargo.toml`);
+`probe`'s own crate version bumps 0.2.0 → 0.3.0 (`crates/probe/Cargo.toml`)
+for the `Target`/`FetchOutcome` public shape change this fix makes. No
+migration is needed: no `status` value changed, only new `jsonb` evidence
+keys. FIX 8 (next entry) bumps both again for its own evidence addition.
+
+**Fixtures**, one per variant named in the work order plus the two `error`
+cases (`crates/probe/src/resolve.rs::tests` unless noted):
+`a_gzip_compressed_data_uri_decompresses_before_parsing`,
+`an_unsupported_compression_algorithm_is_error_not_fail` (zstd/brotli/lz4/an
+invented name, all four),
+`any_base64_meta_variant_decodes_regardless_of_mime_or_charset` (all three
+non-standard MIME/charset variants), `a_plain_non_base64_data_uri_is_url_decoded`,
+`a_base64_meta_whose_payload_is_actually_raw_json_skips_the_decode`,
+`raw_json_with_no_uri_scheme_is_inline_with_a_named_variant`. Plus, in
+`crates/probe/src/fetch.rs::tests` (the public `Prober::fetch` entry
+point): `an_unsupported_compression_algorithm_is_error_not_fail_and_touches_no_network`,
+`a_gzip_compressed_data_uri_is_decoded_via_the_public_fetch_entry_point`.
+Plus, in `crates/checks/src/rung2_resolvable.rs::tests` (the `Error`, not
+`Fail`, verdict at the check level): `an_unsupported_data_uri_compression_algorithm_is_error_not_fail`,
+`a_gzip_compressed_data_uri_passes_and_records_the_algorithm`.
+
+**Purity check unaffected:** `grep -RniE
+'reqwest|sqlx|alloy|tokio|Utc::now|probe' crates/checks/` (dependency
+names, not doc-comment mentions) is still empty — the new evidence fields
+are plain `String`/`Option<serde_json::Value>` inputs assembled by
+`crates/sweeper`, exactly like every other field `ResolvableInput` already
+carried.
+

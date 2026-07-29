@@ -17,15 +17,21 @@
 //!   document, and you cannot parse a document you never received. The
 //!   status and (whatever) body are still archived by the prober; this rung
 //!   only records that resolution failed and why.
-//! * **`data:` URIs pass, unconditionally.** 15,495 agents (25.8% of the
+//! * **`data:` URIs pass, unconditionally — UNLESS we understood the
+//!   declared encoding but couldn't decode it.** 15,495 agents (25.8% of the
 //!   registry) publish their registration document inline, and the spec
 //!   explicitly permits it (`ERC8004SPEC.md` L52). An inline URI is the
 //!   strongest possible answer to "can this be retrieved" — the document is
 //!   already in hand, no network round trip needed. Evidence for this case
-//!   carries `inline: true` and the decoded byte count, and deliberately
-//!   carries no HTTP fields (`request_url`, `final_url`, `http_status`,
-//!   `elapsed_ms`) — none of them were ever populated, and printing them as
-//!   `null` would look like a fetch was attempted when it wasn't.
+//!   carries `inline: true`, the decoded byte count, and — P0 FIX 7 — which
+//!   of the five decode fallback paths produced the bytes
+//!   (`data_uri_variant`, `data_uri_algorithm`), and deliberately carries no
+//!   HTTP fields (`request_url`, `final_url`, `http_status`, `elapsed_ms`) —
+//!   none of them were ever populated, and printing them as `null` would
+//!   look like a fetch was attempted when it wasn't. The one exception: an
+//!   `enc=` compression algorithm we don't implement (only `gzip` is) is
+//!   OUR limitation, not the agent's — `error`, never `fail` — see the
+//!   `"data"` match arm below.
 //! * **`ipfs://` goes through one named gateway.** The evidence records which
 //!   one via `via_gateway`, so a reader can distinguish "this agent's content
 //!   is unavailable" from "our gateway had a bad day".
@@ -61,6 +67,14 @@ pub struct ResolvableInput {
     pub inline_bytes: Option<usize>,
     /// Which IPFS gateway served this, when one did.
     pub via_gateway: Option<String>,
+    /// P0 FIX 7: which of the five `data:` decode fallback paths produced
+    /// `inline_bytes` — `"compressed"`, `"base64"`, `"plain"`,
+    /// `"base64_claimed_but_raw_json"`, or `"plain_json_without_uri_scheme"`.
+    /// Only meaningful when `scheme == "data"`.
+    pub inline_decode_variant: Option<String>,
+    /// The `enc=` algorithm name, set only when `inline_decode_variant ==
+    /// Some("compressed")`.
+    pub inline_decode_algorithm: Option<String>,
 }
 
 pub fn resolvable(input: &ResolvableInput, now: DateTime<Utc>) -> CheckResult {
@@ -81,8 +95,26 @@ pub fn resolvable(input: &ResolvableInput, now: DateTime<Utc>) -> CheckResult {
             // The document is already in hand — no request was ever made, so
             // no HTTP field is populated, on purpose (see module doc).
             evidence.insert("inline".into(), json!(true));
-            evidence.insert("bytes".into(), json!(input.inline_bytes));
-            CheckStatus::Pass
+            if let Some(v) = &input.inline_decode_variant {
+                evidence.insert("data_uri_variant".into(), json!(v));
+            }
+            if let Some(v) = &input.inline_decode_algorithm {
+                evidence.insert("data_uri_algorithm".into(), json!(v));
+            }
+            match &input.error {
+                Some(err) => {
+                    // P0 FIX 7: we understood the declared encoding (an
+                    // `enc=` compression algorithm) but could not decode
+                    // it — OUR limitation, never the agent's document being
+                    // at fault.
+                    evidence.insert("reason".into(), json!(err));
+                    CheckStatus::Error
+                }
+                None => {
+                    evidence.insert("bytes".into(), json!(input.inline_bytes));
+                    CheckStatus::Pass
+                }
+            }
         }
         _ => {
             // http, https, ipfs: a fetch was attempted. Record whichever of
@@ -177,6 +209,8 @@ mod tests {
             error: None,
             inline_bytes: None,
             via_gateway: None,
+            inline_decode_variant: None,
+            inline_decode_algorithm: None,
         }
     }
 
@@ -192,6 +226,8 @@ mod tests {
             error: None,
             inline_bytes: None,
             via_gateway: None,
+            inline_decode_variant: None,
+            inline_decode_algorithm: None,
         };
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Fail);
@@ -226,17 +262,80 @@ mod tests {
             error: None,
             inline_bytes: Some(9),
             via_gateway: None,
+            inline_decode_variant: Some("base64".into()),
+            inline_decode_algorithm: None,
         };
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Pass);
         assert_eq!(r.evidence["inline"], true);
         assert_eq!(r.evidence["bytes"], 9);
+        assert_eq!(r.evidence["data_uri_variant"], "base64");
         // The document was already in hand — no fetch happened, so none of
         // these keys should even be present, not even as null.
         assert!(r.evidence.get("request_url").is_none());
         assert!(r.evidence.get("final_url").is_none());
         assert!(r.evidence.get("http_status").is_none());
         assert!(r.evidence.get("elapsed_ms").is_none());
+    }
+
+    // --- P0 FIX 7: an unsupported `data:` compression algorithm ----------
+
+    #[test]
+    fn an_unsupported_data_uri_compression_algorithm_is_error_not_fail() {
+        let i = ResolvableInput {
+            uri: "data:application/json;enc=zstd;base64,eyJhIjoxfQ==".into(),
+            scheme: "data".into(),
+            request_url: None,
+            final_url: None,
+            http_status: None,
+            elapsed_ms: None,
+            error: Some("unsupported_compression: zstd".into()),
+            inline_bytes: None,
+            via_gateway: None,
+            inline_decode_variant: None,
+            inline_decode_algorithm: None,
+        };
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Error);
+        assert_eq!(r.evidence["reason"], "unsupported_compression: zstd");
+        assert!(
+            r.evidence.get("bytes").is_none(),
+            "there is nothing decoded to report a byte count for"
+        );
+    }
+
+    #[test]
+    fn a_gzip_compressed_data_uri_passes_and_records_the_algorithm() {
+        let mut i = ResolvableInput {
+            uri: "data:application/json;enc=gzip;level=6;base64,H4sI...".into(),
+            scheme: "data".into(),
+            request_url: None,
+            final_url: None,
+            http_status: None,
+            elapsed_ms: None,
+            error: None,
+            inline_bytes: Some(42),
+            via_gateway: None,
+            inline_decode_variant: Some("compressed".into()),
+            inline_decode_algorithm: Some("gzip".into()),
+        };
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Pass);
+        assert_eq!(r.evidence["data_uri_variant"], "compressed");
+        assert_eq!(r.evidence["data_uri_algorithm"], "gzip");
+
+        // Sanity: every other named variant round-trips into evidence too.
+        for variant in [
+            "plain",
+            "base64_claimed_but_raw_json",
+            "plain_json_without_uri_scheme",
+        ] {
+            i.inline_decode_variant = Some(variant.into());
+            i.inline_decode_algorithm = None;
+            let r = resolvable(&i, t());
+            assert_eq!(r.evidence["data_uri_variant"], variant);
+            assert!(r.evidence.get("data_uri_algorithm").is_none());
+        }
     }
 
     #[test]

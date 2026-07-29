@@ -6,7 +6,7 @@
 
 [package]
 name = "probe"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -26,6 +26,10 @@ url = { workspace = true }
 
 # Decode `data:` agent-card URIs inline (no network fetch).
 base64 = { workspace = true }
+
+# Decompress `data:` agent-card URIs declaring `enc=gzip` (P0 FIX 7) — the
+# only compression algorithm actually observed on-chain; see resolve.rs.
+flate2 = { workspace = true }
 
 # sha256 over the (possibly truncated) bytes we keep, for provenance.
 sha2 = { workspace = true }

@@ -38,7 +38,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use crate::netguard;
-use crate::resolve::{self, Target};
+use crate::resolve::{self, DataUriDecode, Target};
 use crate::robots::{RobotsCache, RobotsDecision};
 
 /// Refuse to keep more than this many response bytes, from any single
@@ -108,6 +108,10 @@ pub struct FetchOutcome {
     /// Which IPFS gateway served this, when one did — so a reader can tell
     /// an agent's failure from our gateway's.
     pub via_gateway: Option<String>,
+    /// For a `data:` (or scheme-less raw-JSON) target only: which of P0
+    /// FIX 7's five fallback paths produced `body`, and the compression
+    /// algorithm when one was involved. `None` for every other scheme.
+    pub inline_decode: Option<DataUriDecode>,
 }
 
 impl FetchOutcome {
@@ -125,6 +129,7 @@ impl FetchOutcome {
             error: None,
             elapsed_ms: None,
             via_gateway: None,
+            inline_decode: None,
         }
     }
 }
@@ -233,18 +238,29 @@ impl Prober {
         match resolve::resolve(uri, &self.ipfs_gateway) {
             Target::Empty => FetchOutcome::base(""),
             Target::Unsupported { scheme } => FetchOutcome::base(scheme),
-            Target::Inline { bytes } => Self::inline_outcome(bytes),
+            Target::UnsupportedCompression { scheme, algorithm } => {
+                // P0 FIX 7: we understood the declared codec, we simply
+                // can't decode it — OUR limitation, recorded as `error` so
+                // downstream reads `checks::CheckStatus::Error`, never
+                // `Fail`.
+                let mut out = FetchOutcome::base(scheme);
+                out.error = Some(format!("unsupported_compression: {algorithm}"));
+                out.elapsed_ms = Some(0);
+                out
+            }
+            Target::Inline { bytes, decode } => Self::inline_outcome(bytes, decode),
             Target::Http { url, via_gateway } => self.fetch_http(url, via_gateway, true).await,
         }
     }
 
-    fn inline_outcome(bytes: Vec<u8>) -> FetchOutcome {
+    fn inline_outcome(bytes: Vec<u8>, decode: DataUriDecode) -> FetchOutcome {
         let mut out = FetchOutcome::base("data");
         let (kept, truncated) = cap_bytes(bytes);
         out.body_sha256 = Some(sha256_hex(&kept));
         out.truncated = truncated;
         out.body = Some(kept);
         out.elapsed_ms = Some(0);
+        out.inline_decode = Some(decode);
         out
     }
 
@@ -484,6 +500,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use base64::Engine;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -749,5 +766,45 @@ mod tests {
             ua,
             "ledgerscope-probe/0.2 (+https://ledgerscope.io/methodology; contact: probes@ledgerscope.io)"
         );
+    }
+
+    // --- P0 FIX 7: an unsupported compression algorithm is `error` -------
+
+    #[tokio::test]
+    async fn an_unsupported_compression_algorithm_is_error_not_fail_and_touches_no_network() {
+        // No mock server needed at all: Target::UnsupportedCompression is
+        // decided entirely by `resolve()`, before any request would be made.
+        let prober = fast_prober();
+        let out = prober
+            .fetch("data:application/json;enc=zstd;base64,eyJhIjoxfQ==")
+            .await;
+
+        assert_eq!(out.scheme, "data");
+        assert_eq!(out.error.as_deref(), Some("unsupported_compression: zstd"));
+        assert!(out.http_status.is_none());
+        assert!(out.body.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_gzip_compressed_data_uri_is_decoded_via_the_public_fetch_entry_point() {
+        use std::io::Write;
+        let plaintext = br#"{"name":"gzip via fetch()"}"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+        encoder.write_all(plaintext).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&gz);
+        let uri = format!("data:application/json;enc=gzip;level=6;base64,{b64}");
+
+        let prober = fast_prober();
+        let out = prober.fetch(&uri).await;
+
+        assert_eq!(out.scheme, "data");
+        assert!(out.error.is_none());
+        assert_eq!(out.body.as_deref(), Some(plaintext.as_slice()));
+        let decode = out
+            .inline_decode
+            .expect("decode provenance must be recorded");
+        assert_eq!(decode.variant, "compressed");
+        assert_eq!(decode.algorithm.as_deref(), Some("gzip"));
     }
 }
