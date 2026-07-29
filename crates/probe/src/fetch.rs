@@ -37,6 +37,8 @@ use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
+use serde::Serialize;
+
 use crate::netguard;
 use crate::resolve::{self, DataUriDecode, Target};
 use crate::robots::{RobotsCache, RobotsDecision};
@@ -106,12 +108,29 @@ pub struct FetchOutcome {
     /// (`Empty`/`Unsupported`/`Inline`).
     pub elapsed_ms: Option<u32>,
     /// Which IPFS gateway served this, when one did — so a reader can tell
-    /// an agent's failure from our gateway's.
+    /// an agent's failure from every gateway's own. Only the WINNING
+    /// gateway; see `gateway_attempts` below for the whole chain.
     pub via_gateway: Option<String>,
     /// For a `data:` (or scheme-less raw-JSON) target only: which of P0
     /// FIX 7's five fallback paths produced `body`, and the compression
     /// algorithm when one was involved. `None` for every other scheme.
     pub inline_decode: Option<DataUriDecode>,
+    /// P0 FIX 8: every IPFS gateway tried, in order, with each one's own
+    /// outcome — set only when `scheme == "ipfs"`. Empty for every other
+    /// scheme, and empty for an `ipfs://` URI too malformed to extract a
+    /// CID from (that never reaches the gateway loop at all). Lets a reader
+    /// see the whole chain, not just whichever gateway (if any) won.
+    pub gateway_attempts: Vec<GatewayAttempt>,
+}
+
+/// One attempt against one IPFS gateway, as part of the P0 FIX 8
+/// fallback chain.
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayAttempt {
+    pub gateway: String,
+    pub http_status: Option<u16>,
+    /// Plain text, same non-verdict convention as `FetchOutcome.error`.
+    pub error: Option<String>,
 }
 
 impl FetchOutcome {
@@ -130,6 +149,7 @@ impl FetchOutcome {
             elapsed_ms: None,
             via_gateway: None,
             inline_decode: None,
+            gateway_attempts: Vec::new(),
         }
     }
 }
@@ -155,7 +175,10 @@ pub(crate) enum SendError {
 /// and global concurrency caps, and a process-lifetime robots.txt cache.
 pub struct Prober {
     client: reqwest::Client,
-    ipfs_gateway: String,
+    /// The gateways an `ipfs://` URI is tried against, in order (P0 FIX 8).
+    /// Exactly one gateway reproduces the pre-FIX-8 behaviour; production
+    /// use is the three-gateway fallback chain — see `fetch_ipfs_chain`.
+    ipfs_gateways: Vec<String>,
     total_timeout: Duration,
     global: Arc<Semaphore>,
     per_host: Mutex<HashMap<String, Arc<Semaphore>>>,
@@ -176,11 +199,13 @@ impl Prober {
     /// — passed in, never hardcoded here, so METHODOLOGY.md stays the single
     /// source and this crate can't drift from what it promises. The full
     /// User-Agent (`ledgerscope-probe/0.2 (+<contact_url>)`) is assembled in
-    /// exactly one place: [`Self::build`].
-    pub fn new(contact_url: &str, ipfs_gateway: &str) -> anyhow::Result<Self> {
+    /// exactly one place: [`Self::build`]. `ipfs_gateways` is tried in
+    /// order for every `ipfs://` URI (P0 FIX 8) — must be non-empty.
+    pub fn new(contact_url: &str, ipfs_gateways: &[String]) -> anyhow::Result<Self> {
+        anyhow::ensure!(!ipfs_gateways.is_empty(), "ipfs_gateways must not be empty");
         Self::build(
             contact_url,
-            ipfs_gateway,
+            ipfs_gateways,
             Duration::from_secs(5),
             Duration::from_secs(10),
         )
@@ -188,7 +213,7 @@ impl Prober {
 
     fn build(
         contact_url: &str,
-        ipfs_gateway: &str,
+        ipfs_gateways: &[String],
         connect_timeout: Duration,
         total_timeout: Duration,
     ) -> anyhow::Result<Self> {
@@ -202,7 +227,7 @@ impl Prober {
             .build()?;
         Ok(Self {
             client,
-            ipfs_gateway: ipfs_gateway.to_string(),
+            ipfs_gateways: ipfs_gateways.to_vec(),
             total_timeout,
             global: Arc::new(Semaphore::new(global_concurrency())),
             per_host: Mutex::new(HashMap::new()),
@@ -212,12 +237,37 @@ impl Prober {
 
     /// Test-only constructor: short timeouts so the timeout test doesn't
     /// take ten seconds, routed through the SAME `build` that assembles the
-    /// User-Agent — no second place constructs it.
+    /// User-Agent — no second place constructs it. The default three
+    /// gateways are unused by every test that calls this (they exercise
+    /// `fetch_http` directly, never `fetch`/`fetch_ipfs_chain`); tests that
+    /// DO need to control gateways use [`Self::new_for_test_with_gateways`].
     #[cfg(test)]
     pub(crate) fn new_for_test(connect_timeout: Duration, total_timeout: Duration) -> Self {
         Self::build(
             "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io",
-            "https://ipfs.io/ipfs/",
+            &[
+                "https://ipfs.io/ipfs/".to_string(),
+                "https://cloudflare-ipfs.com/ipfs/".to_string(),
+                "https://gateway.pinata.cloud/ipfs/".to_string(),
+            ],
+            connect_timeout,
+            total_timeout,
+        )
+        .expect("test client must build")
+    }
+
+    /// Test-only constructor for the P0 FIX 8 gateway-fallback tests: lets a
+    /// test point the gateway chain at its own `wiremock` server URIs
+    /// instead of the real, unreachable-from-tests production gateways.
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_gateways(
+        ipfs_gateways: Vec<String>,
+        connect_timeout: Duration,
+        total_timeout: Duration,
+    ) -> Self {
+        Self::build(
+            "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io",
+            &ipfs_gateways,
             connect_timeout,
             total_timeout,
         )
@@ -234,8 +284,16 @@ impl Prober {
     /// Fetch one agent's declared URI. Infallible by design: every failure
     /// mode is a recorded [`FetchOutcome`], never an `Err` that would abort a
     /// 60,000-agent sweep.
+    ///
+    /// `ipfs://` is checked FIRST, ahead of [`resolve::resolve`] — P0 FIX 8
+    /// means picking a gateway takes live network attempts (up to three, in
+    /// sequence), which `resolve` deliberately never makes; see
+    /// [`Self::fetch_ipfs_chain`].
     pub async fn fetch(&self, uri: &str) -> FetchOutcome {
-        match resolve::resolve(uri, &self.ipfs_gateway) {
+        if let Some(cid_and_path) = resolve::ipfs_cid_and_path(uri) {
+            return self.fetch_ipfs_chain(&cid_and_path, true).await;
+        }
+        match resolve::resolve(uri) {
             Target::Empty => FetchOutcome::base(""),
             Target::Unsupported { scheme } => FetchOutcome::base(scheme),
             Target::UnsupportedCompression { scheme, algorithm } => {
@@ -249,7 +307,7 @@ impl Prober {
                 out
             }
             Target::Inline { bytes, decode } => Self::inline_outcome(bytes, decode),
-            Target::Http { url, via_gateway } => self.fetch_http(url, via_gateway, true).await,
+            Target::Http { url } => self.fetch_http(url, None, true).await,
         }
     }
 
@@ -261,6 +319,73 @@ impl Prober {
         out.body = Some(kept);
         out.elapsed_ms = Some(0);
         out.inline_decode = Some(decode);
+        out
+    }
+
+    /// P0 FIX 8: try each configured IPFS gateway in sequence until one
+    /// answers with a 2xx, or all are exhausted. Each attempt goes through
+    /// the FULL guarded path (`fetch_http`: netguard, robots, redirects,
+    /// the body cap) exactly like any other HTTP fetch — the per-host
+    /// concurrency cap in particular applies per GATEWAY HOST automatically,
+    /// because `guarded_send`'s semaphore is keyed by `url.host_str()` and
+    /// the three gateways are three different hosts; nothing here bypasses
+    /// it. `validate_hops` is threaded straight through to `fetch_http` for
+    /// every attempt — `false` only from this file's own mechanics tests
+    /// (wiremock binds loopback, which the netguard rightly refuses).
+    pub(crate) async fn fetch_ipfs_chain(
+        &self,
+        cid_and_path: &str,
+        validate_hops: bool,
+    ) -> FetchOutcome {
+        let start = Instant::now();
+        let mut attempts: Vec<GatewayAttempt> = Vec::new();
+        let mut first_request_url: Option<String> = None;
+
+        for gateway in &self.ipfs_gateways {
+            let rewritten = format!("{gateway}{cid_and_path}");
+            let url = match url::Url::parse(&rewritten) {
+                Ok(u) => u,
+                Err(e) => {
+                    attempts.push(GatewayAttempt {
+                        gateway: gateway.clone(),
+                        http_status: None,
+                        error: Some(format!("bad_gateway_url: {e}")),
+                    });
+                    continue;
+                }
+            };
+            if first_request_url.is_none() {
+                first_request_url = Some(url.to_string());
+            }
+
+            let attempt = self
+                .fetch_http(url, Some(gateway.clone()), validate_hops)
+                .await;
+            let succeeded = matches!(attempt.http_status, Some(s) if (200..300).contains(&s));
+            attempts.push(GatewayAttempt {
+                gateway: gateway.clone(),
+                http_status: attempt.http_status,
+                error: attempt.error.clone(),
+            });
+            if succeeded {
+                let mut out = attempt;
+                out.gateway_attempts = attempts;
+                // Total wall-clock across every attempt in the chain, not
+                // just the winning one — the honest cost of this agent's
+                // ipfs:// fetch.
+                out.elapsed_ms = Some(elapsed_ms(start));
+                return out;
+            }
+        }
+
+        // Every gateway was tried and none answered 2xx. We genuinely
+        // cannot tell an unpinned CID from a network problem on our end —
+        // `error`, never `fail`. See P0 FIX 8.
+        let mut out = FetchOutcome::base("ipfs");
+        out.request_url = first_request_url;
+        out.error = Some("ipfs_all_gateways_failed".into());
+        out.gateway_attempts = attempts;
+        out.elapsed_ms = Some(elapsed_ms(start));
         out
     }
 
@@ -378,8 +503,13 @@ impl Prober {
     /// netguard's SSRF check. `pub(crate)` so `robots.rs` can apply the exact
     /// same guard to robots.txt's own redirect hops — a redirect there is
     /// just as attacker-controlled as a redirect on the main document.
+    ///
+    /// `url` here is always an already-parsed `http(s)://` URL — the
+    /// initial request or a `Location` target — never a raw `ipfs://`
+    /// string, so `netguard::resolve`'s own `ipfs://`-rewriting branch is
+    /// unreachable through this call; the empty string below is never used.
     pub(crate) async fn validate_hop(&self, url: &url::Url) -> Result<(), String> {
-        match netguard::resolve(url.as_str(), &self.ipfs_gateway).await {
+        match netguard::resolve(url.as_str(), "").await {
             netguard::Resolution::Fetch(_) => Ok(()),
             netguard::Resolution::Reject(reason) => Err(reason),
             netguard::Resolution::Inline(_) => {
@@ -806,5 +936,119 @@ mod tests {
             .expect("decode provenance must be recorded");
         assert_eq!(decode.variant, "compressed");
         assert_eq!(decode.algorithm.as_deref(), Some("gzip"));
+    }
+
+    // --- P0 FIX 8: IPFS gateway fallback chain ----------------------------
+
+    async fn mock_gateway(status: u16, body: Option<&str>) -> MockServer {
+        let server = MockServer::start().await;
+        allow_robots(&server).await;
+        let mut template = ResponseTemplate::new(status);
+        if let Some(b) = body {
+            template = template.set_body_string(b);
+        }
+        Mock::given(method("GET"))
+            .and(path("/ipfs/bafyfakecid"))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn an_ipfs_fetch_falls_back_to_the_second_gateway_when_the_first_fails() {
+        let gw1 = mock_gateway(404, None).await;
+        let gw2 = mock_gateway(200, Some("the card")).await;
+        let gateways = vec![
+            format!("{}/ipfs/", gw1.uri()),
+            format!("{}/ipfs/", gw2.uri()),
+        ];
+
+        let prober = Prober::new_for_test_with_gateways(
+            gateways,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
+        let out = prober.fetch_ipfs_chain("bafyfakecid", false).await;
+
+        assert_eq!(out.http_status, Some(200));
+        assert!(
+            out.error.is_none(),
+            "a gateway that eventually answers is not our error"
+        );
+        assert_eq!(out.body.as_deref(), Some(b"the card".as_slice()));
+        assert_eq!(
+            out.via_gateway.as_deref(),
+            Some(format!("{}/ipfs/", gw2.uri())).as_deref()
+        );
+
+        // The whole chain is recorded, not just the winner.
+        assert_eq!(out.gateway_attempts.len(), 2);
+        assert_eq!(out.gateway_attempts[0].http_status, Some(404));
+        assert_eq!(out.gateway_attempts[1].http_status, Some(200));
+    }
+
+    #[tokio::test]
+    async fn ipfs_all_gateways_failing_is_error_never_fail() {
+        // Every server must stay alive for the whole test — dropping a
+        // `MockServer` triggers wiremock's graceful shutdown immediately,
+        // freeing its port for potential reuse by another test running
+        // concurrently. Collecting into a `Vec` (rather than a `let _ =` per
+        // iteration) keeps all three bound until this function returns.
+        let mut servers = Vec::new();
+        let mut gateways = Vec::new();
+        for _ in 0..3 {
+            let gw = mock_gateway(404, None).await;
+            gateways.push(format!("{}/ipfs/", gw.uri()));
+            servers.push(gw);
+        }
+
+        let prober = Prober::new_for_test_with_gateways(
+            gateways,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
+        let out = prober.fetch_ipfs_chain("bafyfakecid", false).await;
+
+        // We cannot tell an unpinned CID from a network problem on our end —
+        // this must never surface as a bare non-2xx status left to be
+        // misjudged as the agent's `fail`.
+        assert_eq!(out.error.as_deref(), Some("ipfs_all_gateways_failed"));
+        assert!(out.http_status.is_none());
+        assert_eq!(out.gateway_attempts.len(), 3);
+        assert!(
+            out.gateway_attempts
+                .iter()
+                .all(|a| a.http_status == Some(404)),
+            "every attempt's own status must still be recorded: {:?}",
+            out.gateway_attempts
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_gateway_succeeding_never_calls_the_others() {
+        let gw1 = mock_gateway(200, Some("first answers")).await;
+        // No mock configured on gw2/gw3 at all — the assertion on
+        // `gateway_attempts.len()` below is what actually proves neither was
+        // ever called, not the absence of a mock.
+        let gw2 = MockServer::start().await;
+        allow_robots(&gw2).await;
+        let gw3 = MockServer::start().await;
+        allow_robots(&gw3).await;
+        let gateways = vec![
+            format!("{}/ipfs/", gw1.uri()),
+            format!("{}/ipfs/", gw2.uri()),
+            format!("{}/ipfs/", gw3.uri()),
+        ];
+
+        let prober = Prober::new_for_test_with_gateways(
+            gateways,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
+        let out = prober.fetch_ipfs_chain("bafyfakecid", false).await;
+
+        assert_eq!(out.http_status, Some(200));
+        assert_eq!(out.gateway_attempts.len(), 1);
     }
 }

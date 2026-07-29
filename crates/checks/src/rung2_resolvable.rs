@@ -32,9 +32,14 @@
 //!   `enc=` compression algorithm we don't implement (only `gzip` is) is
 //!   OUR limitation, not the agent's — `error`, never `fail` — see the
 //!   `"data"` match arm below.
-//! * **`ipfs://` goes through one named gateway.** The evidence records which
-//!   one via `via_gateway`, so a reader can distinguish "this agent's content
-//!   is unavailable" from "our gateway had a bad day".
+//! * **`ipfs://` is tried against up to three gateways in sequence** (P0
+//!   FIX 8, reversing an earlier ruling that used one disclosed gateway so a
+//!   failure would be honestly attributable — the owner confirmed the
+//!   reversal). The evidence records every gateway attempted
+//!   (`gateway_attempts`) and which one won (`via_gateway`), so a reader can
+//!   distinguish "this agent's content is unavailable everywhere we looked"
+//!   from "one gateway had a bad day." All three failing is `error`, never
+//!   `fail` — we cannot distinguish an unpinned CID from a network problem.
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
@@ -75,6 +80,11 @@ pub struct ResolvableInput {
     /// The `enc=` algorithm name, set only when `inline_decode_variant ==
     /// Some("compressed")`.
     pub inline_decode_algorithm: Option<String>,
+    /// P0 FIX 8: every IPFS gateway attempted, in order, with each one's own
+    /// status — set only when `scheme == "ipfs"`. `None` for every other
+    /// scheme, and for an `ipfs://` URI too malformed to try any gateway at
+    /// all.
+    pub gateway_attempts: Option<Value>,
 }
 
 pub fn resolvable(input: &ResolvableInput, now: DateTime<Utc>) -> CheckResult {
@@ -134,6 +144,10 @@ pub fn resolvable(input: &ResolvableInput, now: DateTime<Utc>) -> CheckResult {
             }
             if let Some(v) = &input.via_gateway {
                 evidence.insert("via_gateway".into(), json!(v));
+            }
+            if let Some(v) = &input.gateway_attempts {
+                // P0 FIX 8: the whole chain, not just the winner.
+                evidence.insert("gateway_attempts".into(), v.clone());
             }
 
             if let Some(err) = &input.error {
@@ -211,6 +225,7 @@ mod tests {
             via_gateway: None,
             inline_decode_variant: None,
             inline_decode_algorithm: None,
+            gateway_attempts: None,
         }
     }
 
@@ -228,6 +243,7 @@ mod tests {
             via_gateway: None,
             inline_decode_variant: None,
             inline_decode_algorithm: None,
+            gateway_attempts: None,
         };
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Fail);
@@ -264,6 +280,7 @@ mod tests {
             via_gateway: None,
             inline_decode_variant: Some("base64".into()),
             inline_decode_algorithm: None,
+            gateway_attempts: None,
         };
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Pass);
@@ -294,6 +311,7 @@ mod tests {
             via_gateway: None,
             inline_decode_variant: None,
             inline_decode_algorithm: None,
+            gateway_attempts: None,
         };
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Error);
@@ -318,6 +336,7 @@ mod tests {
             via_gateway: None,
             inline_decode_variant: Some("compressed".into()),
             inline_decode_algorithm: Some("gzip".into()),
+            gateway_attempts: None,
         };
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Pass);
@@ -477,10 +496,52 @@ mod tests {
         let mut i = http_pass_input();
         i.scheme = "ipfs".into();
         i.uri = "ipfs://bafybeigdyrzt.../agent.json".into();
-        i.via_gateway = Some("ipfs.io".into());
+        i.via_gateway = Some("https://ipfs.io/ipfs/".into());
         let r = resolvable(&i, t());
         assert_eq!(r.status, CheckStatus::Pass);
-        assert_eq!(r.evidence["via_gateway"], "ipfs.io");
+        assert_eq!(r.evidence["via_gateway"], "https://ipfs.io/ipfs/");
+    }
+
+    // --- P0 FIX 8: IPFS gateway fallback chain ----------------------------
+
+    #[test]
+    fn ipfs_pass_records_the_whole_gateway_chain_not_just_the_winner() {
+        let mut i = http_pass_input();
+        i.scheme = "ipfs".into();
+        i.uri = "ipfs://bafybeigdyrzt.../agent.json".into();
+        i.via_gateway = Some("https://cloudflare-ipfs.com/ipfs/".into());
+        i.gateway_attempts = Some(json!([
+            {"gateway": "https://ipfs.io/ipfs/", "http_status": 404, "error": null},
+            {"gateway": "https://cloudflare-ipfs.com/ipfs/", "http_status": 200, "error": null},
+        ]));
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Pass);
+        assert_eq!(r.evidence["gateway_attempts"].as_array().unwrap().len(), 2);
+        assert_eq!(r.evidence["gateway_attempts"][0]["http_status"], 404);
+        assert_eq!(r.evidence["gateway_attempts"][1]["http_status"], 200);
+    }
+
+    #[test]
+    fn all_three_ipfs_gateways_failing_is_error_not_fail_with_the_full_chain_recorded() {
+        // We cannot distinguish an unpinned CID from a network problem on
+        // our end — see P0 FIX 8. Must be `Error`, never `Fail`, even though
+        // every individual attempt got a definite (non-2xx) HTTP status.
+        let mut i = http_pass_input();
+        i.scheme = "ipfs".into();
+        i.uri = "ipfs://bafybeigdyrzt.../agent.json".into();
+        i.http_status = None;
+        i.via_gateway = None;
+        i.error = Some("ipfs_all_gateways_failed".into());
+        i.gateway_attempts = Some(json!([
+            {"gateway": "https://ipfs.io/ipfs/", "http_status": 404, "error": null},
+            {"gateway": "https://cloudflare-ipfs.com/ipfs/", "http_status": 404, "error": null},
+            {"gateway": "https://gateway.pinata.cloud/ipfs/", "http_status": 522, "error": null},
+        ]));
+        let r = resolvable(&i, t());
+        assert_eq!(r.status, CheckStatus::Error);
+        assert_eq!(r.evidence["reason"], "ipfs_all_gateways_failed");
+        assert_eq!(r.evidence["gateway_attempts"].as_array().unwrap().len(), 3);
+        assert!(r.evidence.get("via_gateway").is_none());
     }
 
     #[test]

@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "checks"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3521,7 +3521,7 @@ dependencies = [
 
 [[package]]
 name = "probe"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",

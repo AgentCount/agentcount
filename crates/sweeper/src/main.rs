@@ -100,13 +100,33 @@ fn fetch_concurrency() -> usize {
 const PROBE_CONTACT_URL: &str =
     "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io";
 
-/// HTTPS gateway `ipfs://` URIs are rewritten onto before fetching.
-/// Overridable via `IPFS_GATEWAY` for anyone who wants a different (or
-/// self-hosted) gateway; the evidence records which one served each agent
-/// (`via_gateway`) so a reader can tell an agent's failure from the
-/// gateway's.
-fn ipfs_gateway() -> String {
-    std::env::var("IPFS_GATEWAY").unwrap_or_else(|_| "https://ipfs.io/ipfs/".to_string())
+/// HTTPS gateways `ipfs://` URIs are tried against, in sequence, until one
+/// answers 2xx or all are exhausted (P0 FIX 8 — reverses the earlier ruling
+/// that used one disclosed gateway so a failure would be honestly
+/// attributable; the owner confirmed the reversal, see
+/// `CHANGELOG-METHODOLOGY.md`). Overridable via `IPFS_GATEWAYS`
+/// (comma-separated, tried in the order given) for anyone who wants
+/// different or self-hosted gateways; the evidence records every gateway
+/// attempted and which one served each agent (`gateway_attempts`,
+/// `via_gateway`) so a reader can tell an agent's failure from every
+/// gateway's own.
+fn ipfs_gateways() -> Vec<String> {
+    std::env::var("IPFS_GATEWAYS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .map(|g| g.trim().to_string())
+                .filter(|g| !g.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            vec![
+                "https://ipfs.io/ipfs/".to_string(),
+                "https://cloudflare-ipfs.com/ipfs/".to_string(),
+                "https://gateway.pinata.cloud/ipfs/".to_string(),
+            ]
+        })
 }
 
 /// Reduce a `probe::FetchOutcome`'s raw scheme label to the six buckets
@@ -311,8 +331,8 @@ async fn main() -> Result<()> {
     // are the SAME values rung 5 compares each document's declared binding
     // against below — a single source so rung 1's provenance and rung 5's
     // "reality" can never quietly disagree.
-    let gateway = ipfs_gateway();
-    let prober = probe::Prober::new(PROBE_CONTACT_URL, &gateway)?;
+    let gateways = ipfs_gateways();
+    let prober = probe::Prober::new(PROBE_CONTACT_URL, &gateways)?;
 
     // `deploy_block` is no longer used for enumeration (agent ids are found
     // by binary search on `ownerOf` existence, not by scanning logs from
@@ -583,6 +603,11 @@ async fn main() -> Result<()> {
                     .inline_decode
                     .as_ref()
                     .and_then(|d| d.algorithm.clone()),
+                gateway_attempts: if outcome.gateway_attempts.is_empty() {
+                    None
+                } else {
+                    serde_json::to_value(&outcome.gateway_attempts).ok()
+                },
             },
             now,
         );

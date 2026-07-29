@@ -30,7 +30,14 @@
 /// the compression algorithm when one was involved. No field is removed and
 /// no existing field changes meaning; old rows remain readable without
 /// either key present.
-pub const SCHEMA_VERSION: i32 = 4;
+///
+/// 5 (P0 FIX 8, 2026-07-29): rung 2's evidence gains `gateway_attempts` for
+/// an `"ipfs"`-scheme result — every gateway tried, in order, with each
+/// one's own status, now that `crates/probe` tries up to three gateways in
+/// sequence instead of one. `via_gateway` is unchanged in meaning (still the
+/// winner, when there was one). No field removed; old rows remain readable
+/// without the new key.
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// The checks crate's own version — the semantics of the rungs.
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");

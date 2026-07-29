@@ -133,12 +133,30 @@ successful HTTP response within the timeout?
   understood exactly what was declared, we simply cannot decode it — that is
   our limitation, not a defect in the agent's document. See
   `CHANGELOG-METHODOLOGY.md`'s FIX-7 entry for the full measurement.
-- **`ipfs://` goes through one named gateway.** The evidence records which
-  one via `via_gateway`, so a reader can distinguish "this agent's content
-  is unavailable" from "our gateway had a bad day".
+- **`ipfs://` is tried against up to three gateways, in sequence (P0 FIX 8,
+  2026-07-29 — reverses a 2026-07-28 ruling).** The earlier ruling used one
+  disclosed gateway (`ipfs.io`), specifically so a failure would be honestly
+  attributable to either the agent or the gateway. The owner has reversed
+  that ruling: a single gateway's outage was itself becoming indistinguishable
+  from an agent's content being genuinely unpinned, which defeats the
+  original goal. `https://ipfs.io/ipfs/`, `https://cloudflare-ipfs.com/ipfs/`,
+  and `https://gateway.pinata.cloud/ipfs/` are now tried in that order; the
+  first to answer HTTP 2xx wins. Evidence records every gateway attempted,
+  each one's own status (`gateway_attempts`), and which one (if any) won
+  (`via_gateway`) — the whole chain, not just the winner. **If all three
+  gateways fail, this rung records `error`, never `fail`**: we cannot
+  distinguish a CID no gateway has pinned from a problem on our end, and
+  claiming otherwise would be a claim we cannot support. This affects the
+  3,588 `ipfs://` agents in the reference population; see
+  `CHANGELOG-METHODOLOGY.md`'s FIX-8 entry. The existing politeness rules
+  (per-host concurrency cap, `robots.txt`, timeouts, the SSRF netguard on
+  every hop) apply to each gateway host independently — three gateways are
+  three hosts, not one host tried three times, so none of them can starve
+  the others' budget or bypass the cap.
 - **Evidence:** `uri` (from `tokenURI()`), `final_url` actually fetched,
   `http_status`, `elapsed_ms`, `fetched_at`, and, where applicable,
-  `data_uri_variant`/`data_uri_algorithm` (inline `data:` documents).
+  `data_uri_variant`/`data_uri_algorithm` (inline `data:` documents) or
+  `gateway_attempts`/`via_gateway` (`ipfs://` documents).
 - **Does not mean:** that the response body is the agent document, is JSON,
   or contains anything meaningful — only that something answered. That is
   rung 3's question.
@@ -568,6 +586,10 @@ behave differently, that's called out rather than glossed over.
   is also a per-host request cap (independent of, and tighter than, overall
   sweep concurrency) so one host never sees more than a couple of our
   requests in flight at once, no matter how busy the rest of the sweep is.
+  This applies per **host**, so the three-gateway IPFS fallback chain
+  (Section 2, Rung 2, P0 FIX 8) counts as three separate hosts, each
+  under its own cap — not one host budget shared, or bypassed, across all
+  three.
 - **Safety guard carried forward from the retiring enricher:** requests are
   only ever made to public IP addresses. An `agentURI` pointing at a private,
   loopback, link-local, or cloud-metadata address (`169.254.169.254` and

@@ -7,10 +7,13 @@
 //! `netguard`, applied by `fetch.rs` to the initial URL AND to every redirect
 //! hop — see that module's doc comment for why re-checking every hop matters.
 //!
-//! Six scheme buckets, matching the population `d2-task-2-brief.md` measured:
-//! `""` (empty, no request), `data:` (decoded inline), `https://`/`http://`
-//! (through the netguard), `ipfs://` (rewritten onto a gateway, then through
-//! the netguard like any other URL), and everything else (`Unsupported`).
+//! Five scheme buckets: `""` (empty, no request), `data:` (decoded inline,
+//! or its raw-JSON-with-no-scheme cousin — see below), `https://`/`http://`
+//! (through the netguard), and everything else (`Unsupported`). `ipfs://` is
+//! deliberately NOT classified here as of P0 FIX 8: which gateway serves it
+//! is no longer a single synchronous rewrite — `fetch.rs` tries up to three,
+//! live, in sequence — so this module's only remaining ipfs-related job is
+//! [`ipfs_cid_and_path`], extracting the CID/path an `ipfs://` URI names.
 //!
 //! **P0 FIX 7 (data URI coverage).** A `data:` payload is decoded through
 //! one of five paths, tried in this order, and the path that succeeded is
@@ -44,10 +47,10 @@ use serde::Serialize;
 pub enum Target {
     /// `""` (or all-whitespace) — no request to make. 19,729 agents.
     Empty,
-    /// A scheme we don't fetch — anything other than empty/`data:`/`http(s):`
-    /// /`ipfs:`, or a `data:`/`ipfs:` URI too malformed to decode/rewrite.
-    /// `scheme` is a best-effort label for provenance, never used for control
-    /// flow beyond this point.
+    /// A scheme we don't fetch — anything other than empty/`data:`/`http(s):`,
+    /// or a `data:` URI too malformed to decode at all (see
+    /// [`decode_data_uri`]'s `Malformed` case). `scheme` is a best-effort
+    /// label for provenance, never used for control flow beyond this point.
     Unsupported { scheme: String },
     /// A `data:` URI declaring `enc=<algorithm>` for a compression codec we
     /// don't implement (P0 FIX 7). Distinct from `Unsupported`: we
@@ -63,13 +66,8 @@ pub enum Target {
         bytes: Vec<u8>,
         decode: DataUriDecode,
     },
-    /// A URL to fetch. `via_gateway` carries the gateway prefix used when the
-    /// original scheme was `ipfs://`, so a reader can tell an agent's failure
-    /// from our gateway's.
-    Http {
-        url: url::Url,
-        via_gateway: Option<String>,
-    },
+    /// A `http(s)://` URL to fetch.
+    Http { url: url::Url },
 }
 
 /// Which of P0 FIX 7's five fallback paths decoded a `data:` payload (or
@@ -85,9 +83,8 @@ pub struct DataUriDecode {
 }
 
 /// Classify `uri` (an agent's raw `tokenURI()` string, exactly as read from
-/// the chain). `ipfs_gateway` is the HTTPS gateway prefix (e.g.
-/// `https://ipfs.io/ipfs/`) `ipfs://` references are rewritten onto.
-pub fn resolve(uri: &str, ipfs_gateway: &str) -> Target {
+/// the chain).
+pub fn resolve(uri: &str) -> Target {
     let trimmed = uri.trim();
     if trimmed.is_empty() {
         return Target::Empty;
@@ -108,31 +105,9 @@ pub fn resolve(uri: &str, ipfs_gateway: &str) -> Target {
         };
     }
 
-    if let Some(rest) = trimmed.strip_prefix("ipfs://") {
-        let cid_and_path = rest.trim_start_matches('/');
-        if cid_and_path.is_empty() {
-            return Target::Unsupported {
-                scheme: "ipfs".into(),
-            };
-        }
-        let rewritten = format!("{ipfs_gateway}{cid_and_path}");
-        return match url::Url::parse(&rewritten) {
-            Ok(url) => Target::Http {
-                url,
-                via_gateway: Some(ipfs_gateway.to_string()),
-            },
-            Err(_) => Target::Unsupported {
-                scheme: "ipfs".into(),
-            },
-        };
-    }
-
     match url::Url::parse(trimmed) {
         Ok(url) => match url.scheme() {
-            "http" | "https" => Target::Http {
-                url,
-                via_gateway: None,
-            },
+            "http" | "https" => Target::Http { url },
             other => Target::Unsupported {
                 scheme: other.to_string(),
             },
@@ -159,6 +134,24 @@ pub fn resolve(uri: &str, ipfs_gateway: &str) -> Target {
                 }
             }
         }
+    }
+}
+
+/// Extract the `<cid>[/path]` portion of an `ipfs://` URI, for the
+/// multi-gateway fallback chain `fetch.rs` drives (P0 FIX 8). Picking which
+/// gateway serves an agent — and trying more than one — takes live network
+/// attempts, which this module deliberately never makes (see the module
+/// doc), so unlike every other scheme this classification alone isn't
+/// enough to produce a [`Target`]; `fetch.rs` calls this directly instead of
+/// going through [`resolve`]. Returns `None` for anything that isn't
+/// `ipfs://`, or is `ipfs://` with nothing after it.
+pub fn ipfs_cid_and_path(uri: &str) -> Option<String> {
+    let rest = uri.trim().strip_prefix("ipfs://")?;
+    let cid_and_path = rest.trim_start_matches('/');
+    if cid_and_path.is_empty() {
+        None
+    } else {
+        Some(cid_and_path.to_string())
     }
 }
 
@@ -322,8 +315,6 @@ fn percent_decode(s: &str) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    const GW: &str = "https://ipfs.io/ipfs/";
-
     fn inline_bytes(target: Target) -> (Vec<u8>, DataUriDecode) {
         match target {
             Target::Inline { bytes, decode } => (bytes, decode),
@@ -333,15 +324,14 @@ mod tests {
 
     #[test]
     fn empty_string_is_empty() {
-        assert_eq!(resolve("", GW), Target::Empty);
-        assert_eq!(resolve("   ", GW), Target::Empty);
+        assert_eq!(resolve(""), Target::Empty);
+        assert_eq!(resolve("   "), Target::Empty);
     }
 
     #[test]
     fn a_data_uri_decodes_inline() {
         // base64 of {"a":1}
-        let (bytes, decode) =
-            inline_bytes(resolve("data:application/json;base64,eyJhIjoxfQ==", GW));
+        let (bytes, decode) = inline_bytes(resolve("data:application/json;base64,eyJhIjoxfQ=="));
         assert_eq!(bytes, br#"{"a":1}"#);
         assert_eq!(decode.variant, "base64");
         assert_eq!(decode.algorithm, None);
@@ -350,7 +340,7 @@ mod tests {
     #[test]
     fn a_malformed_data_uri_is_unsupported_not_a_fetch() {
         // No comma separator — can't be decoded.
-        match resolve("data:application/json;base64", GW) {
+        match resolve("data:application/json;base64") {
             Target::Unsupported { scheme } => assert_eq!(scheme, "data"),
             other => panic!("expected Unsupported, got {other:?}"),
         }
@@ -361,7 +351,7 @@ mod tests {
         // Day 1 found 18 of these on-chain: a raw NUL landing inside the
         // payload. Rust bytes carry it just fine.
         let uri = "data:text/plain,hello\u{0}world";
-        let (bytes, _) = inline_bytes(resolve(uri, GW));
+        let (bytes, _) = inline_bytes(resolve(uri));
         assert!(
             bytes.contains(&0),
             "the NUL byte must survive, not panic or get dropped"
@@ -370,50 +360,23 @@ mod tests {
 
     #[test]
     fn https_url_is_fetchable() {
-        match resolve("https://example.com/agent.json", GW) {
-            Target::Http { url, via_gateway } => {
-                assert_eq!(url.as_str(), "https://example.com/agent.json");
-                assert_eq!(via_gateway, None);
-            }
+        match resolve("https://example.com/agent.json") {
+            Target::Http { url } => assert_eq!(url.as_str(), "https://example.com/agent.json"),
             other => panic!("expected Http, got {other:?}"),
         }
     }
 
     #[test]
     fn http_url_is_fetchable() {
-        match resolve("http://example.com/agent.json", GW) {
-            Target::Http { url, .. } => assert_eq!(url.scheme(), "http"),
-            other => panic!("expected Http, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ipfs_uri_is_rewritten_onto_the_gateway() {
-        match resolve("ipfs://bafyfakecid", GW) {
-            Target::Http { url, via_gateway } => {
-                assert_eq!(url.host_str(), Some("ipfs.io"));
-                assert!(url.path().contains("bafyfakecid"));
-                assert_eq!(via_gateway.as_deref(), Some(GW));
-            }
-            other => panic!("expected Http, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ipfs_uri_with_subpath_maps_onto_the_gateway() {
-        match resolve("ipfs://bafyfakecid/metadata/1.json", GW) {
-            Target::Http { url, via_gateway } => {
-                assert_eq!(url.host_str(), Some("ipfs.io"));
-                assert!(url.path().contains("bafyfakecid/metadata/1.json"));
-                assert_eq!(via_gateway.as_deref(), Some(GW));
-            }
+        match resolve("http://example.com/agent.json") {
+            Target::Http { url } => assert_eq!(url.scheme(), "http"),
             other => panic!("expected Http, got {other:?}"),
         }
     }
 
     #[test]
     fn an_unrecognized_scheme_is_unsupported() {
-        match resolve("ftp://example.com/x", GW) {
+        match resolve("ftp://example.com/x") {
             Target::Unsupported { scheme } => assert_eq!(scheme, "ftp"),
             other => panic!("expected Unsupported, got {other:?}"),
         }
@@ -423,7 +386,7 @@ mod tests {
     fn a_bare_non_uri_string_is_unsupported() {
         // The classic on-chain garbage bucket: no scheme at all, and not
         // JSON either.
-        match resolve("undefined/agents/442/agent-card/v1", GW) {
+        match resolve("undefined/agents/442/agent-card/v1") {
             Target::Unsupported { .. } => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
@@ -445,7 +408,7 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
         let uri = format!("data:application/json;enc=gzip;level=6;base64,{b64}");
 
-        let (bytes, decode) = inline_bytes(resolve(&uri, GW));
+        let (bytes, decode) = inline_bytes(resolve(&uri));
         assert_eq!(bytes, plaintext);
         assert_eq!(decode.variant, "compressed");
         assert_eq!(decode.algorithm.as_deref(), Some("gzip"));
@@ -463,7 +426,7 @@ mod tests {
         // never the generic `Unsupported` a malformed document gets.
         for algo in ["zstd", "brotli", "lz4", "made-up-codec"] {
             let uri = format!("data:application/json;enc={algo};base64,eyJhIjoxfQ==");
-            match resolve(&uri, GW) {
+            match resolve(&uri) {
                 Target::UnsupportedCompression { scheme, algorithm } => {
                     assert_eq!(scheme, "data");
                     assert_eq!(algorithm, algo);
@@ -483,7 +446,7 @@ mod tests {
             "data:;base64,eyJhIjoxfQ==",
             "data:application/json;charset=utf-8;base64,eyJhIjoxfQ==",
         ] {
-            let (bytes, decode) = inline_bytes(resolve(uri, GW));
+            let (bytes, decode) = inline_bytes(resolve(uri));
             assert_eq!(bytes, br#"{"a":1}"#, "failed for {uri}");
             assert_eq!(decode.variant, "base64", "failed for {uri}");
         }
@@ -491,13 +454,12 @@ mod tests {
 
     #[test]
     fn a_plain_non_base64_data_uri_is_url_decoded() {
-        let (bytes, decode) = inline_bytes(resolve(r#"data:application/json,{"a":1}"#, GW));
+        let (bytes, decode) = inline_bytes(resolve(r#"data:application/json,{"a":1}"#));
         assert_eq!(bytes, br#"{"a":1}"#);
         assert_eq!(decode.variant, "plain");
 
         // Percent-encoded, the shape actually seen on-chain.
-        let (bytes, decode) =
-            inline_bytes(resolve("data:application/json,%7B%22a%22%3A1%7D", GW));
+        let (bytes, decode) = inline_bytes(resolve("data:application/json,%7B%22a%22%3A1%7D"));
         assert_eq!(bytes, br#"{"a":1}"#);
         assert_eq!(decode.variant, "plain");
     }
@@ -507,8 +469,7 @@ mod tests {
         // Zero occurrences in the reference population (measured), but
         // cheap to implement and stated by the work order to occur in the
         // wild — implemented and fixtured, untested against real data.
-        let (bytes, decode) =
-            inline_bytes(resolve(r#"data:application/json;base64,{"a":1}"#, GW));
+        let (bytes, decode) = inline_bytes(resolve(r#"data:application/json;base64,{"a":1}"#));
         assert_eq!(bytes, br#"{"a":1}"#);
         assert_eq!(decode.variant, "base64_claimed_but_raw_json");
     }
@@ -517,12 +478,40 @@ mod tests {
     fn raw_json_with_no_uri_scheme_is_inline_with_a_named_variant() {
         // 127 agents in the reference population declare their tokenURI as
         // bare JSON, no scheme prefix at all.
-        let (bytes, decode) = inline_bytes(resolve(r#"{"a":1}"#, GW));
+        let (bytes, decode) = inline_bytes(resolve(r#"{"a":1}"#));
         assert_eq!(bytes, br#"{"a":1}"#);
         assert_eq!(decode.variant, "plain_json_without_uri_scheme");
 
-        let (bytes, decode) = inline_bytes(resolve("[1,2,3]", GW));
+        let (bytes, decode) = inline_bytes(resolve("[1,2,3]"));
         assert_eq!(bytes, b"[1,2,3]");
         assert_eq!(decode.variant, "plain_json_without_uri_scheme");
+    }
+
+    // --- P0 FIX 8: ipfs:// classification moves to fetch.rs -------------
+
+    #[test]
+    fn ipfs_cid_and_path_extracts_the_cid_and_any_subpath() {
+        assert_eq!(
+            ipfs_cid_and_path("ipfs://bafyfakecid").as_deref(),
+            Some("bafyfakecid")
+        );
+        assert_eq!(
+            ipfs_cid_and_path("ipfs://bafyfakecid/metadata/1.json").as_deref(),
+            Some("bafyfakecid/metadata/1.json")
+        );
+        // Extra leading slashes (ipfs://<cid> vs ipfs:///<cid>) are trimmed
+        // the same way the old resolve()-based rewriting did.
+        assert_eq!(
+            ipfs_cid_and_path("ipfs:///bafyfakecid").as_deref(),
+            Some("bafyfakecid")
+        );
+    }
+
+    #[test]
+    fn ipfs_cid_and_path_is_none_for_an_empty_cid_or_a_non_ipfs_uri() {
+        assert_eq!(ipfs_cid_and_path("ipfs://"), None);
+        assert_eq!(ipfs_cid_and_path("ipfs:///"), None);
+        assert_eq!(ipfs_cid_and_path("https://example.com"), None);
+        assert_eq!(ipfs_cid_and_path(""), None);
     }
 }

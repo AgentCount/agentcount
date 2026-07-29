@@ -907,3 +907,122 @@ are plain `String`/`Option<serde_json::Value>` inputs assembled by
 `crates/sweeper`, exactly like every other field `ResolvableInput` already
 carried.
 
+---
+
+## 2026-07-29 — FIX 8: IPFS gateway fallback chain
+
+**Reverses a 2026-07-28 ruling, not a silent rewrite.** That ruling chose
+one disclosed gateway (`ipfs.io`) specifically so a failure fetching through
+it would be honestly attributable — the report said so explicitly ("no
+second gateway was tried"). The owner has confirmed the reversal: a single
+gateway's own outage was itself becoming indistinguishable from an agent's
+content being genuinely unpinned, which defeated the original goal rather
+than serving it.
+
+**What changed.** `crates/probe::Prober` now holds a list of IPFS gateways
+(`ipfs_gateways: Vec<String>`, changed from a single `String`) and tries
+each in sequence — `https://ipfs.io/ipfs/`, `https://cloudflare-ipfs.com/ipfs/`,
+`https://gateway.pinata.cloud/ipfs/`, in that order — until one answers HTTP
+2xx or all three are exhausted. Each attempt goes through the exact same
+guarded path as any other fetch (`fetch_http`: SSRF netguard, `robots.txt`,
+redirects, the body cap) — nothing about politeness is relaxed or
+special-cased for gateways. `crates/sweeper`'s `ipfs_gateway()` (singular)
+becomes `ipfs_gateways()` (plural), overridable via `IPFS_GATEWAYS`
+(comma-separated) instead of `IPFS_GATEWAY`.
+
+`ipfs://` classification moved out of `crates/probe::resolve()` (which
+stays synchronous and network-free by design) into a new, separate
+`resolve::ipfs_cid_and_path()` plus a new `Prober::fetch_ipfs_chain` that
+drives the actual multi-gateway attempt sequence — picking which gateway
+serves an agent, and trying more than one, is inherently a live-network
+decision that a pure classifier cannot make.
+
+**Evidence records the whole chain, not just the winner.** `FetchOutcome`
+gains `gateway_attempts: Vec<GatewayAttempt>` (`gateway`, `http_status`,
+`error` per attempt), which rung 2 surfaces verbatim as
+`evidence.gateway_attempts`; `via_gateway` still records which one (if any)
+won. A reader can now see "gateway 1 404'd, gateway 2 timed out, gateway 3
+answered 200" in full, not just the winning URL.
+
+**All three gateways failing is `checks::CheckStatus::Error`, never
+`Fail`.** This is a deliberate divergence from how a plain `https://`/`http://`
+fetch is judged (where a definite non-2xx status, e.g. a real 404 from the
+origin, is `fail` — the origin answered and said no): for `ipfs://`, we
+cannot tell an unpinned CID (the agent's own document is genuinely gone)
+from a gap in what our three chosen gateways happen to have cached (our
+limitation) — claiming otherwise would be a claim this project cannot
+support. Mechanically, this falls out of the existing `error`-vs-`fail`
+branch in `checks::resolvable` for free: `fetch_ipfs_chain` sets
+`FetchOutcome.error = Some("ipfs_all_gateways_failed")` whenever no gateway
+answers 2xx (regardless of what individual, non-2xx statuses each one
+returned), and that string carries no `ssrf_blocked:` prefix, so rung 2's
+already-existing rule ("an `error` without that prefix is OUR limitation")
+applies unchanged — no new branch was added to `crates/checks` to make this
+true.
+
+**Per-host concurrency cap still applies, per gateway host.** `guarded_send`'s
+semaphore is keyed by `url.host_str()`, unchanged by this fix; three
+gateways are three different hostnames, so each gets its own independent
+cap automatically — nothing bypasses or shares the budget across them. No
+new test was written FOR this specific guarantee beyond code inspection: the
+existing `no_more_than_two_requests_are_ever_concurrently_in_flight_against_one_host`
+test already exercises the exact mechanism (`host_semaphore`) this fix
+reuses unchanged, just called three times (once per gateway host) instead
+of once.
+
+**Why.** Single gateway makes a gateway outage indistinguishable from an
+agent's failure — exactly the ambiguity the 2026-07-28 ruling's own
+one-gateway choice was meant to make *honestly attributable*, not resolve.
+A three-gateway fallback chain narrows that ambiguity for any agent whose
+content is pinned to *at least one* of the three, while the all-three-fail
+case still honestly reports `error` rather than pretending to have
+resolved the remaining ambiguity.
+
+**Population this affects.** Queried `agent_snapshots.agent_uri` for the
+reference run (`1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`, 60,049 agents; no
+re-sweep):
+
+> **3,588 agents (5.98%) declare an `ipfs://` `tokenURI()`** (the work
+> order's own figure, 3,587, is one agent off this direct count — reported
+> as measured, not adjusted to match). Of those, under the *pre-fix*
+> single-gateway checker: **2,946 pass** rung 2 already (the single
+> `ipfs.io` gateway answered 2xx), **518 fail** (`http_status`, a non-2xx
+> from `ipfs.io`), and **124 error** (`timeout`, `ipfs.io` itself did not
+> answer in time). The 518 + 124 = **642 agents are the population this fix
+> can move** — each is a candidate whose content might be pinned on
+> Cloudflare's or Pinata's gateway even though `ipfs.io` didn't serve it.
+
+**Not re-swept, and correctly so.** The archive holds only the bodies and
+statuses `ipfs.io` actually returned for this run; it has no record of what
+`cloudflare-ipfs.com` or `gateway.pinata.cloud` would have answered for the
+same 642 agents at the same historical moment; a live fetch today would
+also no longer reflect the block this run pinned to. Which of the 642 flip
+to `pass`, and how many of the 2,946 already-passing agents turn out to have
+been reachable via a *different* gateway than `ipfs.io` all along (visible
+only once `gateway_attempts` starts being recorded), is reported at the
+next full census rerun, not estimated here.
+
+**Schema.** `schema_version` bumps 4 → 5 (on top of FIX 7's 3 → 4, above):
+rung 2's evidence gains `gateway_attempts` for an `"ipfs"`-scheme result.
+`checker_version` bumps 0.4.0 → 0.5.0 (`crates/checks/Cargo.toml`); `probe`'s
+own crate version bumps 0.3.0 → 0.4.0 (`crates/probe/Cargo.toml`) for the
+`Prober::new` signature change (a single gateway string to a list) and the
+new `FetchOutcome.gateway_attempts`/`GatewayAttempt` public API. No `status`
+value changed; no migration needed — only new `jsonb` evidence keys.
+
+**Fixtures** (`crates/probe/src/fetch.rs::tests`):
+`an_ipfs_fetch_falls_back_to_the_second_gateway_when_the_first_fails` (first
+gateway 404s, second answers 200 — the deliverable fixture verbatim),
+`ipfs_all_gateways_failing_is_error_never_fail` (all three 404, asserts
+`error: "ipfs_all_gateways_failed"`, never a bare status, with all three
+attempts recorded), `the_first_gateway_succeeding_never_calls_the_others`
+(the second and third gateways carry no mock at all; the assertion is on
+`gateway_attempts.len() == 1`, proving neither was ever reached). Plus, at
+the check level (`crates/checks/src/rung2_resolvable.rs::tests`):
+`ipfs_pass_records_the_whole_gateway_chain_not_just_the_winner`,
+`all_three_ipfs_gateways_failing_is_error_not_fail_with_the_full_chain_recorded`.
+
+**`METHODOLOGY.md` updated, not silently rewritten** — Section 2 (Rung 2)
+now states the fallback policy in place of the single-gateway caveat, names
+this as a reversal of the 2026-07-28 ruling and why, and Section 6
+(Probing etiquette) notes the per-host cap applies per gateway host.

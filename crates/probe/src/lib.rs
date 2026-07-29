@@ -7,11 +7,13 @@
 //! pure by never importing this crate's networking.
 //!
 //! Roughly 23,744 of the ~60,000 agents in the population need a real
-//! network request (`https://`, `http://`, or `ipfs://` via a gateway); the
-//! rest resolve to `Empty`, `Inline` (decoded `data:` payload, five fallback
-//! decode paths, P0 FIX 7), or `Unsupported`/`UnsupportedCompression`
-//! without ever touching the network. See [`resolve::resolve`] for the
-//! classification and [`fetch::Prober`] for the guarded fetch path.
+//! network request (`https://`, `http://`, or `ipfs://` — tried against up
+//! to three gateways in sequence, P0 FIX 8); the rest resolve to `Empty`,
+//! `Inline` (decoded `data:` payload, five fallback decode paths, P0 FIX 7),
+//! or `Unsupported`/`UnsupportedCompression` without ever touching the
+//! network. See [`resolve::resolve`]/[`resolve::ipfs_cid_and_path`] for the
+//! classification and [`fetch::Prober`] for the guarded fetch path,
+//! including the gateway fallback chain.
 
 mod fetch;
 mod netguard;
@@ -19,9 +21,10 @@ mod resolve;
 mod robots;
 
 pub use fetch::{
-    DEFAULT_GLOBAL_CONCURRENCY, FetchOutcome, MAX_BODY_BYTES, MAX_REDIRECTS, PER_HOST_CAP, Prober,
+    DEFAULT_GLOBAL_CONCURRENCY, FetchOutcome, GatewayAttempt, MAX_BODY_BYTES, MAX_REDIRECTS,
+    PER_HOST_CAP, Prober,
 };
-pub use resolve::{DataUriDecode, Target, resolve};
+pub use resolve::{DataUriDecode, Target, ipfs_cid_and_path, resolve};
 
 /// Re-exported at crate root for anything (tests, future crates) that wants
 /// the exact product token this prober identifies itself with, without
