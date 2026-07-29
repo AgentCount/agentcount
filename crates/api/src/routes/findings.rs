@@ -139,18 +139,37 @@ pub async fn get(
     .await?;
 
     // One cross-tab, four numbers: rung 7 pass/not × rung 2 pass/not.
+    //
+    // Written as a single grouped pass rather than a self-join. The self-join
+    // this replaced was fine while one run existed and became pathological as
+    // runs accumulated: Postgres used only `run_id` from
+    // `idx_check_results_lookup` for the inner side and pushed `chain` and
+    // `agent_id` into a join filter, so it compared every rung-7 row against
+    // every rung-2 row in the run — 47.5 million rows discarded, 37 seconds,
+    // past the API's own 10-second timeout. Grouping instead touches each of
+    // the run's rung-2 and rung-7 rows exactly once.
+    //
+    // `max(status) FILTER (WHERE rung = n)` is "that row's status": the
+    // `check_results_unique` constraint on (run_id, chain, agent_id, rung)
+    // guarantees at most one row per rung per agent, so there is nothing for
+    // `max` to choose between. Agents missing either rung are excluded, which
+    // is what the inner join did.
     let (att_total, att_resolvable, unatt_total, unatt_resolvable): (i64, i64, i64, i64) =
         sqlx::query_as(
-            "SELECT \
-               count(*) FILTER (WHERE r7.status = 'pass'), \
-               count(*) FILTER (WHERE r7.status = 'pass' AND r2.status = 'pass'), \
-               count(*) FILTER (WHERE r7.status <> 'pass'), \
-               count(*) FILTER (WHERE r7.status <> 'pass' AND r2.status = 'pass') \
-             FROM check_results r7 \
-             JOIN check_results r2 \
-               ON r2.run_id = r7.run_id AND r2.chain = r7.chain \
-              AND r2.agent_id = r7.agent_id AND r2.rung = 2 \
-             WHERE r7.run_id = $1 AND r7.rung = 7",
+            "WITH per_agent AS ( \
+               SELECT max(status) FILTER (WHERE rung = 7) AS r7, \
+                      max(status) FILTER (WHERE rung = 2) AS r2 \
+               FROM check_results \
+               WHERE run_id = $1 AND rung IN (2, 7) \
+               GROUP BY chain, agent_id \
+             ) \
+             SELECT \
+               count(*) FILTER (WHERE r7 = 'pass'), \
+               count(*) FILTER (WHERE r7 = 'pass' AND r2 = 'pass'), \
+               count(*) FILTER (WHERE r7 <> 'pass'), \
+               count(*) FILTER (WHERE r7 <> 'pass' AND r2 = 'pass') \
+             FROM per_agent \
+             WHERE r7 IS NOT NULL AND r2 IS NOT NULL",
         )
         .bind(run_id)
         .fetch_one(&state.db)
