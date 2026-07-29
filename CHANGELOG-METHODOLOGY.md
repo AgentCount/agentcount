@@ -299,3 +299,301 @@ documents (24,697, automatically zero MUST checks) plus
 `registrations`-present documents with no missing sub-field
 (5,114 − 259 = 4,855) — 24,697 + 4,855 = 29,552, confirming the two
 independent tallies agree.
+
+---
+
+## 2026-07-29 — FIX 4: ungate rung 7 (formerly `independent`, now `attested`)
+
+**Ships in the same run as FIX 5 and the rung-5 `unclaimed` status below —
+not independently.** Ungating rung 7 without renaming it away from its old
+self-review framing would have published the tautological finding FIX 5
+describes at ~60,000-agent scale instead of the ~1,437 it was previously
+computed over, which is strictly worse, not better. All three landed
+together; this entry covers only the gating change.
+
+**What changed.** Rung 7 used to be constructed only for agents that had
+already passed rungs 1 through 5 (`reaches_rung7` in `crates/sweeper`
+checked all five). It is now constructed for every agent that passes **rung
+1 alone**. The ladder itself (`checks::run_ladder`) is restructured to match:
+skip-propagation used to be one linear chain across all seven rung numbers,
+so any failure below rung 7 — even one it has nothing to do with — silently
+demoted it to `skipped`. That was true only by accident (the old gating
+meant a rung-7 row was never actually present alongside a failing rung 2-5
+in practice, so the bug never surfaced), and it stopped being safe to leave
+in place the moment rung 7 started running unconditionally. `run_ladder` now
+encodes three independent dependency tracks — **Document**
+(1→2→3→4→5), **Service** (6, not yet implemented, depends on rung 4), and
+**Reputation** (7, depends on rung 1 alone) — and propagates skip status only
+within a track, never across one. See `crates/checks/src/ladder.rs`'s module
+doc and `METHODOLOGY.md` §3 for the full graph.
+
+**Why.** Reputation feedback lives in the Reputation Registry, keyed by
+agent id, and `getClients`/`getSummary` are readable for any agent id that
+exists on chain — regardless of whether that agent's *document* ever
+resolved, parsed, conformed, or bound to it. There is no dependency between
+the document track and the reputation track; the old gating measured "of the
+~2% of agents whose document also happens to be perfect, how many have
+outside feedback" — a hybrid question nobody asked and a number that
+implicitly filtered out 97.6% of the population before the interesting
+measurement even began.
+
+**Cost, confirmed before shipping.** Rung 7 now reads feedback for
+essentially the whole population (~60,000 agents) instead of ~1,437 — two
+extra RPC calls per agent (`getClients`, then `getSummary` only if
+`getClients` returned a non-empty list; `crates/chain/src/reputation.rs`
+already guards this — confirmed unchanged, `getSummary` is never called with
+an empty client array, which reverts on the deployed contract, see that
+module's doc and its `#[ignore]`d live test
+`empty_client_list_is_rejected_by_get_summary_not_treated_as_everyone`).
+
+**Fixture, per the deliverable named explicitly by the work order:**
+`crates/checks/src/ladder.rs::tests::rung_7_keeps_its_own_verdict_even_when_rung_2_fails`
+constructs a ladder where rung 2 fails and rung 7 passes, and asserts rung 7
+keeps its own `pass` verdict rather than being demoted to `skipped`. A
+companion test, `rung_7_is_skipped_when_rung_1_fails`, confirms the one case
+where it *is* skipped — rung 1 itself failing, its sole real dependency.
+
+**Measured effect — the "not checked" collapse.** Cannot be measured against
+the archived run: rung 7's chain read is live-only (`getClients`/
+`getSummary`), and the archive holds only HTTP response bodies, not
+Reputation Registry state. Reported as expected, not measured, consistent
+with the work order's own instruction not to re-sweep for this fix:
+
+> Rung 1 passes for **60,049 / 60,049 (100%)** agents in the reference run
+> (`1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a` — see the FIX-5 entry below for how
+> this run was confirmed as the current reference). Rung 7's old population
+> was exactly the old rung-5 pass count, **1,437**. Under this fix, the
+> expected new denominator is **~60,049**, a ~42x increase. The work order's
+> own estimate (~60,037, from an earlier, non-reference run) and the
+> "not-checked count falls to zero except ~12 hard chain-read errors" figure
+> are both stated by the work order as reference numbers from a run this
+> fix does not re-run; they are not re-derived here.
+
+---
+
+## 2026-07-29 — FIX 5: rename rung 7 to `attested`; drop the self-review framing
+
+**Ships in the same run as FIX 4 above — see that entry's opening note.**
+
+**What changed.**
+1. Rung id `independent` → `attested`, everywhere: `crates/checks` (module
+   file renamed `rung7_independent.rs` → `rung7_attested.rs`,
+   `IndependentInput` → `AttestedInput`, `independent()` → `attested()`),
+   `METHODOLOGY.md` §2, `CHANGELOG-METHODOLOGY.md` (this file), the sweeper's
+   log/doc comments, and the frontend's `/methodology` page and status
+   styling (`ledgerscope-web`).
+2. The rung no longer compares feedback authors against the agent's owner at
+   all. `AttestedInput` no longer carries an `owner` field. Verdict logic
+   simplifies to: `Pass` if `getClients` returns ≥1 distinct address, `Fail`
+   (`no_feedback`) if it returns zero, `Error` (`no_reputation_registry`) if
+   the chain has no Reputation Registry — unchanged from before.
+3. Evidence drops `authors_equal_to_owner` and the derived
+   `self_feedback_ratio` entirely — not renamed, removed. `feedback_count`
+   and `distinct_authors` are unchanged.
+4. Sybil/coordination analysis (funding-linked, deployer-linked,
+   operator-adjacent addresses) is confirmed as **inference that belongs in
+   a separately-labelled `signals` block, never a rung result** — and is
+   **not built as part of this fix**, per the work order's explicit
+   instruction.
+
+**Why — verified against the pinned spec.** `spec/ERC8004SPEC.md` line 217:
+*"The feedback submitter MUST NOT be the agent owner or an approved operator
+for `agentId`."* This is a contract-level invariant: feedback from the
+owner's own address cannot be successfully submitted. The old `independent`
+rung computed `authors_equal_to_owner` regardless and reported "zero agents
+caught writing their own reviews" as a floor-check finding. It is not a
+finding — its only possible outcome (short of a bug) is restating a rule
+nobody can break — and publishing it at the ~60,000-agent scale FIX 4
+ungates rung 7 to would have been publicly corrected within a day. The spec
+also names the underlying open problem it does not solve (line 324):
+`getSummary` requires a non-empty `clientAddresses` filter precisely because
+unfiltered results are subject to Sybil/spam attacks, and expects
+reviewer-reputation to emerge off-chain — a different, harder problem than
+this rung, or this project's ladder, is built to answer.
+
+**Verification: no output anywhere claims agents were checked for
+self-review.** Grepped the full committed tree, case-insensitive, for
+`self.review`, `self_feedback`, and every remaining use of `independent` as
+applied to rung 7:
+- `self_feedback_ratio` / `authors_equal_to_owner`: zero remaining
+  occurrences in `crates/checks`, `crates/sweeper`, `crates/chain`,
+  `crates/api`, `METHODOLOGY.md`, or the frontend — removed, not renamed.
+- `independent` as rung 7's identifier: zero remaining occurrences in code
+  (`rung: 7, name: "attested"` everywhere the rung is constructed) or in
+  `/methodology`'s prose; the word survives only in unrelated senses (this
+  project's own tagline "independent conformance and census layer",
+  `crates/chain`'s unrelated "independently readable" comments, an unrelated
+  "independent of overall sweep concurrency" note, and — deliberately kept,
+  as history — the retrospective "renamed from `independent`" sentences in
+  `METHODOLOGY.md` and this changelog explaining what changed and why).
+- `rung7_attested`'s module doc states plainly, as prose a reader does not
+  have to infer from field absence: *"This rung does not, and cannot, detect
+  self-review — no evidence field, log line, or report copy produced here
+  claims otherwise."*
+
+**A finding that reinforces the decision, found while writing this entry.**
+Querying the archived run's stored (pre-fix) rung-7 evidence directly
+(`evidence->>'authors_equal_to_owner'`, run `1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`,
+1,437 rows): **1,436 of 1,437 read `0`; exactly one — agent 51120 — reads
+`1`** (`{"feedback_count": 14, "distinct_authors": 14,
+"self_feedback_ratio": 0.0714..., "authors_equal_to_owner": 1}`). This is
+not a spec violation caught in the wild: it almost certainly reflects
+ownership *changing* after the feedback was left (an ERC-721 transfer, e.g.
+a marketplace sale, moves `ownerOf` to a new address without touching
+already-recorded feedback) — the spec's MUST is enforced against the owner
+*at submission time*, not the owner we happen to read at the pinned block of
+a later census. "Current owner equals a past feedback author" is therefore
+not evidence of self-review either, which is a second, independent reason
+`authors_equal_to_owner` was never a metric worth keeping: even its rare
+non-zero values are not interpretable as the self-review signal its name
+implied.
+
+**`self_feedback_ratio`: dropped, not renamed — decision and justification.**
+Considered renaming it (e.g. to something like `owner_author_fraction`) to
+preserve it as "evidence about author composition" rather than a verdict,
+per the precedent this project sets elsewhere (evidence fields are kept even
+when they don't gate pass/fail). Decided against, for two independent
+reasons: (1) since owner self-feedback is contract-level impossible, the
+ratio is, empirically, a near-constant `0.0` (1,436 of 1,437 in the archived
+run) — a measurement that can only ever have one value is not evidence, it
+is decoration, and keeping it under any name would just move the tautology
+FIX 5 removes from the verdict into the evidence block instead of actually
+removing it; (2) the one non-constant value found (agent 51120, above) is
+not interpretable as self-review either, because ownership can change after
+feedback is recorded — so even a genuinely non-zero ratio would not mean
+what its name claims. Both `authors_equal_to_owner` and
+`self_feedback_ratio` are removed from rung 7's evidence entirely.
+`feedback_count` and `distinct_authors` are kept unchanged: both remain
+genuine, recomputable, per-agent measurements that say nothing about author
+identity relative to the owner.
+
+**Measured effect on verdicts.** A rename plus an evidence-field removal
+does not, by itself, guarantee no agent's verdict moves: the new `attested()`
+pass condition (`distinct_authors ≥ 1`) is a strict *widening* of the old
+`independent()` pass condition (`distinct_authors ≥ 1` AND at least one
+client ≠ owner) — an agent whose old reason was `only_self_feedback`
+(feedback existed, but every author happened to equal the owner) would flip
+from `Fail` to `Pass` under the new logic. Checked directly against the
+archived run's stored rung-7 evidence rather than assumed: **zero of the
+1,437 agents carry `reason: "only_self_feedback"`** (620 carry
+`no_feedback`; the remaining 817 already carry no `reason` at all, i.e.
+already `Pass`). So for this specific archived run, the verdict split is
+unchanged — 817 pass, 620 fail, both under either rung's logic — and only
+the evidence shape (dropped fields, renamed id) changed. This is reported as
+an empirical fact about this run, not a guarantee: a future run could
+contain an `only_self_feedback` agent (however unlikely per the
+contract-invariant discussion above) and would see it flip. The real
+population effect at full scale is FIX 4's, not this one's — see that entry.
+
+---
+
+## 2026-07-29 — NEW: rung 5 (`bound`) gains a fifth status, `unclaimed`
+
+**What changed.** `CheckStatus` gains a fifth variant, `Unclaimed`
+(`crates/checks/src/model.rs`), produced only by rung 5. `bound()`
+(`crates/checks/src/rung5_bound.rs`) now returns `Unclaimed` — evidence
+`reason: "unclaimed"`, `match: null`, `registrations_seen: 0` — for a
+document with no `registrations` array, a `null` one, a non-array value, or
+a present-but-empty array. It previously returned `Fail` with
+`reason: "no_registrations"` for all four of those shapes; `match` was
+`false`. Matching entries still `Pass`; a present, non-empty array with no
+matching entry still `Fail` — both unchanged in every particular, including
+evidence shape.
+
+This is a schema change: a new `status` value plus new evidence semantics
+for one existing field (`match` can now be `null`, not only `true`/`false`).
+`schema_version` bumps 2 → 3 and `checker_version` bumps 0.2.0 → 0.3.0
+(`crates/checks/Cargo.toml`) — the same version bump covers this change and
+FIX 4/5 above, since the work order requires all three to ship in one run.
+Migration `0011_rung5_unclaimed_status.sql` drops and re-adds
+`check_results_status_check` to accept `'unclaimed'` alongside the original
+four values (`ALTER CONSTRAINT` does not exist in Postgres). `crates/api`'s
+`VALID_STATUSES` (the `status=` query-parameter allowlist on
+`GET /api/agents`) grows from four entries to five, so a client sending
+`status=unclaimed` gets real filtering rather than a 400. The frontend
+(`ledgerscope-web`) status-to-colour mapping (`lib/status.ts`) and the
+`/methodology` page are updated so an unrecognised status still renders
+(neutral styling, verbatim text) rather than being guessed at as `pass` or
+`fail`.
+
+**Why.** P0 FIX 3 (above, 2026-07-29) reclassified `registrations` from an
+unconditional requirement to SHOULD, which means a document can pass rung 4
+while declaring zero registrations — and rung 5's entire question ("does the
+document's own registration entry match the on-chain record we fetched it
+from") has nothing to check in that case. None of the four original statuses
+was honest for it: `pass` would claim a verification that never happened;
+`fail` would punish a merely-recommended field exactly as hard as a genuine
+on-chain mismatch, collapsing two different failure modes ("said nothing"
+vs. "said the wrong thing") into one word; `skipped` would falsely imply an
+earlier rung failed (rung 4 passed); `error` would falsely imply this
+checker malfunctioned (it did not — it correctly found nothing to verify).
+
+**Measured effect — re-judged against the archived run, not re-swept.**
+Verified the current reference run first, per the work order's instruction
+not to trust the run id it named: queried `runs` for the most recent
+completed run and got `1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a` (finished
+2026-07-28 19:13:29, 60,049 agents) — **not** `c817ab28-8157-4925-93d6-2a6e0610020d`
+(an earlier, superseded run, finished 2026-07-28 14:19:15, 60,037 agents)
+that the work order's own text named. `1c87c4f4` is also the run every prior
+2026-07-28 entry in this file already measures against, so this entry stays
+consistent with them. A standalone tool (not part of the committed
+workspace, same discipline as the FIX-3 entry above — `crates/checks` stays
+free of any DB/network dependency) linked the real `checks` crate as a path
+dependency, re-judged every archived body against the CURRENT
+`conformant()` and `bound()` functions directly (not SQL logic re-derived
+from them), and guarded body decoding in two stages — `String::from_utf8`,
+then `serde_json::from_str` — counting failures of either stage separately
+rather than aborting (the SQL-equivalent of `convert_from(body,'UTF8')::jsonb`
+guarded per row). Population: the 29,811 documents where the STORED rung 3
+(`parseable`) verdict already passed (joined from `check_results`, not
+re-derived from "does the body merely parse" — those two sets differ by
+exactly 253, the same 253 documents recorded as rung-4 `skipped` in the
+stored run, where a body parses as JSON but rung 3 still correctly recorded
+`error` because the archived body was truncated; matching FIX 3's own
+population scoping avoids silently re-including those 253). Zero of those
+29,811 bodies were non-UTF8 or non-JSON, consistent with rung 3 having
+already validated them.
+
+> **Re-judged rung 4: 29,552 pass, 259 fail** — exactly matching the FIX-3
+> entry's own re-judged figures against the same archived run, confirming
+> internal consistency across the two independent tools.
+>
+> **New rung-5 split, population = 29,552 (the re-judged rung-4-pass set):**
+>
+> | Status | Count | % of 29,552 |
+> |---|---:|---:|
+> | `pass` | 4,055 | 13.7% |
+> | `fail` | 800 | 2.7% |
+> | `unclaimed` | 24,697 | 83.6% |
+>
+> Against the **old** figures (population 4,175, the old rung-4-pass count
+> under the pre-FIX-3 required-field list): **1,437 pass (34.4%), 2,738 fail
+> (65.6%), 0 unclaimed** (the status did not exist yet; every absent-claim
+> document was counted as `fail`). The denominator grew **~7.1x** (4,175 →
+> 29,552), exactly the "~7x larger" the work order anticipated. The 556
+> agents that flip in the FIX-3 measurement of "`registrations`-present with
+> no missing sub-field" minus rung-5-fail context are superseded here by a
+> direct re-judgement: the 24,697-document `unclaimed` figure is the same
+> population size as the FIX-3 entry's independently-measured
+> `registrations` (absent or empty) SHOULD-gap count of 24,697 — the two
+> tools agree exactly, which is the strongest available check that this
+> entry's population scoping and FIX 3's are the same set.
+
+The absolute pass count rose (1,437 → 4,055) even though the pass *rate*
+fell (34.4% → 13.7%): the new population is dominated by documents that
+declare no registration at all (`unclaimed`, 83.6%) — the majority of the
+25,377 agents FIX 3 newly admits to rung 4's pass set are exactly the
+agents that omit `registrations`, which is the SHOULD FIX 3 stopped
+penalizing. Read together with FIX 3's SHOULD-completeness table: **most of
+the population that now "passes conformance" is passing in part *because*
+it declines to make a binding claim rung 5 could check** — `unclaimed` is
+what makes that pattern visible instead of silently absorbed into `fail`.
+
+**Fixtures**, one per the four behaviours the work order named explicitly
+(`crates/checks/src/rung5_bound.rs::tests`):
+`absent_registrations_is_unclaimed_not_a_fail`,
+`empty_registrations_array_is_unclaimed_not_a_fail`,
+`exact_match_passes` (already existed, unchanged), `wrong_agent_id_fails`
+(already existed, unchanged) — plus
+`a_registrations_value_that_is_not_an_array_is_unclaimed_not_panics` for the
+non-array-value edge case (a string, a number, a bare object, a boolean).

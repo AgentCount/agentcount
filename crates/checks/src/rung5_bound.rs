@@ -23,12 +23,26 @@
 //! **Deliberate asymmetry with rung 4.** There, an absent `registrations` is
 //! a SHOULD (spec line 123) and never fails the document — rung 4 only
 //! checks presence of fields that exist, and `registrations` itself is
-//! optional. Here, absence (or an empty array) *does* fail, reason
-//! `no_registrations`, and that is not a stricter re-reading of the same
-//! SHOULD: rung 5's entire question is "does the document bind itself to
+//! optional. Here, absence (or an empty array) is **`unclaimed`**, not
+//! `fail`: rung 5's entire question is "does the document bind itself to
 //! the record we fetched it from", and a document that lists no
-//! registrations at all has made no binding claim to check. Silence isn't a
-//! passing answer to a question this rung exists solely to ask.
+//! registrations at all has made no binding claim to check.
+//!
+//! **`unclaimed` — added 2026-07-29, replacing what used to be a `fail`.**
+//! Once P0 FIX 3 reclassified `registrations` as SHOULD, a document can pass
+//! rung 4 while declaring no registrations at all — and none of `pass`,
+//! `fail`, `skipped`, or `error` honestly describes that case: `pass` would
+//! claim a verification that never happened, `fail` would punish a
+//! merely-recommended field exactly as hard as a real mismatch, `skipped`
+//! would falsely imply an earlier rung failed, and `error` would falsely
+//! imply this checker malfunctioned. `CheckStatus::Unclaimed` is the honest
+//! fifth word: the agent made no binding claim for this rung to check.
+//! `unclaimed` and `fail` remain distinct in evidence and in every published
+//! count — collapsing "declined to claim a binding" into "claimed the wrong
+//! one" would erase a real distinction (an agent who says nothing about
+//! where it's registered is not making the same mistake as one who names
+//! the wrong registry). See `CheckStatus::Unclaimed`'s doc comment and
+//! `METHODOLOGY.md` §2 for the full reasoning and citation.
 //!
 //! **Multiple registrations are legal** — an agent may be registered on
 //! several chains — so this rung passes if *any* entry matches all three of
@@ -36,9 +50,9 @@
 //! failures; they simply describe a different on-chain presence.
 //!
 //! **A non-array `registrations`, or one that is present but empty, is
-//! treated exactly like an absent one** (`no_registrations`): there is
-//! nothing to walk, and turning "not shaped like an array" into a panic or
-//! a silent zero would hide the same absence of a binding claim.
+//! treated exactly like an absent one** (`unclaimed`): there is nothing to
+//! walk, and turning "not shaped like an array" into a panic or a silent
+//! zero would hide the same absence of a binding claim.
 //!
 //! **`agentId` as a JSON string.** The spec's example writes `agentId` as a
 //! JSON number, but token ids are `uint256` on-chain and JSON numbers lose
@@ -164,20 +178,23 @@ pub fn bound(input: &BoundInput, now: DateTime<Utc>) -> CheckResult {
 
     let Some(entries) = entries.filter(|e| !e.is_empty()) else {
         // Absent, non-array, null, or empty: no binding claim to check at
-        // all — deliberately fatal here even though rung 4 treats the same
-        // shapes as non-fatal. See the module doc's asymmetry note.
+        // all — `Unclaimed`, not `Fail` (2026-07-29 fix; see the module
+        // doc's asymmetry note and `CheckStatus::Unclaimed`'s doc comment).
+        // `match` is `null`, not `false`: there is no claim to have matched
+        // or mismatched, and `false` would read as "checked and wrong"
+        // rather than "nothing to check".
         let evidence = json!({
-            "reason": "no_registrations",
+            "reason": "unclaimed",
             "declared_agent_id": null,
             "declared_registry": null,
             "declared_chain": null,
-            "match": false,
+            "match": null,
             "registrations_seen": 0,
         });
         return CheckResult {
             rung: 5,
             name: "bound",
-            status: CheckStatus::Fail,
+            status: CheckStatus::Unclaimed,
             evidence,
             checked_at: now,
         };
@@ -349,21 +366,27 @@ mod tests {
         assert_eq!(r.evidence["declared_chain"], 1);
     }
 
+    /// Deliverable fixture (P0 FIX 4/5 addendum): `registrations` absent →
+    /// `unclaimed`.
     #[test]
-    fn absent_registrations_fails_with_no_registrations_reason() {
+    fn absent_registrations_is_unclaimed_not_a_fail() {
         let doc = json!({ "name": "myAgent" });
         let r = bound(&input(doc), t());
-        assert_eq!(r.status, CheckStatus::Fail);
-        assert_eq!(r.evidence["reason"], "no_registrations");
+        assert_eq!(r.status, CheckStatus::Unclaimed);
+        assert_eq!(r.evidence["reason"], "unclaimed");
         assert_eq!(r.evidence["registrations_seen"], 0);
+        assert!(r.evidence["match"].is_null(), "no claim to have matched or not");
     }
 
+    /// Deliverable fixture: `registrations` present but an empty array →
+    /// `unclaimed`, same reason as absent — see the module doc's asymmetry
+    /// note on why this is not a `fail`.
     #[test]
-    fn empty_registrations_array_fails_with_no_registrations_reason() {
+    fn empty_registrations_array_is_unclaimed_not_a_fail() {
         let doc = doc_with_registrations(json!([]));
         let r = bound(&input(doc), t());
-        assert_eq!(r.status, CheckStatus::Fail);
-        assert_eq!(r.evidence["reason"], "no_registrations");
+        assert_eq!(r.status, CheckStatus::Unclaimed);
+        assert_eq!(r.evidence["reason"], "unclaimed");
     }
 
     #[test]
@@ -380,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn a_registrations_value_that_is_not_an_array_fails_not_panics() {
+    fn a_registrations_value_that_is_not_an_array_is_unclaimed_not_panics() {
         for bad in [
             json!("eip155:1:0xabc"),
             json!(42),
@@ -389,8 +412,8 @@ mod tests {
         ] {
             let doc = doc_with_registrations(bad);
             let r = bound(&input(doc), t());
-            assert_eq!(r.status, CheckStatus::Fail);
-            assert_eq!(r.evidence["reason"], "no_registrations");
+            assert_eq!(r.status, CheckStatus::Unclaimed);
+            assert_eq!(r.evidence["reason"], "unclaimed");
         }
     }
 

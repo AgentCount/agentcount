@@ -15,10 +15,15 @@ use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::runs;
 
-/// The four statuses `check_results.status` is constrained to. Checked
-/// against a caller's `status=` filter here, not in SQL, so an invalid value
-/// is a clean 400 rather than a query that silently matches nothing.
-const VALID_STATUSES: [&str; 4] = ["pass", "fail", "skipped", "error"];
+/// The five statuses `check_results.status` is constrained to (the DB's own
+/// `check_results_status_check` — migration 0011 — is the source of truth;
+/// this list must never drift ahead of or behind it). `unclaimed` was added
+/// 2026-07-29 (P0 FIX 4/5 addendum): rung 5 (`bound`) produces it for a
+/// document that made no binding claim to verify. Checked against a caller's
+/// `status=` filter here, not in SQL, so an invalid value is a clean 400
+/// rather than a query that silently matches nothing — and so an
+/// unrecognised status string can never be guessed at instead of rejected.
+const VALID_STATUSES: [&str; 5] = ["pass", "fail", "skipped", "error", "unclaimed"];
 
 fn validate_status(status: &str) -> ApiResult<()> {
     if VALID_STATUSES.contains(&status) {

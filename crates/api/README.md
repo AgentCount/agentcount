@@ -3,7 +3,8 @@
 A **binary crate**: the axum web server, and the only crate the outside world
 talks to. It reads runs, agent snapshots, check results, and the HTTP archive
 straight from Postgres (written by `crates/sweeper`) and serves them as JSON —
-seven pass/fail/skipped/error rungs per agent, per run, with evidence. There is
+seven rungs per agent, per run, each `pass`/`fail`/`skipped`/`error`, and —
+rung 5 (`bound`) only, added 2026-07-29 — `unclaimed`, with evidence. There is
 no aggregate field anywhere in the schema and this crate does not invent one.
 The Next.js app in the sibling `ledgerscope-web` repo is the frontend; this
 crate serves JSON only.
@@ -25,7 +26,7 @@ latest run whose sweep has *finished*, never an in-flight one.
 | Route | Returns |
 |-------|---------|
 | `GET /api/runs?chain=` | Every run, newest first, with full provenance (`schema_version`, `checker_version`, `checker_commit`, `spec_commit`, `rerun_command`, `pinned_block`, `agent_count`). |
-| `GET /api/runs/{id}/rates` | The headline output: per rung, the count of each status (`pass`/`fail`/`skipped`/`error`), plus `agent_count` as the shared denominator. `GROUP BY rung, status` over one run, backed by `idx_check_results_rates`. |
+| `GET /api/runs/{id}/rates` | The headline output: per rung, the count of each status (`pass`/`fail`/`skipped`/`error`/`unclaimed`), plus `agent_count` as the shared denominator. `GROUP BY rung, status` over one run, backed by `idx_check_results_rates`. |
 | `GET /api/agents?run=&chain=&rung=&status=&limit=&offset=` | The directory, one page at a time: `{items, page:{limit,offset,total}}`. `rung`+`status` filter to e.g. "everything failing rung 4"; `limit` clamped to 500 (default 100). `run` defaults to the latest completed run. |
 | `GET /api/agents/{chain}/{id}?run=` | One agent: its snapshot, every rung this run asked (in rung order, with full evidence), and the HTTP archive summary (status, content-type, size, sha256, final URL — never the body). `run` defaults to the latest completed run. |
 | `GET /api/methodology` | `spec_commit`, `checker_version`, `schema_version`, and the rung-4 required-field list — re-exported from `checks`, never restated. |

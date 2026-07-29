@@ -10,13 +10,26 @@
 //! Day 2 wires in the probe layer: after each agent's chain snapshot, its
 //! declared `tokenURI()` is fetched via `probe::Prober`, archived to
 //! `http_archive`, and judged by rungs 2-5 (`resolvable`, `parseable`,
-//! `conformant`, `bound`). Day 3 adds rung 7 (`independent`), constructed
-//! ONLY for the agents that reach it — those that passed rungs 1-5 — so a
-//! Reputation Registry read (`chain::Reputation::feedback`) happens for the
-//! ~2% of the population it can possibly matter for, never all of it. Rung 6
-//! is still ABSENT from the output rather than reported as `skipped` — "we
-//! did not ask" and "we could not ask" are different claims and the schema
-//! keeps them different.
+//! `conformant`, `bound`). Day 3 added rung 7 — then called `independent` —
+//! constructed only for agents that had already passed rungs 1-5.
+//!
+//! **P0 FIX 4/5 (2026-07-29).** Rung 7 (renamed `attested`) is ungated here:
+//! it is constructed for every agent that passes rung 1, full stop, never
+//! conditioned on rungs 2 through 5. Reputation feedback lives in the
+//! Reputation Registry, keyed by agent id, and is readable regardless of
+//! whether that agent's document ever resolved, parsed, conformed, or
+//! bound — there was never a real dependency on the document track, only an
+//! accidental one from how the old gating happened to be written. See
+//! `checks::ladder`'s module doc for how the ladder itself now encodes rung
+//! 7 as its own independent track. The cost consequence is real and
+//! intentional: a Reputation Registry read (`chain::Reputation::feedback`,
+//! two RPC calls — `getClients` then, only if that returned addresses,
+//! `getSummary` — never `getSummary` on an empty client list, which reverts
+//! on this contract) now happens for essentially the whole population
+//! (~60,000 agents, since rung 1 passes for nearly all of them) rather than
+//! the ~1,437 that used to also pass rungs 2-5. Rung 6 is still ABSENT from
+//! the output rather than reported as `skipped` — "we did not ask" and "we
+//! could not ask" are different claims and the schema keeps them different.
 //!
 //! Two independent concurrency budgets drive the pipeline, on purpose (see
 //! [`rpc_concurrency`] and [`fetch_concurrency`]): the RPC endpoint throttles
@@ -523,40 +536,28 @@ async fn main() -> Result<()> {
             )
         });
 
-        // Rung 7 sits ABOVE rung 5: in the reference census only 1,425 of
-        // 60,037 agents pass rungs 1-5, so gating the Reputation Registry
-        // read on that (rather than always reading it and letting
-        // `run_ladder` discard the result) is what keeps the sweep's RPC
-        // cost near ~1,425 extra call pairs instead of ~120,000. Checked via
-        // `.as_ref()` so `rung4`/`rung5` are not yet moved — they still need
-        // to go into `rungs` below.
-        let reaches_rung7 = rung1.status == checks::CheckStatus::Pass
-            && rung2.status == checks::CheckStatus::Pass
-            && rung3.status == checks::CheckStatus::Pass
-            && rung4
-                .as_ref()
-                .is_some_and(|r| r.status == checks::CheckStatus::Pass)
-            && rung5
-                .as_ref()
-                .is_some_and(|r| r.status == checks::CheckStatus::Pass);
+        // P0 FIX 4/5: rung 7 (`attested`) is gated on rung 1 ALONE — never on
+        // rungs 2 through 5. `rung4`/`rung5` are used only via `.as_ref()`
+        // above; they still need to go into `rungs` below unmoved.
+        let reaches_attested = rung1.status == checks::CheckStatus::Pass;
 
         // `None` here means one of two different things, and the branches
         // below keep them distinct:
-        //   - rungs 1-5 didn't all pass → rung 7 is simply not asked, and
-        //     `run_ladder` will mark it `Skipped` on its own (never
-        //     synthesised here — see the module doc on `run_ladder`).
-        //   - rungs 1-5 DID all pass but the feedback read itself failed →
-        //     that's OUR problem, not the agent's, so — same as an
-        //     unreadable snapshot above — this agent is left out of the run
-        //     entirely (`continue`) rather than recording anything false
-        //     about it.
-        let rung7 = if !reaches_rung7 {
+        //   - rung 1 didn't pass (an owner-is-zero-address token; vanishingly
+        //     rare in practice) → rung 7 is simply not asked, and
+        //     `run_ladder` would mark it `Skipped` if it were present — but
+        //     since we choose not to spend the RPC call here, it is left out
+        //     of `rungs` entirely, same as the unimplemented rung 6.
+        //   - rung 1 DID pass but the feedback read itself failed → that's
+        //     OUR problem, not the agent's, so — same as an unreadable
+        //     snapshot above — this agent is left out of the run entirely
+        //     (`continue`) rather than recording anything false about it.
+        let rung7 = if !reaches_attested {
             None
         } else if let Some(rep) = &reputation {
             match rep.feedback(s.agent_id, pinned).await {
-                Ok(fr) => Some(checks::independent(
-                    &checks::IndependentInput {
-                        owner: s.owner.clone(),
+                Ok(fr) => Some(checks::attested(
+                    &checks::AttestedInput {
                         clients: fr.clients,
                         feedback_count: fr.feedback_count,
                         registry_available: true,
@@ -576,11 +577,10 @@ async fn main() -> Result<()> {
         } else {
             // `chains.reputation_registry` is NULL for this chain: we cannot
             // check, which is our limitation, not the agent's — `Error`,
-            // never `Fail`. No RPC call is made; `checks::independent` alone
+            // never `Fail`. No RPC call is made; `checks::attested` alone
             // decides the status from `registry_available: false`.
-            Some(checks::independent(
-                &checks::IndependentInput {
-                    owner: s.owner.clone(),
+            Some(checks::attested(
+                &checks::AttestedInput {
                     clients: Vec::new(),
                     feedback_count: 0,
                     registry_available: false,

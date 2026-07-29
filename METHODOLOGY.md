@@ -16,8 +16,10 @@ Ledgerscope is an independent conformance and census layer for
 registered in an Identity Registry, reads the chain's current state for each
 one, fetches and evaluates the off-chain document it points at, and checks
 whether its declared endpoints and reputation entries hold up. The result for
-each agent is **seven booleans and the evidence behind each one** —
-`pass`, `fail`, `skipped`, or `error`, per rung, per agent, per run.
+each agent is **seven questions and the evidence behind each one** —
+`pass`, `fail`, `skipped`, `error`, or — for rung 5 alone, added 2026-07-29 —
+`unclaimed`, per rung, per agent, per run. See §2's Rung 5 entry and §4 for
+what each word means and why a fifth was needed.
 
 There is no aggregate. Not a score, not a grade, not a tier, not a ranking.
 This is deliberate, not an oversight:
@@ -219,16 +221,33 @@ fetched *from*?
 - **Pass:** the document's declared `registrations[].agentId` and
   `agentRegistry` (format `{namespace}:{chainId}:{identityRegistry}`) match
   the chain, registry address, and token id this fetch originated from.
-- **Fail:** the document declares a different agent id, registry, or chain
-  than the one we fetched it from.
+- **Fail:** the document declares a registration — `registrations` is
+  present with at least one entry — but no entry's agent id, registry, and
+  chain all match the one we fetched it from.
+- **Unclaimed** *(added 2026-07-29):* the document carries no `registrations`
+  claim at all to check — the key is absent, or present as an empty array.
+  **This is not a `fail`.** Once P0 FIX 3 made `registrations` a SHOULD
+  rather than a MUST (see Rung 4), a document can pass rung 4 while making no
+  binding claim whatsoever, and none of the other four statuses honestly
+  describes that: `pass` would claim a verification that never happened,
+  `fail` would punish a merely-recommended field as hard as a genuine
+  mismatch, `skipped` would falsely imply an earlier rung failed, and `error`
+  would falsely imply this checker malfunctioned. `unclaimed` is a
+  publishable finding in its own right: how many agents pass conformance
+  while declining to link their document back to their own on-chain
+  identity. See `CHANGELOG-METHODOLOGY.md`'s 2026-07-29 rung-5-status entry
+  for the measured population split.
 - **Evidence:** `declared_agent_id`, `declared_registry`, `declared_chain`,
-  `match` (boolean per field compared).
+  `match` (`true`/`false` when a claim was checked, `null` when
+  `unclaimed` — there was nothing to have matched or not), `reason`
+  (`"unclaimed"`, present only on that status), `registrations_seen` (how
+  many entries were evaluated; `0` for `unclaimed`).
 - **Does not mean:** that the document is otherwise trustworthy — only that
   it is not, at minimum, a card copy-pasted wholesale from a different
   registration. This rung exists specifically to catch that pattern: a
-  document that never mentions any registration is a rung-4 question (the
-  `registrations` array is conditionally required, see Rung 4), but a
-  document that mentions the *wrong* one is this rung's question.
+  document that mentions the *wrong* registration is this rung's `fail`; a
+  document that mentions none at all is `unclaimed`, not silently folded
+  into either `pass` or `fail`.
 
 ### Rung 6 — `live`
 
@@ -252,26 +271,36 @@ HEAD or GET request?
   not that every agent's endpoints failed to answer. Do not read a rung-6
   gap in a report as a rung-6 failure — it is not in the data at all.
 
-### Rung 7 — `independent`
+### Rung 7 — `attested`
+
+**Renamed from `independent` on 2026-07-29 (P0 FIX 4/5) — and ungated.**
+Before this fix, rung 7 was called `independent` and asked whether at least
+one feedback author differed from the agent's current owner; it also only
+ran for the ~1,437 agents whose *document* had already passed rungs 1
+through 5, on the mistaken assumption that it depended on the document
+track at all. Both changed together, in the same run, because ungating this
+rung without renaming it would have published the tautological finding
+below at ~60,000-agent scale instead of ~1,437 — worse, not better.
 
 **Question:** Has this agent received at least one Reputation Registry
-feedback entry from an address that is not its own owner?
+feedback entry, from any client address at all?
 
-- **Pass:** at least one distinct feedback author (from `getClients`) differs
-  from the current owner address (from `ownerOf`, the same snapshot every
-  other rung uses).
-- **Fail, `no_feedback`:** `getClients` returns zero addresses — nobody, self
-  or otherwise, has left this agent feedback.
-- **Fail, `only_self_feedback`:** `getClients` returns one or more addresses,
-  and every one of them equals the owner address.
+- **Pass:** `getClients` returns at least one distinct address.
+- **Fail, `no_feedback`:** `getClients` returns zero addresses — nobody has
+  left this agent feedback.
 - **Error, `no_reputation_registry`:** the chain has no Reputation Registry
   deployed at all. This is resolved once per chain, before the rung runs for
   any agent on it, and it is recorded as `error`, never `fail` — the agent
   did nothing wrong; the infrastructure to ask the question doesn't exist on
-  that chain. Precedence is absolute: even if the input happens to contain a
-  non-owner client address, an unavailable registry still errors rather than
-  passing, because a read that couldn't have happened isn't trustworthy
-  evidence either way.
+  that chain.
+- **Gating:** rung 1 alone — **not** rungs 2 through 5. Reputation feedback
+  lives in the Reputation Registry, keyed by agent id, and is readable
+  regardless of whether that agent's document ever resolved, parsed,
+  conformed, or bound to it; there was never a real dependency on the
+  document track, only an accidental one from how the rung used to be gated.
+  Rung 7 therefore runs for every agent that passes rung 1 — essentially the
+  whole population — and its "not checked" count falls to zero except for
+  agents where the chain read itself failed on our side.
 - **How the data is read:** `getClients(agentId)` is called first, at the
   same pinned block every other rung's chain state is read at, to get the
   registry's own list of who has ever left this agent feedback. Only if that
@@ -280,63 +309,86 @@ feedback entry from an address that is not its own owner?
   empty `clientAddresses` array reverts on this contract rather than
   returning zero, so an empty `getClients` result short-circuits before
   `getSummary` is ever called. `feedback_count` comes from `getSummary`'s
-  total entry count across the supplied clients; `distinct_authors` and
-  `authors_equal_to_owner` are computed from the `getClients` list itself,
-  de-duplicated and compared case-insensitively so that address casing never
-  affects the verdict.
-- **Evidence:** `feedback_count`, `distinct_authors`,
-  `authors_equal_to_owner`, `self_feedback_ratio`, and `reason` (present only
-  on `fail`/`error`: `no_feedback`, `only_self_feedback`, or
-  `no_reputation_registry`).
+  total entry count across the supplied clients; `distinct_authors` is
+  computed from the `getClients` list itself, de-duplicated and compared
+  case-insensitively.
+- **Evidence:** `feedback_count`, `distinct_authors`, and `reason` (present
+  only on `fail`/`error`: `no_feedback` or `no_reputation_registry`).
 - **Does not mean:** that the feedback is genuine, uncoordinated, or positive
-  — only that it did not come from the agent's own owner address. Two
-  addresses under common control, one feeding the other, would still pass
-  this rung. Catching that would take clustering inference, which is a
-  different kind of claim than a measurement — if we ever publish it, it goes
-  in a separately-labelled `signals` block, never in a rung.
+  — only that some exists. It does not read feedback *values*, and it makes
+  no comparison against the agent's owner at all (see below) — two addresses
+  under common control, one feeding the other, would still pass this rung.
+  Catching that would take clustering inference, which is a different kind
+  of claim than a measurement; if this project ever publishes it, it goes in
+  a separately-labelled `signals` block, never in a rung, and it is **not
+  built as of this fix**.
 
-**`self_feedback_ratio` needs its own paragraph, because a ratio in a
-product that just spent Section 1 explaining why it publishes no score
-invites exactly one question: isn't this a score in disguise? It is not,
-for the same reason `body_bytes` in rung 3 or `registrations_checked` in
-rung 4 aren't: it is per-rung evidence describing **one measurement** —
-what fraction of *this agent's* distinct feedback authors is the owner —
-not a number that combines several rungs, or several agents, into a
-verdict. It is defined as `authors_equal_to_owner / distinct_authors`, and a
-reader can recompute it from those two other evidence fields without
-trusting our arithmetic, the same falsifiability bar every other field in
-this document is held to. Nothing about it ranks agents against each other,
-weighs anything, or produces a single figure meant to stand in for "how
-trustworthy is this agent" — it stays scoped to the one rung, the one
-agent, the one measurement it describes.
+**Why this rung does not, and cannot, detect self-review.** The pinned spec
+is explicit — `spec/ERC8004SPEC.md` line 217: *"The feedback submitter MUST
+NOT be the agent owner or an approved operator for `agentId`."* Owner
+self-feedback is a contract-level invariant, not a heuristic: it cannot be
+successfully submitted in the first place. The old `independent` rung
+compared feedback authors against the owner anyway and reported "zero agents
+caught writing their own reviews" — which is not a measurement, since its
+only possible outcome is restating a rule nobody can break. **No evidence
+field, log line, or report this project produces claims to detect
+self-review, because this rung does not check for it.** The two fields that
+used to carry that comparison — `authors_equal_to_owner` and a derived
+`self_feedback_ratio` — are gone from this rung's evidence entirely, not
+renamed: keeping them would mean silently reintroducing the owner comparison
+this fix removes, and empirically the comparison is nearly always the same
+constant regardless (see `CHANGELOG-METHODOLOGY.md` for the one counter-
+example found in the archived run, and why even that exception does not
+rescue the metric — ownership can transfer after feedback was left, so
+"current owner equals a past feedback author" is not evidence of self-review
+either). `feedback_count` and `distinct_authors` survive unchanged: both are
+genuine per-agent measurements a reader can recompute from
+`getClients`/`getSummary` themselves, and neither implies anything about who
+those authors are relative to the owner.
 
-It is **`null`, never `0.0`, when `distinct_authors` is `0`.** A measured
-zero and an unmeasurable quantity are different claims: "every author we
-found happens not to be the owner" (a zero we actually observed) is not the
-same statement as "there were no authors to check in the first place" (a
-ratio with nothing to divide). Writing `0.0` for the second case would read,
-to anyone who didn't check `distinct_authors` too, as the friendlier of the
-two claims when it is actually the absence of any claim at all — exactly
-the kind of silent wrongness Section 1 says this project exists to avoid.
-`no_feedback` agents (`distinct_authors: 0`) always carry a `null` ratio;
-only agents with at least one client ever carry a numeric one.
+The spec itself flags the underlying problem it leaves unsolved (line 324):
+`getSummary` requires a non-empty `clientAddresses` filter precisely because
+unfiltered feedback is subject to Sybil/spam attacks, and it expects
+reviewer-reputation to emerge off-chain — outside what this contract, or
+this rung, can settle.
 
 ## 3. Ladder semantics
 
-The rungs are evaluated in order, and a rung that does not pass stops the
-ladder: everything above it is recorded as `skipped`, **never** as `fail`.
+A rung that does not pass stops **everything that depends on it**: those
+rungs are recorded as `skipped`, **never** as `fail`.
+
+**Three independent tracks, not one chain (P0 FIX 4/5, 2026-07-29).** Before
+this fix, "depends on" meant nothing more than "has a smaller rung number",
+so any failure anywhere below rung 7 — even one rung 7 has nothing to do
+with — silently skipped it. That was true only by accident of how rung 7
+used to be gated, and it stopped being true the moment rung 7 was ungated to
+run for every agent that passes rung 1. The dependency graph is now, and is
+published as, three separate tracks:
+
+- **Document** (1 → 2 → 3 → 4 → 5): a straight chain, each rung needs the one
+  directly below it to have passed. Unchanged from before this fix.
+- **Service** (6, not yet implemented): depends on rung 4 — a document that
+  conforms enough to declare `services`, not the full chain back to rung 1,
+  and *not* rung 5 (an agent can decline to bind its document to the chain
+  and still have live endpoints worth checking).
+- **Reputation** (7): depends on rung 1 *alone*. A rung-2, -3, -4, or -5
+  failure must never skip rung 7 — reputation feedback is readable for any
+  agent id that exists on chain, independent of whether its document ever
+  resolved, parsed, conformed, or bound.
 
 This is enforced in one place (`checks::run_ladder`) and is not a convenience
 — it is the rule that keeps a failing lower rung from silently becoming
-several failing higher ones. If rung 2 fails because the URI never resolved,
-we never received a document; rung 3 cannot ask whether that document is
-valid JSON, because there is no document to parse. Recording `fail` for a
-question that was never actually asked would misstate what happened, and is
-the single easiest way to overstate a problem by accident. A `skipped` result
-carries which rung stopped it and what that rung's status was
-(`skipped_because_rung`, `skipped_because_status`), so nothing about the
-stoppage is lost — only the higher rungs' verdicts are withheld, because they
-could not be judged.
+several failing higher ones **within its own track**, while never leaking
+across tracks that have nothing to do with each other. If rung 2 fails
+because the URI never resolved, we never received a document; rung 3 cannot
+ask whether that document is valid JSON, because there is no document to
+parse — but rung 7 can still be asked, and answered, because it never needed
+that document in the first place. Recording `fail` for a question that was
+never actually asked would misstate what happened, and is the single easiest
+way to overstate a problem by accident. A `skipped` result carries which
+rung stopped it and what that rung's status was (`skipped_because_rung`,
+`skipped_because_status`), so nothing about the stoppage is lost — only the
+dependent rungs' verdicts are withheld, because they could not be judged.
 
 ## 4. What `skipped`, `error`, and an absent rung each mean
 
@@ -361,19 +413,33 @@ they are not interchangeable:
   verdict (no `COALESCE(x, false)` anywhere in this pipeline). If you do not
   see a rung for an agent, the honest reading is "not yet checked," full
   stop — not "presumed to fail."
+- **`unclaimed`** *(rung 5 only, added 2026-07-29)* — not one of the three
+  kinds above, and deliberately its own word: the rung was asked, it ran to
+  completion, and it found nothing to check, because the agent made no
+  binding claim (no `registrations` array, or an empty one) for it to verify.
+  It is not a consequence of a lower rung failing (`skipped`), not an absence
+  of any row (a rung-5 row always exists for an agent that reached rung 5),
+  and not a checker malfunction (`error`) — see Rung 5's entry in §2 for the
+  full reasoning.
 
 **Current implementation status, stated plainly:** rungs 1 (`registered`),
 2 (`resolvable`), 3 (`parseable`), 4 (`conformant`), 5 (`bound`), and 7
-(`independent`) are implemented and run in every sweep. **Rung 6 (`live`) is
-not implemented** — it is fully specified above, its pass/fail conditions
-and evidence shape are final, but no code executes it, and it writes no row
-for any agent. A run's data therefore has, for every agent, rows for rungs
-1, 2, 3, 4, 5, and 7, and no row at all for rung 6 — meaning exactly what
-Section 4 says an absent rung means: not yet checked, not failed. This
-document described the full ladder ahead of rungs 2–7 shipping; that has
-since happened for all but rung 6, and this paragraph is updated each time
-the implemented set changes rather than left to describe a state that no
-longer holds.
+(`attested`, renamed from `independent` 2026-07-29) are implemented and run
+in every sweep. Rung 7 runs for every agent that passes rung 1 — essentially
+the whole population, not the small rung-1-through-5 intersection it used to
+be gated on; the only agents it produces no row for are the rare case where
+rung 1 itself fails (an owner-is-zero-address token) and the read is never
+attempted, plus any agent where the chain read failed on our side (counted
+and reported, never silently dropped — see `crates/sweeper`). **Rung 6
+(`live`) is not implemented** — it is fully specified above, its pass/fail
+conditions and evidence shape are final, but no code executes it, and it
+writes no row for any agent. A run's data therefore has, for every agent,
+rows for rungs 1, 2, 3, 4, 5, and (for nearly everyone) 7, and no row at all
+for rung 6 — meaning exactly what this section says an absent rung means:
+not yet checked, not failed. This document described the full ladder ahead
+of rungs 2–7 shipping; that has since happened for all but rung 6, and this
+paragraph is updated each time the implemented set changes rather than left
+to describe a state that no longer holds.
 
 ## 5. How to recompute any result
 

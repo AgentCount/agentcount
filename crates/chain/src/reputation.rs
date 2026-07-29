@@ -1,7 +1,8 @@
 //! Reading the Reputation Registry: who has left feedback for an agent, and
-//! how much of it there is — the raw material rung 7 (`independent`) in
-//! `crates/checks` uses to ask "does anyone other than the owner vouch for
-//! this agent?"
+//! how much of it there is — the raw material rung 7 (`attested`) in
+//! `crates/checks` uses to ask "has anyone at all vouched for this agent?"
+//! (renamed from `independent` and ungated by P0 FIX 4/5, 2026-07-29 — see
+//! that rung's module doc for why it no longer compares against the owner).
 //!
 //! ## `getSummary`'s empty-`clientAddresses` question, settled
 //!
