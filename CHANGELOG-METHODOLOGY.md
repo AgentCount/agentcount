@@ -144,3 +144,158 @@ check, which is unaffected by this fix and reapplied unchanged) follows
 the same approach established in the FIX 1 entry above; zero unparseable
 bodies appeared among the 25,636 rung-4 failures queried, consistent with
 a rung-4 failure implying rung 3 (`parseable`) already passed.
+
+---
+
+## 2026-07-29 — FIX 3: split rung 4 by RFC 2119 severity (MUST / SHOULD / MAY)
+
+**What changed.** Rung 4 (`conformant`) no longer collapses every field
+into one required/not-required list. It now classifies each field it looks
+at into one of three RFC 2119 severities and reports all three, always:
+
+- **MUST (2 fields, conditional):** `registrations[].agentId`,
+  `registrations[].agentRegistry` — checked only when `registrations` is
+  present as a non-empty array. **This is the only thing that can fail the
+  rung.** `pass` = zero MUST violations; `fail` = one or more.
+- **SHOULD (7 checks):** `type`, `name`, `description`, `image` (reverses
+  the 2026-07-27 ruling that had these REQUIRED — see below);
+  `services`/`endpoints` (empty array recorded distinctly from an absent
+  key: `services_status` is `"absent"` / `"empty"` / `"present"`, and
+  `should_gaps` carries `"services"` or `"services_empty"` accordingly);
+  `registrations` itself, at least one entry; `services[].version`
+  (aggregated to one gap regardless of how many entries lack it).
+- **MAY (3 fields):** `x402Support`, `active`, `supportedTrust`. A fourth
+  field the work order's MAY table named, `updatedAt`, is **not** checked —
+  it does not appear anywhere in the pinned spec at the pinned commit; see
+  "Spec discrepancy" below.
+
+Evidence always carries `must_violations[]`, `should_gaps[]`, `may_gaps[]`
+— on both `pass` and `fail`, never just the array relevant to the verdict.
+`schema_version` bumps from 1 to 2 for this evidence-shape change.
+
+**Why — reversing Ruling 1.** `spec/REQUIRED_FIELDS.md`'s Ruling 1
+(2026-07-27) held that `type`/`name`/`description`/`image` stay REQUIRED
+because line 115's SHOULD ("...SHOULD ensure compatibility with ERC-721
+apps") was read as constraining their *content*, not their *presence*.
+Revisited under FIX 3's requirement to classify every field by severity
+rather than in isolation, that reading did not survive being checked
+against Ruling 2's own reasoning, decided the same day: Ruling 2 read line
+123's structurally identical "SHOULD have at least one registration... and
+all fields... are mandatory" as downgrading *presence* while a more
+specific clause governs content — the opposite assignment Ruling 1 made for
+the same sentence shape, applied to different fields. Ruling 4 (new, dated
+2026-07-29 — Ruling 1 is kept in the record, not deleted) applies the same
+rule Ruling 2 already used. Full reasoning: `spec/REQUIRED_FIELDS.md`
+Ruling 4.
+
+**The finding, not softened.** Combined with Ruling 2 (already conditional)
+and Ruling 3 (`x402Support`/`active` never MUST), the registration file has
+exactly **one MUST, and it is conditional**. Almost every document that
+parses as JSON at all now passes rung 4. This is expected and is reported
+as measured below, not adjusted to look more discriminating.
+
+**Spec discrepancy vs. the work order (ground rule 1).** The work order's
+MAY table lists `x402Support`, `active`, `supportedTrust`, `updatedAt`.
+`updatedAt` does not appear anywhere in `spec/ERC8004SPEC.md` at the pinned
+commit (`grep -in updatedAt` returns nothing) — verified against both
+sources ground rule 1 names: `eips.ethereum.org/EIPS/eip-8004` agrees the
+pinned text has no such field; `best-practices.8004scan.io`'s metadata
+profile *does* define `updatedAt` (an optional freshness-tracking
+timestamp), which is evidently the work order's actual source for this
+entry. Per ground rule 1 ("if they disagree with this document, the spec
+wins and the disagreement is reported back, not silently resolved"),
+`updatedAt` is not checked at any severity — checking it would mean
+inventing a field the pinned spec does not define, which this rung's own
+founding discipline ("nothing added, nothing inferred from outside
+knowledge of ERC-8004") rules out. Full citation: `spec/REQUIRED_FIELDS.md`
+§MAY.
+
+**Measured effect.** Re-judged directly against the archived response
+bodies in `http_archive` for run `1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`
+(60,049 agents; no re-sweep) — using the actual, current
+`checks::conformant` function itself (not SQL logic re-derived from it), so
+this measurement cannot silently drift from what the shipped code does.
+Population: the 29,811 documents where rung 3 (`parseable`) already passed
+— exactly the population rung 4 is ever asked about, taken unmodified from
+the already-stored, un-touched-by-this-fix rung-1/2/3 verdicts. Zero of
+those 29,811 archived bodies failed to re-parse (consistent with rung 3
+having already validated them).
+
+> **New rung-4 pass rate: 29,552 / 60,049 — 49.2%** (99.1% of the 29,811
+> documents that reach rung 4 at all). Up from the originally published
+> 4,175 / 60,049 (7.0%) — **+25,377 agents** — and from the FIX 1+2 combined
+> figure of 11,107 / 60,049 (18.5%) — **+18,445 agents**. 259 documents
+> (0.9% of those reaching rung 4) still fail: every one of them has a
+> `registrations` array present with at least one entry missing `agentId`
+> and/or `agentRegistry` — the only way to fail rung 4 under this fix.
+
+**The SHOULD-completeness distribution** — the new headline measurement,
+over the 29,811 documents that reach rung 4 (a document that never resolved
+or never parsed has no SHOULD-gap information to report, the same
+population-scoping rung 4's pass/fail already uses):
+
+| SHOULD gaps | Documents | % of 29,811 |
+|---:|---:|---:|
+| 0 | 897 | 3.0% |
+| 1 | 3,337 | 11.2% |
+| 2 | 12,271 | 41.2% |
+| 3 | 3,120 | 10.5% |
+| 4 | 10,135 | 34.0% |
+| 5 | 36 | 0.1% |
+| 6 | 15 | 0.1% |
+
+Only **897 documents (3.0%)** satisfy all seven SHOULD checks. The
+distribution is bimodal, clustering at 2 and 4 gaps rather than spread
+evenly — consistent with two largely-independent failure modes (most
+documents either supply `registrations` or don't; most either supply
+`services`+`type`+`image` as a bundle or omit all three) rather than one
+smooth quality gradient. Nothing in this run reaches 7 gaps: no document
+manages to omit all four top-level fields, `registrations`, `services`, and
+`services[].version` simultaneously while still parsing as JSON with
+*something* in it.
+
+**Most common SHOULD gaps, ranked** (of 29,811 documents; a document can
+and typically does contribute to several rows):
+
+| Gap | Documents | % of 29,811 |
+|---|---:|---:|
+| `registrations` (absent or empty) | 24,697 | 82.8% |
+| `type` | 15,808 | 53.0% |
+| `services` (absent) | 13,120 | 44.0% |
+| `image` | 12,458 | 41.8% |
+| `services[].version` (≥1 entry) | 6,674 | 22.4% |
+| `services_empty` (present, zero entries) | 5,200 | 17.4% |
+| `description` | 72 | 0.2% |
+| `name` | 20 | 0.1% |
+
+Two things worth stating plainly rather than leaving implicit: first,
+`description` and `name` are supplied almost universally (99.8% and 99.9%
+of documents carry them) while `type` and `image` are each missing on
+roughly half the population — the four fields Ruling 1 once treated as one
+unit behave nothing alike in practice. Second, `services_status` splits the
+29,811 documents as `absent`: 13,120 (44.0%), `empty`: 5,200 (17.4%),
+`present` (non-empty): 11,491 (38.5%) — meaning **61.5% of documents that
+otherwise parse as a valid agent registration file declare no way to reach
+the agent at all**, whether by omitting the field or supplying it empty.
+That number was invisible under the old fields_missing/fields_found shape,
+which conflated "absent" and "empty" into the same `services` presence
+check; FIX 3's `services_status` field is what makes it visible.
+
+**Query methodology.** A standalone tool (not part of the committed
+workspace — `crates/checks` stays free of any DB/network dependency, see
+its purity discipline) linked the real `checks` crate as a path dependency
+and re-judged each archived body through the actual `conformant()`
+function, rather than re-deriving the MUST/SHOULD/MAY logic in SQL. This
+was chosen over the SQL approach used in the FIX 1/2 entries above because
+FIX 3's logic (nested per-entry aggregation, the services empty-vs-absent
+split, the alias resolution) is materially more complex than a flat
+field-presence list, and re-implementing it in SQL would have created a
+second copy of the rule that could silently drift from the shipped code.
+Internal consistency checks: `sum(should_gaps.len() over all docs)` equals
+`sum(label frequency)` exactly (78,049 both ways); `services_status`
+buckets sum to 29,811 exactly; the SHOULD-completeness histogram sums to
+29,811 exactly; new-pass (29,552) equals `registrations`-absent-or-empty
+documents (24,697, automatically zero MUST checks) plus
+`registrations`-present documents with no missing sub-field
+(5,114 − 259 = 4,855) — 24,697 + 4,855 = 29,552, confirming the two
+independent tallies agree.

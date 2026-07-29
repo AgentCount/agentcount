@@ -127,52 +127,88 @@ successful HTTP response within the timeout?
 
 ### Rung 4 — `conformant`
 
-**Question:** Does the document contain every field the spec marks REQUIRED
-for the agent registration file?
+**Question:** Does the document violate anything the spec actually marks
+MUST for the agent registration file? — with SHOULD and MAY gaps recorded
+alongside, never collapsed into the same verdict.
 
-- **Pass:** every field in the checklist below is present.
-- **Fail:** one or more is missing.
-- **Evidence:** `fields_found[]`, `fields_missing[]`, `spec_commit` (the
+**Since P0 FIX 3 (2026-07-29), rung 4 is not a single required-field
+checklist.** The spec invokes RFC 2119/8174 explicitly (spec line 36):
+MUST, SHOULD, and MAY are three different promises, and an earlier version
+of this rung compressed all three into one `pass`/`fail` — the exact kind
+of compression Section 1 of this document says Ledgerscope exists to
+refuse, committed by Ledgerscope itself. Rung 4 now classifies every field
+it looks at into one of the three severities and reports all three, always:
+
+- **Pass:** zero MUST violations.
+- **Fail:** one or more MUST violations.
+- **Evidence:** `must_violations[]`, `should_gaps[]`, `may_gaps[]` — always
+  all three arrays, on both `pass` and `fail`, plus `spec_commit` (the
   pinned spec commit this check was run against), `registrations_checked`
   (how many `registrations[]` entries were validated; 0 when the key is
-  absent). *Naming note: an earlier draft of this document called this
-  evidence field `spec_version`. The implementation uses `spec_commit`
-  instead, matching the field the run already carries elsewhere in this
-  document (see the run-provenance table below) — a SHA is what makes the
-  claim checkable, and one name for one thing avoids the two fields drifting
-  apart.*
+  absent or empty), `services_field_source` / `legacy_endpoints_field` /
+  `both_fields_present` (which of `services`/`endpoints` supplied the
+  value — see below), and `services_status` (`"absent"` / `"empty"` /
+  `"present"` — see below).
 - **Does not mean:** that the field values are truthful, well-formed, or
   point anywhere real — only that the key exists in the document. A `name`
   field containing an empty string still counts as present; content quality
-  is not this rung's question.
+  is not this rung's question, at any severity.
 
-**The field list, and the ruling behind it.** The spec
+**The uncomfortable finding, stated plainly.** Under an honest reading of
+the pinned spec, the registration file has exactly **one MUST, and it is
+conditional**: `registrations[].agentId` and `registrations[].agentRegistry`,
+checked only when a `registrations` array is present at all (spec line 123,
+"all fields in the registration are mandatory" — but the same sentence
+downgrades the array's own presence to SHOULD). Everything this rung once
+treated as unconditionally REQUIRED — `type`, `name`, `description`,
+`image`, `services` — is SHOULD. `x402Support`, `active`, and
+`supportedTrust` are MAY. This means the overwhelming majority of documents
+that parse as JSON at all now pass rung 4: ERC-8004 imposes almost no hard
+requirement on this document. **This is reported as measured, not
+softened** — see `CHANGELOG-METHODOLOGY.md`'s FIX-3 entry for the exact
+before/after population count. The interesting number moves to the
+**SHOULD-completeness distribution** — how many of the seven SHOULD checks
+a document actually satisfies — which this evidence shape makes queryable
+for the first time without a re-sweep.
+
+**The field list, and the rulings behind it.** The spec
 ([pinned at `68fc676`](spec/SOURCE.md)) never uses the literal word
-"REQUIRED" for an agent-document field — it establishes required structure
-with "The registration file **MUST** have the following structure" (spec line
-54) and, once, the word "mandatory" (line 123). Two places in the spec text
-are genuinely ambiguous about what that MUST governs, and both were decided
-by the project owner rather than left to inference. Both rulings, and the
-full extraction with every field's source line, are recorded in
-[`spec/REQUIRED_FIELDS.md`](spec/REQUIRED_FIELDS.md); the short version:
+"REQUIRED" for an agent-document field — it works entirely with "MUST",
+"SHOULD", "MAY", "OPTIONAL", and, once, the plain-English synonym
+"mandatory" (line 123). Every field's severity, and the reasoning behind
+it — including two reversed rulings, kept in the record rather than edited
+out — is in [`spec/REQUIRED_FIELDS.md`](spec/REQUIRED_FIELDS.md); the short
+version:
 
-- **7 fields checked unconditionally, on every document:** `type`, `name`,
-  `description`, `image`, `services`, `x402Support`, `active`. (Ruling 1: a
-  later sentence saying these four fields "SHOULD ensure compatibility with
-  ERC-721 apps" was read as constraining their *content*, not downgrading
-  their *presence* — line 54's MUST still governs whether they appear.)
-- **2 fields checked conditionally, only when a `registrations` array is
-  present in the document:** `registrations[].agentId` and
-  `registrations[].agentRegistry`. (Ruling 2: the spec says agents "SHOULD
-  have at least one registration," which downgrades the *array's own
-  presence* to optional — a document with no `registrations` key does not
-  fail rung 4 on that basis — but the same sentence also says "all fields in
-  the registration are mandatory," so any entry that does exist must carry
-  both sub-fields.)
+- **MUST (2 fields, conditional):** `registrations[].agentId`,
+  `registrations[].agentRegistry` — checked only when `registrations` is
+  present as a non-empty array (line 123). This is the *only* thing that
+  can fail rung 4.
+- **SHOULD (7 checks):** `type`, `name`, `description`, `image` (line 115 —
+  reverses a 2026-07-27 ruling that had held these REQUIRED; see
+  `REQUIRED_FIELDS.md` Ruling 4 for why the earlier reading didn't survive
+  being checked against the rest of the document's own severity pattern);
+  `services`/`endpoints` (line 115's "endpoints" is the pinned spec's own
+  legacy name for `services` — both accepted, `services` wins when both
+  present, an empty array recorded distinctly from an absent key because
+  the two describe different facts — a declared-but-unreachable agent vs.
+  one that never engaged with this part of the schema); `registrations`
+  itself, at least one entry (line 123); `services[].version` (line 115,
+  aggregated to one document-level gap regardless of how many entries lack
+  it).
+- **MAY (3 fields):** `x402Support`, `active` (appear only in the spec's
+  illustrative example JSON, lines 99-100, never in normative prose —
+  originally miscounted as REQUIRED, corrected 2026-07-28); `supportedTrust`
+  (line 124, explicitly marked OPTIONAL). A fourth field, `updatedAt`, is
+  intentionally **not** checked at any severity — it does not appear
+  anywhere in the pinned spec, despite surfacing in some downstream
+  guidance; see `REQUIRED_FIELDS.md`'s MAY section for the full citation
+  trail on why it was excluded rather than silently added.
 
-A reader who takes either ambiguous sentence the other way will disagree with
-some rung-4 verdicts. That disagreement is legitimate; it is why the ruling
-is recorded here rather than discovered only from a `fail`.
+A reader who takes any of the ambiguous sentences the other way will
+disagree with some rung-4 verdicts. That disagreement is legitimate; it is
+why every ruling is recorded — including the reversed one — rather than
+discovered only from a `fail` or a surprising `pass`.
 
 ### Rung 5 — `bound`
 

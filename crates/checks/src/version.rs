@@ -4,7 +4,14 @@
 //! declared here, because this crate does not know how it was built.
 
 /// Bump when the shape of `check_results` or the evidence contract changes.
-pub const SCHEMA_VERSION: i32 = 1;
+///
+/// 2 (P0 FIX 3): rung 4's evidence dropped `fields_found`/`fields_missing`
+/// in favor of `must_violations[]`/`should_gaps[]`/`may_gaps[]`, and gained
+/// `services_status`. The `evidence` column is `jsonb`, so old rows are
+/// still readable — this bump exists so a reader can tell, from the row
+/// alone, which evidence contract produced it, per Section 5 of
+/// `METHODOLOGY.md`.
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// The checks crate's own version — the semantics of the rungs.
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
