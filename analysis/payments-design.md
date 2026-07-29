@@ -277,7 +277,89 @@ specifically.
 
 ---
 
-## 6. The launch funnel
+## 6. Results
+
+### The on-chain wallet, across the whole population
+
+All 60,097 agents, `getAgentWallet` read at the pinned block, zero read failures:
+
+| | agents |
+|---|---:|
+| wallet **set** (non-zero) | **40,473** (67.3%) |
+| …of which it **equals the NFT owner** | **40,126** (99.1% of those set) |
+| …of which it is a **distinct** address | **347** |
+| wallet not set (zero) | 19,624 |
+
+This is the number that matters, and it inverts the earlier framing twice over.
+"Publishes a payment address" is **67.3%**, not 1.5% — but 99.1% of those
+addresses are just the owner's own, which is the contract's default and required
+no `setAgentWallet` signature at all. **Only 347 agents (0.58%) have
+deliberately verified a payment address distinct from their owner.**
+
+It also confirms the divergence flagged in §1: the spec says the wallet is
+"initially set to the owner's address", yet 19,624 agents return zero. Cause not
+attributed here — clearing on transfer, registration paths that never set it,
+and a deployment differing from the spec text all produce this, and telling them
+apart needs `MetadataSet`/`Transfer` history the census does not index.
+
+### Who has ever actually been paid
+
+846 distinct target addresses (347 on-chain distinct wallets ∪ 822 document-declared;
+323 appear in both), USDC + USDbC on Base to block 49,262,617. **1 address failed
+to read after retries** and is excluded.
+
+| | count |
+|---|---:|
+| addresses with any incoming transfer | 302 |
+| incoming transfers found | 18,981 |
+| — owner funding (`from` == the agent's owner) | 346 |
+| — fleet-internal (`from` is another owner in the run) | 307 |
+| — **external** | **18,328** |
+| — …of which **x402** (EIP-3009 `AuthorizationUsed`) | **7,519** |
+
+Per agent:
+
+| | agents | of 60,097 |
+|---|---:|---:|
+| ≥1 incoming transfer of any kind | 317 | 0.53% |
+| **≥1 external incoming transfer** | **313** | **0.52%** |
+| **≥1 x402 settlement** | **41** | **0.068%** |
+
+By address basis: **37 of the 347** on-chain-distinct wallets received an
+external transfer, against **303 of the 919** document-declared addresses. The
+convention that is not in the spec is where nearly all observed payment
+activity lands.
+
+### And 98% of the money went to one operator
+
+Total external stablecoin received: **8,845,244** (6-decimal units — USDC and
+USDbC both use 6dp).
+
+| owner | paid agents | external value | share |
+|---|---:|---:|---:|
+| `0x820c5091b047…f7c8cd` | **148** | **8,661,358** | **97.9%** |
+| `0xd8b71d23e1a8…` | 1 | 88,268 | 1.0% |
+| `0x6dde55ee9dbd…` | 1 | 30,416 | 0.3% |
+| top 3 combined | | | **99.2%** |
+
+313 paid agents span 105 distinct owners, but value is not spread across them at
+all. Excluding that one owner leaves roughly **184,000 across the other 165
+agents**, and the **median paid agent received 37**. The count distribution is
+skewed the same way: the top receiving address alone accounts for 19.3% of all
+external transfers, the top five for 63.9%, while 43 addresses saw exactly one.
+
+The same owner appears in `should-gap-signatures.md` as a high-volume registrant
+(243 documents, one dominant SHOULD-gap signature at 99.6%). Its six
+highest-earning agents are consecutive ids (51455–51561), consistent with one
+batch deployment.
+
+**The money and the protocol are nearly disjoint populations.** The 97.9% owner
+recorded **zero** x402 settlements — its agents are paid by plain transfer. The
+41 x402-settled agents span 27 owners and are collectively a rounding error by
+value. So "x402 adoption" and "agents earning money" are two different findings
+and must not be merged into one sentence.
+
+### The launch funnel
 
 One funnel, every step a count the census can defend, no contested denominator:
 
@@ -286,10 +368,16 @@ One funnel, every step a count the census can defend, no contested denominator:
 | agents registered on-chain | **60,097** |
 | documents that resolve and parse (rung 3 `pass`) | **30,031** |
 | documents declaring any service | **16,865** |
+| agents whose on-chain `getAgentWallet` is set *(the spec's mechanism)* | **40,473** |
+| …whose wallet is **distinct from the owner** (a real `setAgentWallet`) | **347** |
 | documents declaring an `agentWallet` service entry *(convention, not spec)* | **920** |
-| agents whose on-chain `getAgentWallet` is set *(the spec's mechanism)* | *§5 pending* |
-| agents with ≥1 external incoming stablecoin transfer in scope | *pending* |
-| …of those, arriving via `transferWithAuthorization` (x402) | *pending* |
+| **agents with ≥1 external incoming stablecoin transfer in scope** | **313** |
+| **…of those, via `transferWithAuthorization` (x402)** | **41** |
+
+Read the funnel with §5's limits attached: the transfer rows cover only USDC and
+USDbC on Base, only the 846 addresses above, and treat "not owner-funded" as two
+hops rather than a funding graph. **313 is a lower bound on agents paid and an
+upper bound on agents that earned.**
 
 Alongside it, not inside it, because they are claims about coherence rather than
 steps in a pipeline:
@@ -302,9 +390,25 @@ steps in a pipeline:
 
 ## What is settled and what is not
 
-Settled: the spec question (§1), the second denominator (§2), the 30,253
-reconciliation (§3), the multi-wallet precedence question (§4), and the method
-(§5).
+Settled and measured: the spec question (§1), the second denominator (§2), the
+30,253 reconciliation (§3), the multi-wallet precedence question (§4), the method
+(§5), and the results (§6).
 
-Not yet run: the population-wide `getAgentWallet` count, and the transfer
-analysis itself.
+Known gaps, all of which make 313 a floor rather than a ceiling:
+
+* **One address of 846 failed to read** after retries and is excluded rather than
+  assumed empty.
+* **The 40,126 owner-default wallets were not queried for transfers.** A payment
+  to an address holding up to 2,293 agents cannot be attributed to any one of
+  them, so including them would have manufactured per-agent claims the data
+  cannot support. That cohort is reportable only at operator level.
+* **Tokens and chains outside scope are invisible** — ETH, DAI, EURC, every
+  other ERC-20, every other chain, everything off-chain.
+* **"Not owner-funded" is two hops, not a graph.** An owner routing through a
+  fresh intermediary counts as external.
+* **Direction is not purpose.** An external stablecoin transfer is not proof a
+  service was rendered; airdrops, refunds and mistakes are indistinguishable.
+
+Not run: the same analysis on bsc, mainnet and celo. BSC in particular is 4x
+Base and its funnel may not resemble this one at all — celo already differs
+wildly on every other measure.
