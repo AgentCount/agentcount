@@ -16,6 +16,7 @@ use crate::error::ApiResult;
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct RungStatusCount {
     rung: i16,
+    name: String,
     status: String,
     count: i64,
 }
@@ -31,6 +32,12 @@ pub struct StatusCount {
 #[derive(Debug, Serialize)]
 pub struct RungRates {
     pub rung: i16,
+    /// The checker's own name for this rung ('registered', 'resolvable', …),
+    /// published so a UI can label a rung without hard-coding the ladder's
+    /// vocabulary and drifting from it — `attested` was `independent` until
+    /// 2026-07-29, and anything that had typed the old word would still be
+    /// showing it.
+    pub name: String,
     pub counts: Vec<StatusCount>,
 }
 
@@ -64,9 +71,13 @@ pub async fn get(
         return Err(crate::error::ApiError::NotFound);
     }
 
+    // `name` is functionally dependent on `rung` — every row for rung 2 says
+    // 'resolvable' — but Postgres cannot know that, so it is grouped on rather
+    // than aggregated. Grouping keeps it honest: if a run ever DID record two
+    // names for one rung, this surfaces both instead of silently picking one.
     let raw = sqlx::query_as::<_, RungStatusCount>(
-        "SELECT rung, status, count(*) AS count FROM check_results \
-         WHERE run_id = $1 GROUP BY rung, status ORDER BY rung, status",
+        "SELECT rung, name, status, count(*) AS count FROM check_results \
+         WHERE run_id = $1 GROUP BY rung, name, status ORDER BY rung, status",
     )
     .bind(run_id)
     .fetch_all(&state.db)
@@ -84,6 +95,7 @@ pub async fn get(
             }),
             _ => rungs.push(RungRates {
                 rung: row.rung,
+                name: row.name,
                 counts: vec![StatusCount {
                     status: row.status,
                     count: row.count,
