@@ -405,10 +405,21 @@ they are not interchangeable:
   ladder exactly like a `fail` would (everything above it becomes `skipped`),
   but it is recorded distinctly so a reader can tell "the agent failed this"
   from "we failed to find out."
-- **An absent rung** — no row exists for this (run, agent, rung) at all,
-  because that rung has not been implemented yet, or this run did not attempt
-  it. **An absent rung is never a claim that the agent failed it.** The
-  schema enforces this at the storage layer: a row is written only when a
+- **An absent rung** — no row exists for this (run, agent, rung) at all.
+  **P0 FIX 6 (2026-07-29) narrows this to one meaning**: the rung has not
+  been implemented yet (currently rung 6 alone). Before this fix, "this run
+  did not attempt it" was a second, silently overlapping reason an
+  implemented rung could also be absent — rungs 4 and 5 were only
+  *constructed* when a document existed to judge, so an agent whose document
+  never resolved or never parsed got no rung-4/5 row at all, indistinguishable
+  from rung 6, which genuinely is not implemented. That case is `skipped`
+  now, not absent — see `CHANGELOG-METHODOLOGY.md`'s FIX 6 entry for the
+  defect and its measured population effect. The one remaining exception is
+  an agent absent from the run *entirely* (every rung, not just one) because
+  its chain read or database write failed on our side — reported separately
+  by `crates/sweeper` as `unreadable`/`unwritable`, never presented as a
+  per-rung gap. **An absent rung is never a claim that the agent failed it.**
+  The schema enforces this at the storage layer: a row is written only when a
   check actually ran, so there is no default value to accidentally read as a
   verdict (no `COALESCE(x, false)` anywhere in this pipeline). If you do not
   see a rung for an agent, the honest reading is "not yet checked," full
@@ -433,13 +444,22 @@ attempted, plus any agent where the chain read failed on our side (counted
 and reported, never silently dropped — see `crates/sweeper`). **Rung 6
 (`live`) is not implemented** — it is fully specified above, its pass/fail
 conditions and evidence shape are final, but no code executes it, and it
-writes no row for any agent. A run's data therefore has, for every agent,
-rows for rungs 1, 2, 3, 4, 5, and (for nearly everyone) 7, and no row at all
-for rung 6 — meaning exactly what this section says an absent rung means:
-not yet checked, not failed. This document described the full ladder ahead
-of rungs 2–7 shipping; that has since happened for all but rung 6, and this
-paragraph is updated each time the implemented set changes rather than left
-to describe a state that no longer holds.
+writes no row for any agent. Rungs 4 (`conformant`) and 5 (`bound`) are
+**always constructed**, for every swept agent, regardless of whether a
+document ever existed to judge (P0 FIX 6, 2026-07-29) — when there is
+nothing to judge, they come back `skipped`, naming whichever earlier rung
+in the Document track actually blocked them, never absent. A run's data
+therefore has, for every agent, rows for rungs 1, 2, 3, 4, 5, and (for
+nearly everyone) 7, and no row at all for rung 6 — meaning exactly what
+this section says an absent rung means: not yet checked, not failed. This
+document described the full ladder ahead of rungs 2–7 shipping; that has
+since happened for all but rung 6, and this paragraph is updated each time
+the implemented set changes rather than left to describe a state that no
+longer holds. **This guarantee holds for runs swept with checker code that
+includes FIX 6 or later; the archived reference run
+(`1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`, finished 2026-07-28) predates the
+fix and does not have it** — see the FIX 6 changelog entry for exactly which
+rows in that run are affected and why the run is not rewritten to match.
 
 ## 5. How to recompute any result
 

@@ -31,6 +31,15 @@
 //! the output rather than reported as `skipped` — "we did not ask" and "we
 //! could not ask" are different claims and the schema keeps them different.
 //!
+//! **P0 FIX 6 (2026-07-29).** Rungs 4 and 5, unlike rung 7 above, DO belong
+//! to the Document track and DO depend on earlier rungs in it — but that
+//! dependency is `run_ladder`'s to enforce, not this file's. Before this
+//! fix, rungs 4 and 5 were only *constructed* when rung 3 produced a parsed
+//! document, so an agent whose document never parsed got no rung-4/5 row at
+//! all — absent, exactly like the unimplemented rung 6, rather than
+//! `skipped`, which is what a lower-rung failure should produce. See
+//! [`assemble_ladder`] for the fix and the full defect history.
+//!
 //! Two independent concurrency budgets drive the pipeline, on purpose (see
 //! [`rpc_concurrency`] and [`fetch_concurrency`]): the RPC endpoint throttles
 //! hard (a public free-tier provider), while HTTP fetches are limited
@@ -43,7 +52,7 @@ mod store;
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use uuid::Uuid;
 
@@ -156,6 +165,85 @@ fn sweep_resume() -> Result<Option<Uuid>> {
         })?)),
         Err(_) => Ok(None),
     }
+}
+
+/// Build rungs 4 and 5, hand every implemented rung to `run_ladder`, and
+/// return what it decides.
+///
+/// **P0 FIX 6 (2026-07-29).** Before this fix, rungs 4 (`conformant`) and 5
+/// (`bound`) were constructed only when `document` was `Some` — a document
+/// that never parsed meant these two rungs were simply left out of the
+/// vector handed to `run_ladder`, so `run_ladder` never got a row to mark
+/// `Skipped` for them. The agent ended up with NO rung-4/5 row at all:
+/// indistinguishable from rung 6, which genuinely is not implemented. In the
+/// reference run this conflated "we did not ask" (`absent`, correct only for
+/// rung 6) with "we could not ask, because rung 3 failed" (`skipped`, the
+/// honest word) for 25,242 agents. `run_ladder` already knows how to tell
+/// the two apart — see `checks::ladder`'s module doc — it simply never got
+/// the chance, because these two rungs never reached it when there was
+/// nothing to parse.
+///
+/// The fix: construct rung 4 and rung 5 UNCONDITIONALLY and always push them
+/// into the vector `run_ladder` sees. When `document` is `None`,
+/// `serde_json::Value::Null` stands in as the input document — and that
+/// placeholder is guaranteed never to surface in the final result, because
+/// rung 3 (the shared dependency both rungs sit above in the Document track)
+/// is non-`Pass` in EVERY case where `document` is `None`: rung 3
+/// (`checks::parseable`) only ever hands back `Some(document)` on its own
+/// `Pass` path (see `rung3_parseable`'s return type). `run_ladder` therefore
+/// always overwrites whatever `conformant`/`bound` computed from the
+/// placeholder with `Skipped`, naming rung 3 as the blocker, before this
+/// function returns. This is deliberately the ONLY place that decides
+/// `Skipped` — `run_ladder` itself, never precomputed here — so the two
+/// crates can't drift out of agreement about who owns skip-propagation (see
+/// the ladder module doc's opening line).
+///
+/// Rung 6 (`live`) is still absent from the vector: it is not implemented
+/// in this run, so "no row at all" remains the correct — and only —
+/// signal for it. Rung 7 (`attested`) is passed through unchanged: it sits
+/// on its own independent track (depends on rung 1 alone, see
+/// `checks::ladder`), so a rung-2/3/4/5 failure must never touch it — that
+/// is exercised directly below in `tests::a_rung_2_failure_never_touches_attested`.
+#[allow(clippy::too_many_arguments)]
+fn assemble_ladder(
+    rung1: checks::CheckResult,
+    rung2: checks::CheckResult,
+    rung3: checks::CheckResult,
+    document: Option<serde_json::Value>,
+    spec_commit: &str,
+    actual_agent_id: u64,
+    actual_chain_id: u64,
+    actual_registry: String,
+    rung7: Option<checks::CheckResult>,
+    now: DateTime<Utc>,
+) -> Vec<checks::CheckResult> {
+    // See the doc comment above: this placeholder is discarded by
+    // `run_ladder` whenever it matters, because `document.is_none()`
+    // implies rung 3 is non-`Pass`, which is exactly when `run_ladder`
+    // overwrites rung 4 (and, transitively, rung 5) with `Skipped`.
+    let document_for_ladder = document.unwrap_or(serde_json::Value::Null);
+    let rung4 = checks::conformant(
+        &checks::ConformantInput {
+            document: document_for_ladder.clone(),
+        },
+        spec_commit,
+        now,
+    );
+    let rung5 = checks::bound(
+        &checks::BoundInput {
+            document: document_for_ladder,
+            actual_agent_id,
+            actual_chain_id,
+            actual_registry,
+        },
+        now,
+    );
+
+    let mut rungs = vec![rung1, rung2, rung3, rung4, rung5];
+    if let Some(r7) = rung7 {
+        rungs.push(r7);
+    }
+    checks::run_ladder(rungs)
 }
 
 #[tokio::main]
@@ -506,39 +594,10 @@ async fn main() -> Result<()> {
             d
         });
 
-        // Rungs 4 and 5 need a parsed document, and only rung 3 produces one.
-        // When `document` is `None` they are simply not constructed — NOT
-        // constructed-and-failed, and NOT marked `Skipped` here either: that
-        // is `run_ladder`'s job alone (see the module doc). A document that
-        // never parsed cannot be judged missing a field or unbound; it can
-        // only be a question this ladder never got to ask.
-        let rung4 = document.as_ref().map(|doc| {
-            checks::conformant(
-                &checks::ConformantInput {
-                    document: doc.clone(),
-                },
-                spec_commit,
-                now,
-            )
-        });
-        let rung5 = document.as_ref().map(|doc| {
-            checks::bound(
-                &checks::BoundInput {
-                    document: doc.clone(),
-                    // The SAME chain_id/registry rung 1 was judged against —
-                    // one source, so the two rungs can never disagree about
-                    // what "on-chain reality" was for this agent.
-                    actual_agent_id: s.agent_id,
-                    actual_chain_id: chain_id as u64,
-                    actual_registry: registry_addr.clone(),
-                },
-                now,
-            )
-        });
-
         // P0 FIX 4/5: rung 7 (`attested`) is gated on rung 1 ALONE — never on
-        // rungs 2 through 5. `rung4`/`rung5` are used only via `.as_ref()`
-        // above; they still need to go into `rungs` below unmoved.
+        // rungs 2 through 5. `document` (possibly `None`) is passed into
+        // `assemble_ladder` below, which is where rungs 4 and 5 actually get
+        // built — see P0 FIX 6.
         let reaches_attested = rung1.status == checks::CheckStatus::Pass;
 
         // `None` here means one of two different things, and the branches
@@ -589,17 +648,23 @@ async fn main() -> Result<()> {
             ))
         };
 
-        let mut rungs = vec![rung1, rung2, rung3];
-        if let Some(r4) = rung4 {
-            rungs.push(r4);
-        }
-        if let Some(r5) = rung5 {
-            rungs.push(r5);
-        }
-        if let Some(r7) = rung7 {
-            rungs.push(r7);
-        }
-        let results = checks::run_ladder(rungs);
+        // P0 FIX 6: rungs 4 and 5 are ALWAYS constructed here (never
+        // conditioned on `document.is_some()`) and always handed to
+        // `run_ladder` — see `assemble_ladder`'s doc comment for the full
+        // defect history and why the `document.is_none()` placeholder can
+        // never leak into the final result.
+        let results = assemble_ladder(
+            rung1,
+            rung2,
+            rung3,
+            document,
+            spec_commit,
+            s.agent_id,
+            chain_id as u64,
+            registry_addr.clone(),
+            rung7,
+            now,
+        );
 
         // All three writes — snapshot, archive, check results — land in ONE
         // transaction (see `store::Db::write_agent`), retried with bounded
@@ -722,4 +787,168 @@ async fn main() -> Result<()> {
     );
     println!("{run_id}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Fixtures for [`assemble_ladder`] — the P0 FIX 6 deliverable. These
+    //! exercise the exact defect described in its doc comment without a
+    //! database or RPC endpoint: `assemble_ladder` is pure once its inputs
+    //! (already-computed `CheckResult`s and an `Option<Value>` document) are
+    //! in hand.
+
+    use super::*;
+    use serde_json::json;
+
+    const SPEC_COMMIT: &str = "68fc6765761a10fb26f0692df21c8a6f9d12b1be";
+    const ACTUAL_AGENT_ID: u64 = 22;
+    const ACTUAL_CHAIN_ID: u64 = 1;
+    const ACTUAL_REGISTRY: &str = "0x742d35Cc6634C0532925a3b844Bc9e7595f6bEd1";
+
+    fn t() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    }
+
+    fn res(rung: u8, name: &'static str, status: checks::CheckStatus) -> checks::CheckResult {
+        checks::CheckResult {
+            rung,
+            name,
+            status,
+            evidence: json!({}),
+            checked_at: t(),
+        }
+    }
+
+    fn call(
+        rung1: checks::CheckResult,
+        rung2: checks::CheckResult,
+        rung3: checks::CheckResult,
+        document: Option<serde_json::Value>,
+        rung7: Option<checks::CheckResult>,
+    ) -> Vec<checks::CheckResult> {
+        assemble_ladder(
+            rung1,
+            rung2,
+            rung3,
+            document,
+            SPEC_COMMIT,
+            ACTUAL_AGENT_ID,
+            ACTUAL_CHAIN_ID,
+            ACTUAL_REGISTRY.to_string(),
+            rung7,
+            t(),
+        )
+    }
+
+    /// **The FIX 6 deliverable fixture, verbatim.** An agent that fails rung
+    /// 2 (its `tokenURI()` never resolved, so there is no body and therefore
+    /// no parsed document) must come back with rungs 3, 4, AND 5 all present
+    /// and `skipped` — never absent, and never silently dropped the way they
+    /// were before this fix. Rung 7 (`attested`) sits on the independent
+    /// Reputation track and must be completely unaffected.
+    #[test]
+    fn a_rung_2_failure_skips_rungs_3_4_and_5_and_never_touches_attested() {
+        let rung1 = res(1, "registered", checks::CheckStatus::Pass);
+        let rung2 = res(2, "resolvable", checks::CheckStatus::Fail);
+        // What the sweeper actually produces in this situation: rung 3 runs
+        // (it is always constructed — see main()'s loop), finds no body, and
+        // comes back `Error` with no document. This mirrors
+        // `checks::parseable`'s real "no_body" defence-in-depth path.
+        let rung3 = res(3, "parseable", checks::CheckStatus::Error);
+        let rung7 = res(7, "attested", checks::CheckStatus::Pass);
+
+        let out = call(rung1, rung2, rung3, None, Some(rung7));
+
+        // Rung 6 stays completely absent — this fix must never invent a row
+        // for the one rung that genuinely is not implemented.
+        assert!(
+            !out.iter().any(|r| r.rung == 6),
+            "rung 6 must remain absent, not present with any status"
+        );
+
+        for rung in [3u8, 4, 5] {
+            let r = out.iter().find(|r| r.rung == rung).unwrap_or_else(|| {
+                panic!("rung {rung} must be present (skipped), not absent — this is the FIX 6 bug")
+            });
+            assert_eq!(
+                r.status,
+                checks::CheckStatus::Skipped,
+                "rung {rung} must be skipped, not absent, not failed"
+            );
+            assert_eq!(
+                r.evidence["skipped_because_rung"], 2,
+                "rung {rung} must name rung 2 as what blocked it"
+            );
+        }
+
+        let attested = out.iter().find(|r| r.rung == 7).unwrap();
+        assert_eq!(
+            attested.status,
+            checks::CheckStatus::Pass,
+            "attested sits on the independent Reputation track (depends on rung 1 \
+             alone) and must be unaffected by a rung-2 failure in the Document track"
+        );
+        assert!(
+            attested.evidence.get("skipped_because_rung").is_none(),
+            "attested was never skipped, so it must carry no skip evidence"
+        );
+    }
+
+    /// **The second FIX 6 deliverable fixture.** A document that parses and
+    /// passes rung 4's SHOULD-only presence checks but fails rung 4's one
+    /// MUST (a `registrations` entry missing `agentRegistry`) must skip rung
+    /// 5, naming rung 4 as the blocker — proving skip-propagation still
+    /// works within the Document track once rungs 4/5 are unconditionally
+    /// constructed.
+    #[test]
+    fn a_rung_4_failure_skips_rung_5_naming_rung_4_as_the_blocker() {
+        let rung1 = res(1, "registered", checks::CheckStatus::Pass);
+        let rung2 = res(2, "resolvable", checks::CheckStatus::Pass);
+        let rung3 = res(3, "parseable", checks::CheckStatus::Pass);
+        // Missing `agentRegistry` on the one registrations entry — a real
+        // MUST violation, so rung 4 fails for real (not overwritten: rung 3
+        // passed, so rung 4's own dependency is satisfied).
+        let document = json!({ "registrations": [{ "agentId": ACTUAL_AGENT_ID }] });
+
+        let out = call(rung1, rung2, rung3, Some(document), None);
+
+        let rung4 = out.iter().find(|r| r.rung == 4).unwrap();
+        assert_eq!(
+            rung4.status,
+            checks::CheckStatus::Fail,
+            "rung 4's own MUST violation must stand, not be overwritten"
+        );
+
+        let rung5 = out.iter().find(|r| r.rung == 5).unwrap();
+        assert_eq!(rung5.status, checks::CheckStatus::Skipped);
+        assert_eq!(rung5.evidence["skipped_because_rung"], 4);
+
+        assert!(
+            !out.iter().any(|r| r.rung == 6),
+            "rung 6 must remain absent in every case, including this one"
+        );
+    }
+
+    /// A fully-passing Document track leaves rungs 4 and 5 as real
+    /// `pass`/`unclaimed` verdicts, not skipped — the unconditional
+    /// construction in this fix must not turn a healthy agent into one that
+    /// looks blocked.
+    #[test]
+    fn a_fully_passing_document_track_is_not_skipped_anywhere() {
+        let rung1 = res(1, "registered", checks::CheckStatus::Pass);
+        let rung2 = res(2, "resolvable", checks::CheckStatus::Pass);
+        let rung3 = res(3, "parseable", checks::CheckStatus::Pass);
+        let document = json!({
+            "registrations": [
+                { "agentId": ACTUAL_AGENT_ID, "agentRegistry": "eip155:1:0x742d35Cc6634C0532925a3b844Bc9e7595f6bEd1" }
+            ],
+        });
+
+        let out = call(rung1, rung2, rung3, Some(document), None);
+
+        let rung4 = out.iter().find(|r| r.rung == 4).unwrap();
+        assert_eq!(rung4.status, checks::CheckStatus::Pass);
+        let rung5 = out.iter().find(|r| r.rung == 5).unwrap();
+        assert_eq!(rung5.status, checks::CheckStatus::Pass);
+    }
 }

@@ -597,3 +597,158 @@ what makes that pattern visible instead of silently absorbed into `fail`.
 (already existed, unchanged) — plus
 `a_registrations_value_that_is_not_an_array_is_unclaimed_not_panics` for the
 non-array-value edge case (a string, a number, a bare object, a boolean).
+
+---
+
+## 2026-07-29 — FIX 6: `absent` vs `skipped` for rungs 4 and 5
+
+**What changed.** `crates/sweeper/src/main.rs` used to construct rung 4
+(`conformant`) and rung 5 (`bound`) only when rung 3 (`parseable`) had
+actually handed back a parsed document (`document.as_ref().map(...)`, one
+`Option` gate per rung). When there was nothing to parse — the agent's
+`tokenURI()` never resolved, the fetch errored, or the body fetched fine but
+was not valid JSON — rungs 4 and 5 were simply left out of the vector handed
+to `checks::run_ladder`. `run_ladder` never saw a row for them, so it had
+nothing to mark `skipped`; the agent ended up with **no rung-4/5 row at
+all**, identical in shape to rung 6, which genuinely is not implemented.
+`METHODOLOGY.md` §4 defines `absent` as "not yet checked" and `skipped` as
+"a lower rung did not pass, so this question could not be meaningfully
+asked" — the two were being conflated for every agent this happened to.
+
+The fix moves the decision entirely into a new pure function,
+`assemble_ladder` (`crates/sweeper/src/main.rs`): rungs 4 and 5 are now
+**always constructed** — passed a placeholder (`serde_json::Value::Null`)
+document when none exists — and **always** included in the vector handed to
+`checks::run_ladder`. No `Skipped` status is ever computed in the sweeper;
+`run_ladder` (`crates/checks/src/ladder.rs`, untouched by this fix) is the
+only place that decides it, exactly as before. This is safe because
+`document` is `None` if and only if rung 3's own status is non-`Pass` (see
+`rung3_parseable`'s return type — it only ever hands back `Some(document)`
+on its `Pass` path), which means rung 3 is *always* already acting as a
+stopper in `run_ladder`'s dependency graph whenever the placeholder would
+otherwise matter; whatever `conformant`/`bound` compute from
+`Value::Null` is unconditionally overwritten with `Skipped` before
+`assemble_ladder` returns. Rung 6 is unaffected — it is still never
+constructed, so "no row" remains the correct and only signal for it.
+
+No evidence shape changed. `skipped` rows for rungs 4 and 5 carry the same
+`skipped_because_rung`/`skipped_because_status` fields `run_ladder` has
+produced since P0 FIX 4/5 (crediting the *original* stopper in a track, not
+just the immediate parent) — this fix only makes those rows exist for the
+agents that were missing them. No `SCHEMA_VERSION` or `CHECKER_VERSION`
+bump: the `check_results` table's shape, the set of valid `status` values,
+and the evidence contract are all unchanged; only *coverage* of the
+existing `skipped` status changes.
+
+**Why.** Identified internally (not from the external review) as part of
+auditing the reference run's row counts before publication: rung 3 shows
+`skipped` for every one of its dependency's non-`pass` agents, but rungs 4
+and 5 show `skipped` for only a few hundred of the same population — a
+mismatch that is only explainable by rungs 4/5 not reaching `run_ladder` at
+all for most of them. Distinguishing "we did not ask" from "we could not
+ask" is close to the whole premise of this project (see `METHODOLOGY.md`
+§4); silently blurring an implemented-but-blocked rung into the same shape
+as an unimplemented one is exactly the kind of compression this project
+exists to refuse, and it is the first thing an external reviewer would
+flag next.
+
+**Verified against `checks::ladder`'s existing tracks before changing
+anything** (ground rule: "read the current `run_ladder` ... before changing
+anything, make sure your change preserves that tracks are independent"):
+rungs 1→2→3→4→5 are the Document track; rung 7 (`attested`) depends on rung
+1 alone, on its own Reputation track. `assemble_ladder` passes `rung7`
+through unchanged and unconditionally alongside rungs 1–5; skip-propagation
+inside `run_ladder` only ever follows `depends_on`, which has no edge from
+the Document track into the Reputation track. Confirmed by a new fixture
+below.
+
+**Fixtures** (`crates/sweeper/src/main.rs::tests`, exercising the new
+`assemble_ladder` function directly — pure once its inputs are in hand, no
+database or RPC needed):
+- `a_rung_2_failure_skips_rungs_3_4_and_5_and_never_touches_attested` — the
+  deliverable fixture verbatim: rung 2 fails → rungs 3, 4, 5 all present and
+  `skipped`, each carrying `skipped_because_rung: 2`; rung 7 (`attested`)
+  stays `pass` and carries no skip evidence at all; rung 6 stays absent.
+- `a_rung_4_failure_skips_rung_5_naming_rung_4_as_the_blocker` — a document
+  that parses and clears rung 4's SHOULD checks but violates its one MUST
+  (a `registrations` entry missing `agentRegistry`) fails rung 4 for real
+  (not overwritten — rung 3 passed, so rung 4's own dependency is satisfied)
+  and skips rung 5 with `skipped_because_rung: 4`; rung 6 stays absent.
+- `a_fully_passing_document_track_is_not_skipped_anywhere` — a fully-passing
+  chain leaves rungs 4 and 5 as real `pass` verdicts, confirming the
+  unconditional construction does not turn a healthy agent into one that
+  looks blocked.
+
+`crates/checks` was re-read, not modified: `run_ladder` and its own test
+suite (`crates/checks/src/ladder.rs`) already correctly implement
+track-scoped skip-propagation (added by P0 FIX 4/5) and are unchanged by
+this fix, per the work order's instruction that `run_ladder` alone owns
+this logic. Purity check unaffected: `grep -RniE
+'reqwest|sqlx|alloy|tokio|Utc::now' crates/checks/` is still empty.
+
+**Measured effect — swept the stored reference run
+(`1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a`, 60,049 agents) to confirm the
+*shape* the fixed sweeper would produce, not re-judged and not re-swept**
+(re-judging rung 4/5 verdicts themselves is unaffected by this fix — it
+only changes whether an already-computed verdict, or a skip, gets a row at
+all):
+
+> **29,985 agents currently have NO rung-4 row and NO rung-5 row at all** —
+> the full defect population, computed directly (`NOT EXISTS` against
+> `check_results` per agent), not estimated. Breaking this down by *what
+> actually blocked them* (the `blocked_by`/`skipped_because_rung` value each
+> would carry once fixed):
+>
+> | Original stopper | Rung-2 status | Agents |
+> |---|---|---:|
+> | Rung 2 | `fail` | 25,242 |
+> | Rung 2 | `error` (our fault, not the agent's) | 2,686 |
+> | Rung 3 (rung 2 itself passed) | `fail`/`error` at rung 3 | 2,057 |
+> | **Total** | | **29,985** |
+>
+> The work order's own headline figure, **25,242 agents**, is exactly the
+> first row above — verified, not assumed: of the 25,495 agents whose rung 2
+> is `fail`, 253 already have a (correctly `skipped`) rung-4 row today, by
+> an accident of the old gating (their rung 3 body happened to still parse
+> as JSON even though rung 2 itself failed, so `document.as_ref().map(...)`
+> still constructed rung 4/5 for them, which `run_ladder` then correctly
+> skipped from rung 2's own failure); 25,495 − 253 = 25,242 do not.
+>
+> **This undercounts the true defect population by 4,743 agents** (2,686 +
+> 2,057) — reported here because ground rule 1 requires disagreements
+> surfaced, not silently resolved. The work order's framing ("for agents
+> failing rung 2") describes only the largest of three causes; the actual
+> code defect is "any agent whose rung 3 does not hand back a document,"
+> which also includes 2,686 agents where rung 2 itself **errored** (our
+> fault, not a claim about the agent — these were already being under-
+> counted as an omission, not a `fail`, so no direction of the census's
+> bias flips, but the absent-row bug affected them exactly as much as the
+> `fail` cases) and 2,057 agents where rung 2 **passed** but rung 3 itself
+> failed or errored (a body that fetched but was not valid JSON, or was
+> truncated) — a case the work order's "failing rung 2" framing does not
+> mention at all, since rung 2 is not what blocked these.
+>
+> **Shape after the fix** (same archived facts, re-classified — not a
+> rerun): rung 4 goes from 4,175 `pass` / 25,636 `fail` / 253 `skipped` /
+> 29,985 absent to 4,175 `pass` / 25,636 `fail` / **30,238 `skipped`** / 0
+> absent (253 + 29,985). Rung 5 goes from 1,437 `pass` / 2,738 `fail` /
+> 25,889 `skipped` / 29,985 absent to 1,437 `pass` / 2,738 `fail` /
+> **55,874 `skipped`** / 0 absent (25,889 + 29,985). Both totals reconcile
+> to 60,049, the full swept population, for the first time — previously
+> only rung 1 (60,049), rung 2 (60,049), and rung 3 (60,049, all present
+> whether `pass`, `fail`, `error`, or `skipped`) had every agent accounted
+> for at every rung.
+>
+> **The archived run is not rewritten.** Runs are immutable
+> (`METHODOLOGY.md` §5); `1c87c4f4-c4c4-45ee-b03a-d8517f4d5d8a` keeps its
+> old shape — 29,985 absent rung-4/5 rows and all — as the honest record of
+> what the pre-FIX-6 checker actually produced, including the part where it
+> was wrong. The corrected shape above takes effect starting with the next
+> sweep run only.
+
+**Fixtures verify no cross-track leakage.** The fixture
+`a_rung_2_failure_skips_rungs_3_4_and_5_and_never_touches_attested` asserts
+`attested` stays `pass` with no skip evidence when rung 2 fails — confirming
+the FIX 4/5 track boundary (Document vs. Reputation) survives this change,
+per the work order's explicit warning that a rung-2 failure must never mark
+`attested` skipped.
