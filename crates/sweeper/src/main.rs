@@ -515,7 +515,65 @@ async fn main() -> Result<()> {
                 }
             }
         })
-        .buffer_unordered(fetch_concurrency());
+        .buffer_unordered(fetch_concurrency())
+        // Stage 3: the Reputation Registry read for rung 7.
+        //
+        // This used to happen in the consumer loop below, one agent at a time,
+        // and it was the ceiling on the entire sweep. The two stages above are
+        // concurrent, but the loop that drains them is not — so a serial
+        // network round trip per agent capped throughput at 1/latency
+        // (measured: ~3.2 agents/sec on Celo) no matter what `RPC_CONCURRENCY`
+        // or `PROBE_CONCURRENCY` were set to. Raising either changed nothing,
+        // because neither governed the serial tail.
+        //
+        // Moving only the READ here leaves every verdict where it was: the
+        // loop still builds rung 7 from `checks::attested`, with the same
+        // `now` it uses for every other rung, so no evidence and no timestamp
+        // changes shape. This stage fetches; it does not judge.
+        //
+        // The rung-1 gate is preserved rather than dropped — P0 FIX 4/5 spends
+        // no RPC call on an agent whose rung 1 failed, and that frugality is
+        // deliberate. It is preserved by CALLING `checks::registered`, never by
+        // re-deriving its rule here: a second copy of "what makes rung 1 pass"
+        // is exactly the drift this project refuses. The duplicate call is pure
+        // and does no I/O, and its status cannot differ from the loop's —
+        // `registered` decides on the owner address alone, and takes `now` only
+        // to stamp `checked_at`.
+        .map(|(id, result)| {
+            let reputation = &reputation;
+            let registry_addr = &registry_addr;
+            async move {
+                match result {
+                    Ok((s, outcome)) => {
+                        let gated_in = checks::registered(
+                            &checks::RegisteredInput {
+                                chain_id: chain_id as u64,
+                                registry: registry_addr.clone(),
+                                token_id: s.token_id.to_string(),
+                                owner: s.owner.clone(),
+                                block_number: s.block_number,
+                                tx_hash: None,
+                            },
+                            Utc::now(),
+                        )
+                        .status
+                            == checks::CheckStatus::Pass;
+
+                        // `None` means no read was attempted — either rung 1
+                        // did not pass, or this chain has no Reputation
+                        // Registry. The loop tells those two apart itself and
+                        // never needs this to say which.
+                        let feedback = match (gated_in, reputation.as_ref()) {
+                            (true, Some(rep)) => Some(rep.feedback(s.agent_id, pinned).await),
+                            _ => None,
+                        };
+                        (id, Ok((s, outcome, feedback)))
+                    }
+                    Err(e) => (id, Err(e)),
+                }
+            }
+        })
+        .buffer_unordered(rpc_concurrency());
 
     // Session-local, but see the `planned` comment above: because `ids` here
     // is exactly `planned` minus `already_swept`, every id in it is attempted
@@ -537,7 +595,7 @@ async fn main() -> Result<()> {
     let mut unwritable = 0usize;
 
     while let Some((id, result)) = stream.next().await {
-        let (s, outcome) = match result {
+        let (s, outcome, feedback) = match result {
             Ok(pair) => pair,
             Err(e) => {
                 // An RPC failure is OUR problem, not the agent's: leave the
@@ -653,9 +711,12 @@ async fn main() -> Result<()> {
         //     (`continue`) rather than recording anything false about it.
         let rung7 = if !reaches_attested {
             None
-        } else if let Some(rep) = &reputation {
-            match rep.feedback(s.agent_id, pinned).await {
-                Ok(fr) => Some(checks::attested(
+        } else if reputation.is_some() {
+            // Already read, concurrently, by stage 3 above — the verdict is
+            // still built here, from `checks::attested`, with this agent's
+            // `now`.
+            match feedback {
+                Some(Ok(fr)) => Some(checks::attested(
                     &checks::AttestedInput {
                         clients: fr.clients,
                         feedback_count: fr.feedback_count,
@@ -663,10 +724,26 @@ async fn main() -> Result<()> {
                     },
                     now,
                 )),
-                Err(e) => {
+                Some(Err(e)) => {
                     tracing::warn!(
                         "agent {}: reputation feedback read failed: {e:#} — leaving this \
                          agent out of the run rather than recording anything false about it",
+                        s.agent_id
+                    );
+                    unreadable += 1;
+                    continue;
+                }
+                // Unreachable: stage 3 gates on the same `checks::registered`
+                // call this branch's `reaches_attested` came from, and that
+                // status depends on the owner address alone. Handled as a
+                // failed read rather than asserted away — if the two ever did
+                // disagree, leaving the agent out is the honest outcome, and
+                // inventing a rung-7 status for it is not.
+                None => {
+                    tracing::error!(
+                        "agent {}: rung 1 passed but no reputation read was attempted — \
+                         the stage gate and the loop gate disagreed, which should be \
+                         impossible; leaving this agent out of the run",
                         s.agent_id
                     );
                     unreadable += 1;
