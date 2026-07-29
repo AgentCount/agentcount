@@ -52,6 +52,21 @@ pub struct ListParams {
     pub chain: Option<String>,
     pub rung: Option<i16>,
     pub status: Option<String>,
+    /// Comma-separated `rung:status` pairs, ANDed: `facet=2:pass,5:pass,7:pass`
+    /// selects agents that pass rungs 2, 5 AND 7 — the query no other tool in
+    /// the ecosystem can answer, and the reason the directory exists.
+    ///
+    /// Deliberately a NEW parameter rather than making `rung`/`status`
+    /// repeatable: those two stay exactly as they were, so every existing link
+    /// and the web repo's `check-api.ts` keep working unchanged. Comma-
+    /// separated rather than a repeated key because a repeated key needs
+    /// `axum_extra`'s `Query` — a dependency for a wire format that is no more
+    /// linkable than this one.
+    pub facet: Option<String>,
+    /// Free-text search over the document's `name` and `description`, or an
+    /// owner-address prefix. See `search_sql` below for why the owner is
+    /// matched by prefix rather than folded into the full-text vector.
+    pub q: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -60,6 +75,33 @@ pub struct ListParams {
 
 fn default_limit() -> i64 {
     100
+}
+
+/// A rung/status pair from `facet=`. Validated against the same
+/// `validate_rung`/`validate_status` the scalar form uses, so an invalid facet
+/// is a clean 400 naming the offending value rather than a query that silently
+/// matches nothing.
+fn parse_facets(raw: &str) -> ApiResult<Vec<(i16, String)>> {
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (rung_str, status) = part.split_once(':').ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "invalid facet '{part}' — expected the form <rung>:<status>, e.g. 2:pass"
+            ))
+        })?;
+        let rung: i16 = rung_str.trim().parse().map_err(|_| {
+            ApiError::BadRequest(format!("invalid facet rung '{rung_str}' — must be 1 to 7"))
+        })?;
+        validate_rung(rung)?;
+        let status = status.trim().to_string();
+        validate_status(&status)?;
+        out.push((rung, status));
+    }
+    Ok(out)
 }
 
 /// One rung's bare status for an agent in the directory — no evidence (that
@@ -81,6 +123,11 @@ pub struct AgentListItem {
     pub agent_uri: String,
     pub block_number: i64,
     pub observed_at: DateTime<Utc>,
+    /// The `name` the document declared, projected into `agent_documents` by
+    /// migration 0012. `None` when the document had no usable name or never
+    /// parsed — never an empty string, and never a synthesised "Agent #N",
+    /// which is the frontend's fallback to render, not a fact to store.
+    pub name: Option<String>,
     pub rungs: Vec<RungStatus>,
 }
 
@@ -92,6 +139,7 @@ struct SnapshotIdRow {
     agent_uri: String,
     block_number: i64,
     observed_at: DateTime<Utc>,
+    name: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -117,10 +165,11 @@ pub struct Page<T> {
     pub page: PageMeta,
 }
 
-/// `GET /api/agents?run=&chain=&rung=&status=&limit=&offset=` — the
+/// `GET /api/agents?run=&chain=&rung=&status=&facet=&q=&limit=&offset=` — the
 /// directory, one page at a time. `rung`+`status` filter to "agents failing
-/// rung 4"; `run` defaults to the latest completed run (never an in-flight
-/// one, whose counts are still changing).
+/// rung 4"; `facet=2:pass,5:pass` ANDs several such conditions; `q` searches
+/// names, descriptions and owner prefixes. `run` defaults to the latest
+/// completed run (never an in-flight one, whose counts are still changing).
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
@@ -142,10 +191,42 @@ pub async fn list(
     let limit = params.limit.clamp(1, 500);
     let offset = params.offset.max(0);
 
-    // The rung/status filter is an EXISTS against `check_results` — it
-    // selects WHICH agents appear, it never folds their rows into a count
-    // per agent. `idx_check_results_lookup` (run_id, chain, agent_id) backs
-    // the correlated subquery.
+    let facets = match &params.facet {
+        Some(raw) => parse_facets(raw)?,
+        None => Vec::new(),
+    };
+    // Bound as two parallel arrays so the parameter COUNT is fixed however
+    // many facets arrive — the alternative, splicing one `EXISTS` per facet
+    // into the SQL string, would make the placeholder numbering depend on user
+    // input, which is exactly where injection bugs live.
+    let (facet_rungs, facet_statuses): (Vec<i16>, Vec<String>) = facets.into_iter().unzip();
+    let facet_rungs = (!facet_rungs.is_empty()).then_some(facet_rungs);
+    let facet_statuses = (!facet_statuses.is_empty()).then_some(facet_statuses);
+
+    let q = params
+        .q
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // `agent_documents` is LEFT JOINed rather than subqueried because the name
+    // is needed in the response anyway — a rung-2 failure has no document and
+    // so no row here, which is precisely a NULL name, not a missing agent.
+    let from_sql = "FROM agent_snapshots s \
+         LEFT JOIN agent_documents d \
+           ON d.run_id = s.run_id AND d.chain = s.chain AND d.agent_id = s.agent_id";
+
+    // Three independent filters, ANDed:
+    //
+    // 1. The original scalar rung/status pair ($3/$4), untouched.
+    // 2. The facet array ($5/$6): every (rung, status) pair must have a
+    //    matching `check_results` row. Counting matched facets and requiring
+    //    the count to equal `cardinality` is what makes this AND rather than
+    //    OR. `idx_check_results_lookup` backs the correlated subquery.
+    // 3. Free text ($7).
+    //
+    // None of these folds a per-agent count into a verdict — they select WHICH
+    // agents appear, never how well any one of them did.
     let filter_sql = "WHERE s.run_id = $1 \
          AND ($2::text IS NULL OR s.chain = $2) \
          AND ( \
@@ -156,30 +237,61 @@ pub async fn list(
                AND ($3::smallint IS NULL OR c.rung = $3) \
                AND ($4::text IS NULL OR c.status = $4) \
            ) \
+         ) \
+         AND ( \
+           $5::smallint[] IS NULL \
+           OR ( \
+             SELECT count(*) FROM unnest($5::smallint[], $6::text[]) AS f(rung, status) \
+             WHERE EXISTS ( \
+               SELECT 1 FROM check_results c \
+               WHERE c.run_id = s.run_id AND c.chain = s.chain AND c.agent_id = s.agent_id \
+                 AND c.rung = f.rung AND c.status = f.status \
+             ) \
+           ) = cardinality($5::smallint[]) \
+         ) \
+         AND ( \
+           $7::text IS NULL \
+           OR d.search @@ plainto_tsquery('simple', $7) \
+           OR d.name % $7 \
+           OR s.owner LIKE lower($7) || '%' \
          )";
 
+    // Relevance first when searching, and only then — an unsearched directory
+    // stays in the stable (chain, agent_id) order that makes pagination
+    // reproducible. `similarity` is negated because ASC is the only direction
+    // that keeps the NULL-search branch's constant 0 sorting consistently.
+    let order_sql = "ORDER BY \
+         CASE WHEN $7::text IS NULL THEN 0::real \
+              ELSE -similarity(coalesce(d.name, ''), $7) END, \
+         s.chain, s.agent_id";
+
     let items_sql = format!(
-        "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, s.observed_at \
-         FROM agent_snapshots s {filter_sql} \
-         ORDER BY s.chain, s.agent_id \
-         LIMIT $5 OFFSET $6"
+        "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, s.observed_at, d.name \
+         {from_sql} {filter_sql} {order_sql} \
+         LIMIT $8 OFFSET $9"
     );
     let rows: Vec<SnapshotIdRow> = sqlx::query_as(&items_sql)
         .bind(run_id)
         .bind(&chain)
         .bind(params.rung)
         .bind(&params.status)
+        .bind(&facet_rungs)
+        .bind(&facet_statuses)
+        .bind(&q)
         .bind(limit)
         .bind(offset)
         .fetch_all(&state.db)
         .await?;
 
-    let total_sql = format!("SELECT count(*) FROM agent_snapshots s {filter_sql}");
+    let total_sql = format!("SELECT count(*) {from_sql} {filter_sql}");
     let total: i64 = sqlx::query_scalar(&total_sql)
         .bind(run_id)
         .bind(&chain)
         .bind(params.rung)
         .bind(&params.status)
+        .bind(&facet_rungs)
+        .bind(&facet_statuses)
+        .bind(&q)
         .fetch_one(&state.db)
         .await?;
 
@@ -221,6 +333,7 @@ pub async fn list(
                 agent_uri: r.agent_uri,
                 block_number: r.block_number,
                 observed_at: r.observed_at,
+                name: r.name,
                 rungs,
             }
         })
@@ -282,6 +395,12 @@ pub struct AgentDetail {
     pub run_id: Uuid,
     pub chain: String,
     pub agent_id: i64,
+    /// From `agent_documents` (migration 0012) — what the document called
+    /// itself. `None` when it declared no usable name or never parsed. This is
+    /// identity for display, not evidence: nothing about a rung's status
+    /// depends on it.
+    pub name: Option<String>,
+    pub description: Option<String>,
     pub snapshot: SnapshotDetail,
     /// Every rung this run actually asked, in rung order. A rung with no row
     /// is simply absent — see the module doc on `check_results` (migration
@@ -329,6 +448,21 @@ pub async fn get_one(
     .fetch_all(&state.db)
     .await?;
 
+    // A LEFT-JOIN-shaped lookup done separately: an agent whose document never
+    // resolved has no `agent_documents` row at all, and `fetch_optional`
+    // renders that as two `None`s rather than a 404 — the agent exists, its
+    // document did not.
+    let document: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT name, description FROM agent_documents \
+         WHERE run_id = $1 AND chain = $2 AND agent_id = $3",
+    )
+    .bind(run_id)
+    .bind(&chain)
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (name, description) = document.unwrap_or((None, None));
+
     let archive = sqlx::query_as::<_, ArchiveSummary>(
         "SELECT scheme, request_url, final_url, http_status, content_type, \
                 body_bytes, body_sha256, truncated, error, elapsed_ms \
@@ -344,6 +478,8 @@ pub async fn get_one(
         run_id,
         chain,
         agent_id,
+        name,
+        description,
         snapshot,
         rungs,
         archive,

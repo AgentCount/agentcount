@@ -49,6 +49,31 @@ pub struct Methodology {
     /// Purely informational; absence never appears as anything but a
     /// `may_gaps` entry. See `spec/REQUIRED_FIELDS.md` §MAY.
     pub rung4_may_fields: Vec<String>,
+    /// The MUST bucket counted as REQUIREMENTS rather than as fields — the
+    /// number a reader means by "how many things must a registration file
+    /// do?".
+    ///
+    /// `rung4_must_fields` above has two entries (`agentId` and
+    /// `agentRegistry`) but they are one rule, applied to one array, under one
+    /// condition. Publishing "2" invites the reading "two unconditional
+    /// obligations", which is exactly backwards: there is **one** requirement
+    /// and it is conditional, so a document with no `registrations` array has
+    /// nothing it MUST do at all. Serving the count from here keeps that
+    /// distinction out of the frontend, which must never be in the business of
+    /// deciding what the spec demands.
+    pub rung4_must_requirements: Vec<MustRequirement>,
+}
+
+/// One MUST rule from the spec, with the fields it covers and whether it
+/// applies unconditionally.
+#[derive(Debug, Serialize)]
+pub struct MustRequirement {
+    pub requirement: &'static str,
+    pub fields: Vec<String>,
+    /// `true` for every requirement in the current spec pin — see P0 FIX 3 and
+    /// `spec/REQUIRED_FIELDS.md` §MUST. If this ever becomes `false` for some
+    /// rule, the homepage's framing changes with it, from data.
+    pub conditional: bool,
 }
 
 /// `GET /api/methodology` — no database access; these are compile-time facts
@@ -70,6 +95,18 @@ pub async fn get() -> ApiResult<Json<Methodology>> {
 
     let rung4_may_fields: Vec<String> = checks::MAY_FIELDS.iter().map(|f| f.to_string()).collect();
 
+    // One rule, covering every field in `REGISTRATION_ENTRY_FIELDS`, applied
+    // only when `registrations` is present — hence one element, not one per
+    // field.
+    let rung4_must_requirements = vec![MustRequirement {
+        requirement: "every entry in `registrations` must carry both `agentId` and `agentRegistry`",
+        fields: checks::REGISTRATION_ENTRY_FIELDS
+            .iter()
+            .map(|f| format!("registrations[].{f}"))
+            .collect(),
+        conditional: true,
+    }];
+
     Ok(Json(Methodology {
         spec_commit: checks::SPEC_COMMIT,
         checker_version: checks::CHECKER_VERSION,
@@ -77,5 +114,6 @@ pub async fn get() -> ApiResult<Json<Methodology>> {
         rung4_must_fields,
         rung4_should_fields,
         rung4_may_fields,
+        rung4_must_requirements,
     }))
 }

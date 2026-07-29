@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         // latest completed one).
         .route("/api/runs", get(routes::runs::list))
         .route("/api/runs/{id}/rates", get(routes::rates::get))
+        .route("/api/runs/{id}/findings", get(routes::findings::get))
         .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
         .route("/api/methodology", get(routes::methodology::get))
