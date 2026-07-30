@@ -47,3 +47,50 @@ platform's batch (`celo.md`), not commerce.
 **What would falsify these:** BSC showing a payment funnel proportional to its
 population (i.e. ~4× Base's paid-agent count), or Celo's paid-agent share
 tracking its attestation share.
+
+---
+
+## 1. A method that was tried and rejected — `agentWallet` cannot be read from events
+
+The first attempt built the target address set from **events**, to avoid
+354,858 `getAgentWallet` calls: the spec says `agentWallet` "is initially set
+to the owner's address", so only *changes* need finding, and changes emit
+`MetadataSet(uint256 indexed agentId, string indexed indexedMetadataKey, ...)`
+with `topics[2] == keccak("agentWallet")`.
+
+That scan is cheap and complete — 60,480 decoded events on Base alone — and it
+produced **19,570 Base agents whose last-set `agentWallet` differs from their
+owner**, against the 347 this project had previously measured by calling the
+getter. A 56× disagreement.
+
+**The events are right and the inference from them is wrong.** The spec, same
+section: *"When the agent is transferred, `agentWallet` is automatically
+cleared … and must be re-verified by the new owner."* **Clearing emits no
+`MetadataSet`**, so an event-derived "last value" survives a clearing that
+actually happened on-chain.
+
+Checked against the live getter at the pinned block, on an evenly-spaced sample
+of 99 of those 19,570 agents:
+
+| live `getAgentWallet` at block 49,262,617 | agents |
+|---|---:|
+| **zero — cleared by a transfer** | **98** |
+| equals the event value, and differs from `ownerOf` | 1 |
+
+**~99% of the event-derived set is stale.** Scaled, ~200 of the 19,570 survive,
+consistent with the previously measured **347**. The prior figure stands; this
+method is rejected.
+
+> **A first sample of 12 said the opposite.** It was the first twelve agents by
+> id — ids 0 to 196, all minted in the registry's first hours and never
+> transferred — and 11 of 12 matched the live getter. **A sample ordered by the
+> variable that drives the effect is not a sample.** The evenly-spaced draw
+> reversed the conclusion completely, and this note exists because the biased
+> version was believed for several minutes.
+
+**Consequence for what follows.** Basis A (the verified on-chain `agentWallet`)
+is used only where confirmed against the live getter. Basis B (the declared
+`services[].agentWallet`) is document-derived and exact, and is what the
+per-chain funnels below are attributed through. Address *scanning* used the
+wider set — scanning extra addresses costs calls, not correctness — but no
+transfer is attributed to an agent through a stale mapping.
