@@ -115,6 +115,28 @@ of 10¹². All values below are **US dollars**.
 Out of scope, so every figure is a **lower bound**: native gas tokens, every
 other ERC-20, every other chain, all off-chain settlement.
 
+### A fourth correction, caught in this round: burn addresses are not payees
+
+**Mainnet agent 28283 declares `0x0000000000000000000000000000000000000000` as
+its `agentWallet`.**
+
+The declared convention is unverified by construction — nothing in it stops an
+agent naming any address at all — so the scan did exactly what it was told and
+collected **every USDC and USDT burn on Ethereum mainnet** as an incoming
+payment to that agent: **313,255 of mainnet's 314,735 transfers, 99.5%.**
+
+A transfer *to* the zero address is a burn. It is the opposite of revenue.
+
+**Fix:** the zero address and `0x…dead` are excluded from the target set and
+from the funnel. Checked across the other chains — **Base and BSC have no such
+row**, so no figure already reported changes.
+
+This is the same mistake as PAY-1/2/3 in a fourth costume: **an address was
+treated as an identity.** It is also a reminder of what the declared basis is
+worth. A `services[]` entry named `agentWallet` is a string in a document
+anybody can write; it carries no proof of control, and one of them names an
+address that cannot hold anything.
+
 ---
 
 ## 3. Result — BNB Chain
@@ -161,3 +183,163 @@ is attributed through the declared map only, because BSC's verified-wallet set
 has not been confirmed against the live getter (§1). If anything this
 *understates* BSC, which makes the prediction's confirmation stronger, not
 weaker.
+
+---
+
+## 4. Base, re-measured — and it reproduces the corrected findings
+
+Base was re-run through this pipeline from scratch, on the **declared basis
+only**, specifically so the BSC comparison is like-for-like. It is also the
+pipeline's own validation: Base's corrected numbers were established
+independently, by different code, in an earlier session.
+
+| quantity | earlier, 846-address basis | **this run, 825 declared** |
+|---|---:|---:|
+| agents with an external post-mint transfer | 190 | **181** |
+| agents with an x402 settlement | 36 | **32** |
+| share of post-mint value from contracts | 94% | **93.7%** |
+
+Both counts land just below the earlier figures, which is the right direction:
+this basis is a strict subset of that one. **93.7% against 94% is an
+independent reproduction** of the finding that killed the "$8.8M earned" claim.
+
+Base's own scan, in full:
+
+| | value |
+|---|---:|
+| target addresses scanned | 1,129 |
+| incoming stablecoin transfers | 54,788 |
+| …post-mint | 48,291 |
+| …pre-mint (excluded) | 6,497 |
+| **pre-mint share of VALUE** | **82.5%** ($5,508,441 of $6,675,025) |
+| external post-mint value | $1,164,083 |
+| …from contracts | **93.7%** ($1,092,522) |
+| …from EOAs | $74,063 |
+| distinct senders | 2,446, of which **1,393 are contracts** |
+
+**The pre-mint correction is the single biggest one on Base: 82.5% of all value
+arriving at agent-declared addresses arrived before the agent existed.** By
+transfer count it is only 11.9% — a small number of very large early transfers.
+Counting them is exactly how the retracted $8.8M was produced.
+
+### x402 is real on Base, and it is micropayments
+
+| | value |
+|---|---:|
+| x402 settlements (post-mint) | 8,904 |
+| addresses receiving one | 44 |
+| agents (declared basis) | **32** |
+| total value | **$9,489** |
+| **mean settlement** | **$1.07** |
+
+Two facts that belong together: Base's stablecoins carried **6,875,861**
+`AuthorizationUsed` transactions in the blocks scanned, and **8,904** of them
+reached an agent-declared address. **x402 is a busy protocol that ERC-8004
+agents are barely part of.**
+
+And where agents do use it, the payments are about a dollar. $9,489 across
+8,904 settlements is not a revenue stream; it is a metering mechanism working
+as designed. Any framing of x402 volume as "agent earnings" should carry the
+mean.
+
+---
+
+## 5. Ethereum mainnet
+
+| | value |
+|---|---:|
+| agents in the run | 40,806 |
+| target addresses scanned | 415 |
+| incoming stablecoin transfers | 1,480 |
+| …post-mint | 1,235 |
+| …pre-mint (excluded) | 245 |
+| **agents with an external post-mint transfer** | **31** |
+| …of which from an EOA | 22 |
+| **agents with an x402 settlement** | **0** |
+| external post-mint value | $203,121 |
+| share of post-mint value from contracts | 67.8% |
+
+**Mainnet's x402 result is the sharpest version of the Base finding.** Its
+stablecoins carried **26,260** `AuthorizationUsed` transactions in the blocks
+scanned — the protocol is in use on Ethereum — and **not one of them reached an
+agent-declared address.**
+
+So on mainnet and BSC alike, agents are absent from x402 for different reasons:
+on BSC the protocol is not used at all, on mainnet it is used and agents are
+not part of it.
+
+---
+
+## 6. Celo — the secondary prediction, confirmed harder than expected
+
+Celo has **8,576 target addresses, more than any other chain** — almost every
+CeloNova agent declares its own wallet. They are almost all empty.
+
+| | value |
+|---|---:|
+| agents in the run | 9,747 |
+| target addresses scanned | **8,576** |
+| incoming stablecoin transfers | 1,001 |
+| …post-mint | 853 |
+| **agents with an external post-mint transfer** | **18** |
+| …of which from an EOA | 15 |
+| agents with an x402 settlement | 2 |
+| external post-mint value | **$2,813** |
+
+**Celo attests at 79.5% and pays at 0.185% — a ratio of 430 to 1.** The chain
+that looks healthiest on every conformance measure has the second-emptiest
+payment funnel, and $2,813 of external value across 9,747 agents.
+
+This is the sharpest available demonstration that **attestation and payment are
+decoupled**. Celo's attestation rate is three addresses writing feedback for one
+platform's batch (`celo.md`); it was never a measure of commerce, and the
+payment data shows what was actually underneath it.
+
+Celo's 84 x402 settlements total **$0.94** — a mean of **$0.011**, about a cent.
+
+---
+
+## 7. All four chains
+
+| chain | agents | attested | **paid** | paid rate | from EOA | **x402** | external value | from contracts |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| base | 60,097 | 49.2% | **181** | 0.301% | 70 | **32** | $1,164,083 | 93.9% |
+| bsc | 244,208 | 1.8% | **128** | 0.052% | 74 | **0** | $1,639,492 | 86.5% |
+| mainnet | 40,806 | 4.1% | **31** | 0.076% | 22 | **0** | $203,121 | 68.1% |
+| celo | 9,747 | 79.5% | **18** | 0.185% | 15 | **2** | $2,813 | 50.8% |
+| **all four** | **354,858** | **12.2%** | **358** | **0.101%** | 181 | **34** | **$3,009,509** | — |
+
+### What survives
+
+1. **Payment is three orders of magnitude rarer than registration.** 358 agents
+   of 354,858 — **1 in 1,000** — have ever received an external post-mint
+   stablecoin transfer in scope.
+2. **34 agents in the entire four-chain population have ever received an x402
+   settlement.** That is **0.0096%**, about 1 in 10,000, and 32 of the 34 are
+   on Base.
+3. **The thin-BSC prediction holds.** 4.1× Base's agents, fewer paid ones, a
+   rate six times lower, and zero x402.
+4. **Attestation does not predict payment.** Celo attests 430× more often than
+   it is paid; BSC attests at 1.8% and pays at 0.052%. The two measures are
+   independent, and no report should let one stand in for the other.
+5. **Most value is not revenue.** Contract-sourced flow dominates on every
+   chain (50.8%–93.9%), and on Base it is provably Morpho vault yield.
+
+### What does not survive contact with the data
+
+* **"The agent economy."** At 1 in 1,000 paid and 1 in 10,000 settling through
+  the ecosystem's own payment protocol, the measured economy is a few hundred
+  agents across four chains.
+* **Value totals as revenue.** $3,009,509 is the external post-mint inflow to
+  agent-declared addresses. It is **not earnings**: most of it is contract flow,
+  and the biggest single component was traced to DeFi vaults returning an
+  operator's own capital.
+
+### Limits, restated
+
+* **"External" is an upper bound on earnings** — two hops, not a funding graph.
+* **Direction, not purpose.** Airdrops, refunds and mistakes look identical to
+  payments.
+* **Agent counts use the declared map only** (§1), which understates every
+  chain equally.
+* **Two tokens per chain.** Every figure is a **lower bound**.

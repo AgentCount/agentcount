@@ -14,11 +14,15 @@ See [`METHODOLOGY.md`](../../METHODOLOGY.md) for the rules behind every rung and
 [`CHANGELOG-METHODOLOGY.md`](../../CHANGELOG-METHODOLOGY.md) for every
 correction this project has made to itself, including the ones in this report.
 
-**What this census found, in one fact:**
+**What this census found, in two facts:**
 
 > Base attests at 49.2%. Across all four chains the rate is **12.2%** — and
 > Base, at 16.9% of the population, supplies **68.3% of every attested agent in
 > existence.**
+
+> Of those 354,858 agents, **358 have ever been paid** and **34 have ever
+> received a settlement through x402, the ecosystem's own payment protocol.**
+> One in 991, and one in 10,437.
 
 ---
 
@@ -252,7 +256,7 @@ Five independent measurements, five times the same shape:
 |---|---|---|
 | 1 | **registration** | one registrant holds 148 paid agents on Base; two addresses hold 87.9% of Celo |
 | 2 | **reputation** | 104 addresses write all of BSC's feedback; 3 write 99.8% of CeloNova's; one agent holds 66.4% of Base's |
-| 3 | **payments** | §9 |
+| 3 | **payments** | 358 paid agents across four chains, and 32 of the 34 that ever settled through x402 are on one chain |
 | 4 | **infrastructure** | below |
 | 5 | **validation** | 27 validator addresses in the entire ecosystem; one agent holds 20% of all requests |
 
@@ -332,19 +336,92 @@ Stated so that absence is never read as evidence.
 
 ## 9. Payments
 
-> **PENDING — this section is not yet written and this report is not final
-> until it is.** The per-chain funnels are being measured in
-> `analysis/payments-per-chain.md`, whose **predictions were committed before
-> any measurement was run** (commit `8996609`) so that the result is a test
-> rather than a rationalisation.
->
-> Base's payment findings are already settled and carry three retractions, all
-> caught before publication — 313 agents paid became 190, $8,845,244 became
-> $1,090,098, and "one operator earned 97.9%" was false. All three were the
-> same mistake in three costumes: **an address treated as an identity.** See
-> [`analysis/payments-corrections-ledger.md`](../../analysis/payments-corrections-ledger.md).
-> The only unambiguous payment signal on Base is the x402 settlement: **36
-> agents.**
+Base's payment findings were retracted three times before publication — 313
+agents paid became 190, $8,845,244 became $1,090,098, and "one operator earned
+97.9%" was false. All three were one mistake in three costumes: **an address
+treated as an identity.** Full record:
+[`analysis/payments-corrections-ledger.md`](../../analysis/payments-corrections-ledger.md).
+
+The funnels below apply those corrections **from the start** rather than
+retrofitting them, and their predictions were committed **before any
+measurement was run** (commit `8996609`) so the result is a test rather than a
+rationalisation.
+
+| chain | agents | attested | **paid** | rate | from EOA | **x402** | external value | from contracts |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| base | 60,097 | 49.2% | **181** | 0.301% | 70 | **32** | $1,164,083 | 93.9% |
+| bsc | 244,208 | 1.8% | **128** | 0.052% | 74 | **0** | $1,639,492 | 86.5% |
+| mainnet | 40,806 | 4.1% | **31** | 0.076% | 22 | **0** | $203,121 | 68.1% |
+| celo | 9,747 | 79.5% | **18** | 0.185% | 15 | **2** | $2,813 | 50.8% |
+| **all four** | **354,858** | **12.2%** | **358** | **0.101%** | 181 | **34** | **$3,009,509** | — |
+
+"Paid" means **received an external stablecoin transfer after the agent was
+minted**, through the agent's own declared wallet. Two stablecoins per chain,
+nothing else — every figure is a **lower bound**. Symbols and decimals were read
+from each contract: **BSC's USDC and USDT are 18 decimals, not 6**, and Celo's
+long-known cUSD address now reports `USDm` at 18.
+
+**Payment is three orders of magnitude rarer than registration.** 358 agents of
+354,858 — **1 in 991** — have ever been paid. **34 have ever received an x402
+settlement: 1 in 10,437**, and 32 of the 34 are on Base.
+
+**The thin-BSC prediction holds.** BSC has 4.1× Base's agents and fewer paid
+ones, at a rate six times lower — on the chain holding 69% of all ERC-8004
+agents.
+
+**Attestation does not predict payment.** Celo attests at 79.5% and pays at
+0.185% — **a ratio of 430 to 1**. Its attestation rate was three addresses
+writing feedback for one platform's batch (§6); it was never a measure of
+commerce, and the payment data shows what was underneath it. No report should
+let one of these measures stand in for the other.
+
+**x402 is a busy protocol that agents are barely part of.** Base's stablecoins
+carried **6,875,861** `AuthorizationUsed` transactions in the blocks scanned;
+**8,904** reached an agent-declared address, averaging **$1.07** — metering, not
+revenue. Mainnet's carried 26,260 and **not one** reached an agent. BSC has not
+a single such event on either token. Agents are absent from x402 on two chains
+for opposite reasons: on BSC the protocol is unused; on mainnet it is busy and
+agents are not in it.
+
+**Most of the value is not revenue.** Contract-sourced flow dominates
+everywhere (50.8%–93.9%), and on Base the largest recipient's inflows are
+provably Morpho vault yield — the operator's own capital returning from DeFi.
+
+**The pre-mint correction is the largest single one.** On Base, **82.5% of all
+value arriving at agent-declared addresses arrived before the agent existed** —
+only 11.9% of transfers, but the early ones are far larger. Counting them is
+exactly how the retracted $8.8M was produced.
+
+### A fourth correction, caught in this round
+
+**Mainnet agent 28283 declares `0x0000…0000` as its `agentWallet`.** The
+declared convention is unverified by construction, so the scan collected every
+USDC and USDT burn on Ethereum as income to that agent — **313,255 of mainnet's
+314,735 transfers, 99.5%**. Burn addresses are now excluded; Base and BSC have
+no such row, so no other figure moves.
+
+That is PAY-1/2/3 in a fourth costume, and a fair measure of what the declared
+basis is worth: a `services[]` entry named `agentWallet` is a string in a
+document anyone can write, and one of them names an address that cannot hold
+anything.
+
+### What does not survive contact with the data
+
+* **"The agent economy."** At 1 in 991 paid and 1 in 10,437 settling through the
+  ecosystem's own payment protocol, the measured economy is a few hundred agents
+  across four chains.
+* **Value totals as revenue.** $3,009,509 is external post-mint inflow to
+  agent-declared addresses. It is **not earnings**.
+
+### Limits
+
+* **"External" is an upper bound on earnings** — the sender is not the agent's
+  owner and not any owner in the run. Two hops, not a funding graph.
+* **Direction, not purpose.** Airdrops, refunds and mistakes look identical.
+* **Zero means "nothing visible in scope"**, never "never earned anything".
+* Agent counts are attributed through the **declared** map only, because the
+  verified-`agentWallet` set could not be rebuilt from events
+  (`analysis/payments-per-chain.md` §1). This understates every chain equally.
 
 ## 10. Reproduction
 
