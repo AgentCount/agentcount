@@ -12,8 +12,17 @@ target/
 # Run exports: reproducible from Postgres + the pinned commit, never committed.
 /data
 
-# Working notes stay private; published reports are part of the record.
-# This was a bare `/docs`, which meant every report had to be `git add -f`'d —
-# one forgotten flag away from a report being silently unpublished.
+# Working notes stay private; PUBLISHED reports are part of the record.
+#
+# The split is between what a reader can check and what is internal project
+# state. docs/reports/ holds census reports that findings are cited from —
+# those are the product. Handoffs, launch checklists and publication runbooks
+# are scaffolding: they carry no claim anyone can verify, and a reader who
+# stumbles into a half-finished checklist learns nothing true about the census.
+#
+# DRAFT-* reports are excluded for a sharper reason: one of them opens with
+# "NO FIGURES until the rerun completes" and is entirely placeholders. A
+# skeleton published beside real reports is worse than absent.
 /docs/*
 !/docs/reports/
+/docs/reports/DRAFT-*

@@ -13,6 +13,18 @@ Expect an acknowledgement within a few days. This is a small project with one
 maintainer, so please read that as a good-faith intention rather than a
 guaranteed SLA.
 
+## Credentials in this repository
+
+There are none, and that was verified rather than assumed. Before this
+repository was made public, **every commit in its history was audited** for
+committed `.env` files, RPC provider keys, database URLs and JWT-shaped
+strings. Nothing was found: the only connection strings that have ever appeared
+are `localhost` and an obvious `user:pass@host/db` placeholder in
+documentation.
+
+If you find something that audit missed, that is exactly the kind of report
+this document is for.
+
 ## Scope
 
 The things most worth attacking here, roughly in order:
