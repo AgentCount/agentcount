@@ -91,6 +91,85 @@ fn fetch_concurrency() -> usize {
         .unwrap_or(probe::DEFAULT_GLOBAL_CONCURRENCY)
 }
 
+/// How long a sweep may write nothing before the watchdog declares it dead.
+///
+/// Generous on purpose. A legitimately slow tail exists: `PER_HOST_CAP` is 2,
+/// so a chain where one host holds thousands of agents crawls through them at
+/// a couple of requests at a time — one observed sweep ran its tail at roughly
+/// one agent per second because a single host held 974 agents. The timeout has
+/// to sit well above that, and still well below "nobody notices until
+/// tomorrow".
+const DEFAULT_STALL_TIMEOUT_SECS: u64 = 900; // 15 minutes
+
+fn stall_timeout_secs() -> u64 {
+    std::env::var("SWEEP_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_STALL_TIMEOUT_SECS)
+}
+
+/// Watch a run's row count and kill the process if it stops moving.
+///
+/// **Why this is not just a log line.** The failure it exists for produced no
+/// error, no log, and no CPU usage: an analysis scan reached 16,000 of 27,108
+/// calls, the machine slept, its sockets died, and the process sat at 0% for
+/// three hours looking exactly like slow progress. A sweep that hangs the same
+/// way would hold a `running` row forever and quietly become a gap in the run
+/// history — the one thing this project cannot afford, because the history is
+/// the product.
+///
+/// It counts ROWS, not an in-process counter, deliberately: a sweep whose
+/// consumer loop is alive but whose writes are failing is also stalled, and an
+/// in-process counter would happily tick along while nothing landed.
+///
+/// On a stall it marks the run `stalled` with a reason and exits non-zero.
+/// Exiting is the point — returning an error would be neater, but the main
+/// task is by definition wedged on something that is not coming back, so
+/// there is nobody left to return to.
+fn spawn_stall_watchdog(db: store::Db, run_id: Uuid) {
+    let timeout = std::time::Duration::from_secs(stall_timeout_secs());
+    let poll = std::time::Duration::from_secs(30).min(timeout / 4);
+    tokio::spawn(async move {
+        let mut last_count: i64 = -1;
+        let mut last_change = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(poll).await;
+            match db.swept_count(run_id).await {
+                Ok(n) => {
+                    if n != last_count {
+                        last_count = n;
+                        last_change = std::time::Instant::now();
+                        continue;
+                    }
+                    let idle = last_change.elapsed();
+                    if idle >= timeout {
+                        let reason = format!(
+                            "no agent written for {}s (stall timeout {}s); \
+                             stopped at {n} agents",
+                            idle.as_secs(),
+                            timeout.as_secs()
+                        );
+                        tracing::error!(
+                            "run {run_id} STALLED: {reason}. \
+                             Marking the run stalled and exiting non-zero — a run that \
+                             dies quietly becomes an invisible gap in the history."
+                        );
+                        if let Err(e) = db.fail_run(run_id, "stalled", &reason).await {
+                            tracing::error!("could not even mark the run stalled: {e:#}");
+                        }
+                        std::process::exit(75); // EX_TEMPFAIL: retryable
+                    }
+                }
+                // A database we cannot reach is not itself a stall — the sweep
+                // may be fine and the watchdog blind. Say so and keep watching
+                // rather than killing a healthy run.
+                Err(e) => tracing::warn!("watchdog could not read progress: {e:#}"),
+            }
+        }
+    });
+}
+
 /// The published contact string from `METHODOLOGY.md` (search
 /// `agentcount-probe`) — the single source for the User-Agent's contact
 /// portion. Declared here, not in `crates/probe`, and passed into
@@ -272,8 +351,33 @@ fn assemble_ladder(
     checks::run_ladder(rungs)
 }
 
+/// Published as soon as a run row exists, so the error boundary in [`main`]
+/// can mark that run `failed` without threading a handle back out of a
+/// 700-line function.
+///
+/// A run left in `running` after the process is gone is the exact ambiguity
+/// migration 0014 exists to remove: from the outside it is indistinguishable
+/// from a sweep still in progress.
+static CURRENT_RUN: std::sync::OnceLock<(store::Db, Uuid)> = std::sync::OnceLock::new();
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let outcome = sweep().await;
+    if let Err(e) = &outcome
+        && let Some((db, run_id)) = CURRENT_RUN.get()
+    {
+        let reason = format!("{e:#}");
+        tracing::error!("run {run_id} FAILED: {reason}");
+        // Best effort: if the database is what failed, there is nowhere to
+        // record that it failed. The non-zero exit and the log remain.
+        if let Err(e2) = db.fail_run(*run_id, "failed", &reason).await {
+            tracing::error!("could not mark run {run_id} failed: {e2:#}");
+        }
+    }
+    outcome
+}
+
+async fn sweep() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -423,6 +527,12 @@ async fn main() -> Result<()> {
     // Enumerated at the PINNED block (the original one, if resuming) so the
     // population matches what the first session saw, not whatever exists on
     // chain right now.
+    // Armed before any long-running work: from here on a hang is detected and
+    // reported rather than sat through, and an error ends with the run marked
+    // `failed` rather than left looking like it is still going.
+    let _ = CURRENT_RUN.set((db.clone(), run_id));
+    spawn_stall_watchdog(db.clone(), run_id);
+
     let mut ids = registry.enumerate_agent_ids(pinned).await?;
     let discovered = ids.len();
     if let Some(n) = max_agents {
@@ -933,6 +1043,14 @@ async fn main() -> Result<()> {
         })?;
 
         swept += 1;
+        // Heartbeat, batched so it costs one UPDATE per 50 agents rather than
+        // one per agent. The watchdog's stall timeout is minutes, so 50 agents
+        // of granularity is far finer than it needs.
+        if swept.is_multiple_of(50)
+            && let Err(e) = db.touch_progress(run_id).await
+        {
+            tracing::warn!("heartbeat failed: {e:#}");
+        }
         if swept.is_multiple_of(500) {
             tracing::info!(
                 "{swept}/{remaining} agents swept this session \

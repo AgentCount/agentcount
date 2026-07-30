@@ -103,23 +103,53 @@ const THROTTLE_BACKOFF_BASE_MS: u64 = 300;
 /// `MAX_THROTTLE_RETRIES` times. Any other error — a genuine one — returns
 /// immediately on the first attempt: throttling is the only condition where
 /// "ask again" is the right response to "no".
-async fn retry_throttled<T, E, F, Fut>(f: F) -> Result<T, E>
+async fn retry_throttled<T, E, F, Fut>(f: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
-    retry_throttled_with(MAX_THROTTLE_RETRIES, THROTTLE_BACKOFF_BASE_MS, f).await
+    retry_throttled_with(
+        MAX_THROTTLE_RETRIES,
+        THROTTLE_BACKOFF_BASE_MS,
+        rpc_call_timeout(),
+        f,
+    )
+    .await
 }
 
-/// The tunable core of [`retry_throttled`], parameterised on retry budget and
-/// backoff base so tests can exercise "gives up eventually" in milliseconds
-/// instead of the real ~76s the production constants would take.
+/// How long one RPC call may take before it is abandoned and retried.
+///
+/// **Fail fast on a socket that is never coming back.** A TCP connection
+/// killed underneath us — a laptop sleeping, a NAT dropping state, a provider
+/// silently hanging up — does not return an error. It returns nothing, and an
+/// `await` on it waits forever. That is precisely how one long scan died:
+/// 0% CPU, no log line, no error, indistinguishable from slow progress.
+///
+/// Retries and backoff are useless against that, because there is no `Err` for
+/// them to fire on. Only a timeout converts silence into a failure the rest of
+/// the machinery can see.
+const RPC_CALL_TIMEOUT_SECS: u64 = 45;
+
+fn rpc_call_timeout() -> std::time::Duration {
+    let secs = std::env::var("RPC_CALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(RPC_CALL_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// The tunable core of [`retry_throttled`], parameterised on retry budget,
+/// backoff base and call timeout so tests can exercise "gives up eventually"
+/// and "a hang ends" in milliseconds instead of the real ~76s and 45s the
+/// production constants would take.
 async fn retry_throttled_with<T, E, F, Fut>(
     max_retries: u32,
     backoff_base_ms: u64,
+    timeout: std::time::Duration,
     mut f: F,
-) -> Result<T, E>
+) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
@@ -127,7 +157,33 @@ where
 {
     let mut attempt = 0u32;
     loop {
-        match f().await {
+        // A timed-out call is treated exactly like a throttled one: retryable,
+        // with the same backoff. The difference that matters is not how it is
+        // retried but that it *ends* — an untimed await on a dead socket never
+        // reaches this match at all.
+        let outcome = match tokio::time::timeout(timeout, f()).await {
+            Ok(r) => r,
+            Err(_) if attempt < max_retries => {
+                let backoff_ms = backoff_base_ms * (1u64 << attempt);
+                tracing::warn!(
+                    "rpc call timed out after {}s (attempt {}/{max_retries}), \
+                     backing off {backoff_ms}ms",
+                    timeout.as_secs(),
+                    attempt + 1
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                attempt += 1;
+                continue;
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "rpc call timed out after {}s, {max_retries} retries exhausted",
+                    timeout.as_secs()
+                );
+            }
+        };
+
+        match outcome {
             Ok(v) => return Ok(v),
             Err(e) if is_throttled(&e) && attempt < max_retries => {
                 let backoff_ms = backoff_base_ms * (1u64 << attempt);
@@ -138,7 +194,10 @@ where
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 attempt += 1;
             }
-            Err(e) => return Err(e),
+            // `E` is only `Display`, so the message is carried rather than the
+            // error itself. `is_revert` and `is_throttled` both match on the
+            // message, so nothing downstream loses the ability to classify it.
+            Err(e) => return Err(anyhow::anyhow!("{e}")),
         }
     }
 }
@@ -495,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn retry_throttled_recovers_after_transient_429s() {
         let attempts = AtomicU32::new(0);
-        let result: Result<&'static str, &'static str> = retry_throttled(|| {
+        let result: Result<&'static str> = retry_throttled(|| {
             let n = attempts.fetch_add(1, Ordering::SeqCst);
             async move {
                 if n < 2 {
@@ -506,7 +565,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(result, Ok("ok"));
+        assert_eq!(result.unwrap(), "ok");
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
@@ -516,12 +575,12 @@ mod tests {
     #[tokio::test]
     async fn retry_throttled_does_not_retry_genuine_errors() {
         let attempts = AtomicU32::new(0);
-        let result: Result<(), &'static str> = retry_throttled(|| {
+        let result: Result<()> = retry_throttled(|| {
             attempts.fetch_add(1, Ordering::SeqCst);
             async move { Err("execution reverted") }
         })
         .await;
-        assert_eq!(result, Err("execution reverted"));
+        assert_eq!(result.unwrap_err().to_string(), "execution reverted");
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
@@ -533,13 +592,42 @@ mod tests {
     async fn retry_throttled_gives_up_after_the_retry_budget() {
         let attempts = AtomicU32::new(0);
         let max_retries = 3;
-        let result: Result<(), &'static str> = retry_throttled_with(max_retries, 1, || {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            async move { Err("HTTP error 429: rate limit exceeded") }
-        })
-        .await;
+        let result: Result<()> =
+            retry_throttled_with(max_retries, 1, std::time::Duration::from_secs(5), || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async move { Err("HTTP error 429: rate limit exceeded") }
+            })
+            .await;
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), max_retries + 1);
+    }
+
+    /// **The failure this whole timeout exists for: a call that never
+    /// returns.** Not an error — silence. Without a timeout this test would
+    /// hang forever, which is exactly what a sweep did when its sockets died
+    /// under a sleeping laptop: 0% CPU, no error, no log, indistinguishable
+    /// from slow progress.
+    ///
+    /// Retries cannot help here, because a hang produces no `Err` for them to
+    /// fire on. The assertion is simply that the call *ends*.
+    #[tokio::test]
+    async fn a_call_that_hangs_forever_is_timed_out_rather_than_awaited_forever() {
+        let attempts = AtomicU32::new(0);
+        let result: Result<()> =
+            retry_throttled_with(2, 1, std::time::Duration::from_millis(20), || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                // Never resolves — a dead socket, not a failed request.
+                async move {
+                    std::future::pending::<()>().await;
+                    Ok::<(), &'static str>(())
+                }
+            })
+            .await;
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        // Retried its full budget before giving up, then stopped.
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
     /// A population of exactly one (only id 0 exists) must not trigger any
