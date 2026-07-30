@@ -609,14 +609,12 @@ behave differently, that's called out rather than glossed over.
   the first request, so a registered agent cannot use a redirect to bounce
   a request into an internal network.
 
-> **The mailbox still needs human confirmation before any probing goes live.**
-> As of 2026-07-30 the domain is decided and real — `agentcount.ai` — which
-> settles half of what this note used to ask for. What remains is the half
-> that matters to the person on the other end: **a human must confirm that
-> `probes@agentcount.ai` actually delivers to someone who reads it.** An
-> address in a User-Agent that bounces is worse than no address at all: it
-> tells an operator we invited their complaint and then discarded it. Until
-> that is confirmed, this note stays and rung 6 does not ship.
+**Confirmed live 2026-07-30.** `agentcount.ai` is registered and
+`probes@agentcount.ai` was tested end-to-end and delivers. This section
+previously carried a standing note that it must not ship until that was true;
+the note is gone because the condition is met, and this paragraph replaces it
+so the history of the commitment stays visible rather than silently
+disappearing.
 
 ## 7. Limitations, stated plainly
 
