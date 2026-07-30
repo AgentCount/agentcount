@@ -121,8 +121,14 @@ contracts existed and were receiving money **before the agents were registered**
 | | count |
 |---|---:|
 | external transfers arriving **before the agent was minted** | **6,833** of 18,328 |
+| …the same count measured **per address** rather than per declaring agent | 6,748 |
 | paid agents with ≥1 such transfer | **222** of 313 |
 | **paid agents where EVERY external transfer predates the mint** | **123** |
+
+The two transfer counts differ because a transfer to a shared address is
+counted once per declaring agent in the first row and once per address in the
+second — the §1 problem showing up again. **6,748 is the figure to publish**,
+since it counts transfers, not agent-transfer pairs.
 
 For those 123 agents, *none* of the money can be the agent's earnings — the
 agent did not exist when it arrived. Counting them as paid is not a
