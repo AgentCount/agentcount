@@ -1064,3 +1064,58 @@ written were judged against text that is still current.
 
 **Documented in** `spec/SOURCE.md` (new "Drift checks" section, with the
 commands to repeat it) and `METHODOLOGY.md` §5.
+
+---
+
+## 2026-07-30 — VALIDATION REGISTRY: an assumption tested, and wrong
+
+**What changed.** No rung's rule. What changed is a documented *assumption*
+about coverage: `scripts/seed_chains.sql` asserted that the Validation
+Registry is "absent on this chain", and `chains.validation_registry` is NULL
+everywhere, which `crates/indexer` reads as absent and skips. The `validations`
+table has zero rows. The census therefore described the last third of ERC-8004
+as unused when what was true is that **it had never been looked at**.
+
+**Why.** Those are different claims and only one was earned. The curated
+upstream (`erc-8004/erc-8004-contracts`) publishes no Validation Registry
+address for any of 30+ networks and says the contract is still under design —
+which supports the assumption, but is a claim on a web page, so it was tested
+against the chains instead of adopted.
+
+**Method.** Scanning a known address would have inherited the assumption under
+test — filtering on NULL returns zero, and zero would have been reported as
+fact. Instead: scan the **spec's own event topics with no address filter**, so
+any contract emitting an ERC-8004 validation event is found regardless of who
+deployed it. `topic0` computed with `cast keccak` from the pinned spec's event
+declarations (lines 362, 380).
+
+**Measured effect.** No agent's rung result moves — no rung reads this
+registry. The census gains a measurement it did not have:
+
+| chain | agents | requests | responses | registries | agents validated |
+|---|---:|---:|---:|---:|---:|
+| base | 60,097 | 74 | 68 | 9 | 19 |
+| bsc | 244,208 | 0 | 0 | 0 | 0 |
+| mainnet | 40,806 | 0 | 0 | 0 | 0 |
+| celo | 9,747 | 31 | 27 | 2 | 4 |
+| **total** | **354,858** | **105** | **95** | **10** | **23** |
+
+**23 of 354,858 agents — 0.0065%.** All ten deployments are third-party; nine
+of ten answer `getIdentityRegistry()` with the canonical Identity Registry this
+census sweeps, so they concern censused agents. The tenth (`0x279a126b…`, Celo)
+**reverts** on that getter, which the pinned spec requires at line 347, so its
+10 events are reported separately rather than pooled.
+
+**Also measured, and previously unknown:** the Identity Registry's actual
+deploy block on each chain — base 41,663,783, bsc 79,027,268, mainnet
+24,339,871, celo 58,396,724 — by binary search on `eth_getCode`, verified on
+both sides of the boundary. `seed_chains.sql` carried `deploy_block = 0` with a
+comment asking for exactly these and warning against guessing a too-high value;
+these are measurements, not guesses, and cannot be too high.
+
+**Not applied to any database.** `seed_chains.sql` is updated in the
+repository only. Running it is a deliberate act, and `DATABASE_URL` still
+points at Supabase by default.
+
+**Full detail** — including what may and may not be said about the 105
+verdicts: `analysis/validation-registry.md`.
