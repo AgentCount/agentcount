@@ -37,7 +37,20 @@
 /// sequence instead of one. `via_gateway` is unchanged in meaning (still the
 /// winner, when there was one). No field removed; old rows remain readable
 /// without the new key.
-pub const SCHEMA_VERSION: i32 = 5;
+///
+/// 6 (2026-07-30): minter capture. `agent_snapshots` gains `minter`,
+/// `registration_tx_hash` and `registration_block` (migration 0013), and
+/// rung 1's `tx_hash` evidence field — which has always existed and has
+/// always been `null` — is now populated from the registration transaction.
+///
+/// **No rung's rule changes and no agent's status moves.** Rung 1's verdict
+/// depends only on whether `owner` is the zero address; `tx_hash` has only
+/// ever been evidence. The bump exists so a reader can tell from the row
+/// alone whether a null `tx_hash` means "this run did not capture it"
+/// (schema ≤ 5) or "we looked and the chain had nothing" (schema 6) — the
+/// same distinction between *did not ask* and *asked and got nothing* that
+/// the six statuses keep everywhere else.
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// The checks crate's own version — the semantics of the rungs.
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -28,10 +28,13 @@
 //! The `Registered` event below is kept only as documentation of what the
 //! registry emits on mint; nothing in this module decodes it any more.
 
+use std::collections::HashMap;
+
 use alloy::eips::BlockId;
 use alloy::primitives::{Address, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::sol;
+use alloy::sol_types::SolEvent;
 use anyhow::{Context, Result};
 
 sol! {
@@ -193,6 +196,12 @@ pub struct AgentSnapshot {
     /// must be preserved as such — it is a finding, not a missing read.
     pub agent_uri: String,
     pub block_number: u64,
+    /// Sender of the registration transaction. `None` when this run did not
+    /// capture it — never conflated with "the agent has no minter".
+    pub minter: Option<String>,
+    pub registration_tx_hash: Option<String>,
+    /// Block the agent was registered in — the lower bound of its existence.
+    pub registration_block: Option<u64>,
 }
 
 pub struct Registry {
@@ -331,8 +340,112 @@ impl Registry {
             owner: format!("{owner:?}").to_lowercase(),
             agent_uri,
             block_number: block,
+            minter: None,
+            registration_tx_hash: None,
+            registration_block: None,
         })
     }
+
+    /// Every `Registered` event up to `to_block`, keyed by agent id.
+    ///
+    /// This is the one place log-based reading survives in this module, and it
+    /// is not discovery — `enumerate_agent_ids` still binary-searches
+    /// `ownerOf`, because a log scan cannot see an agent whose registration
+    /// event was missed. This answers a different question: *which transaction
+    /// created this agent, and who sent it.*
+    ///
+    /// The first `Registered` for an id wins. `setAgentURI` emits its own
+    /// event, not this one, so duplicates are not expected — but taking the
+    /// earliest is the honest reading of "when did this agent come into
+    /// existence" regardless.
+    pub async fn registrations(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<HashMap<u64, Registration>> {
+        let mut out: HashMap<u64, Registration> = HashMap::new();
+        let mut spans: Vec<(u64, u64)> = vec![(from_block, to_block)];
+
+        // Providers disagree about eth_getLogs limits, and they disagree in two
+        // different ways that look alike: a hard BLOCK-range cap, and a cap on
+        // RESPONSE SIZE. Both surface as an error on a wide query, so rather
+        // than trying to tell them apart, halve and retry. A chain whose
+        // provider caps at 10,000 blocks converges on that by itself.
+        while let Some((lo, hi)) = spans.pop() {
+            let filter = alloy::rpc::types::Filter::new()
+                .address(self.address)
+                .event_signature(Registered::SIGNATURE_HASH)
+                .from_block(lo)
+                .to_block(hi);
+
+            match self.provider.get_logs(&filter).await {
+                Ok(logs) => {
+                    for log in logs {
+                        let Ok(decoded) = log.log_decode::<Registered>() else {
+                            continue;
+                        };
+                        let agent_id = decoded.inner.agentId;
+                        // Ids beyond u64 cannot be ours: `enumerate_agent_ids`
+                        // walks a contiguous u64 range.
+                        let Ok(agent_id) = u64::try_from(agent_id) else {
+                            continue;
+                        };
+                        let (Some(tx_hash), Some(block_number)) =
+                            (log.transaction_hash, log.block_number)
+                        else {
+                            continue; // pending log; nothing to cite
+                        };
+                        let entry = Registration {
+                            tx_hash: format!("{tx_hash:?}").to_lowercase(),
+                            block_number,
+                        };
+                        out.entry(agent_id)
+                            .and_modify(|existing| {
+                                if block_number < existing.block_number {
+                                    *existing = entry.clone();
+                                }
+                            })
+                            .or_insert(entry);
+                    }
+                }
+                Err(e) => {
+                    if lo >= hi {
+                        return Err(e).with_context(|| {
+                            format!(
+                                "eth_getLogs for Registered at block {lo} (cannot split further)"
+                            )
+                        });
+                    }
+                    let mid = lo + (hi - lo) / 2;
+                    spans.push((mid + 1, hi));
+                    spans.push((lo, mid));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The `from` of a transaction — the minter.
+    ///
+    /// `Ok(None)` means the node does not have the transaction, which is a
+    /// different thing from a failed read and is recorded as an absent minter
+    /// rather than an error.
+    pub async fn tx_sender(&self, tx_hash: &str) -> Result<Option<String>> {
+        let hash: alloy::primitives::TxHash = tx_hash
+            .parse()
+            .with_context(|| format!("parsing tx hash {tx_hash}"))?;
+        let tx = retry_throttled(|| async { self.provider.get_transaction_by_hash(hash).await })
+            .await
+            .with_context(|| format!("get_transaction_by_hash({tx_hash})"))?;
+        Ok(tx.map(|t| format!("{:?}", t.inner.signer()).to_lowercase()))
+    }
+}
+
+/// Where an agent came from: the transaction that registered it.
+#[derive(Debug, Clone)]
+pub struct Registration {
+    pub tx_hash: String,
+    pub block_number: u64,
 }
 
 #[cfg(test)]

@@ -49,7 +49,7 @@
 mod export;
 mod store;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -333,12 +333,13 @@ async fn main() -> Result<()> {
     let gateways = ipfs_gateways();
     let prober = probe::Prober::new(PROBE_CONTACT_URL, &gateways)?;
 
-    // `deploy_block` is no longer used for enumeration (agent ids are found
-    // by binary search on `ownerOf` existence, not by scanning logs from
-    // deploy to head — see crates/chain/src/registry.rs), but the column
-    // still describes the chain and stays wired for chain_config's other
-    // callers.
-    let _ = deploy_block;
+    // `deploy_block` is not used for ENUMERATION — agent ids are found by
+    // binary search on `ownerOf` existence, not by scanning logs, because a
+    // log scan cannot see an agent whose registration event it missed. It is
+    // used below as the lower bound of the `Registered` scan that captures the
+    // minter, where a missed event costs one null field rather than a missing
+    // agent.
+    let registration_from_block = deploy_block.max(0) as u64;
 
     let (
         run_id,
@@ -496,6 +497,71 @@ async fn main() -> Result<()> {
     // filtered out beforehand: filtering here would need a shared mutable
     // counter reached from inside the stream combinators, and threading the
     // failure through as data is simpler and cannot lose the error message.
+    // ── Minter capture (schema 6) ────────────────────────────────────────────
+    //
+    // Who sent the registration transaction. Not the same role as `owner` — a
+    // platform minting on a customer's behalf is the ordinary case, and on one
+    // chain two addresses minted 87.9% of the population.
+    //
+    // Done as a pre-pass, not a fourth pipeline stage, because it is one
+    // chain-wide log scan rather than a per-agent read. The expensive half is
+    // resolving each transaction's sender, and that is bounded by the number of
+    // DISTINCT transactions, not agents: batch minters register many agents per
+    // transaction, so this is usually far cheaper than one call per agent.
+    //
+    // Failure here is never fatal. A missing minter is a null column; it must
+    // not cost the run, because the census's job is the ladder and this is
+    // provenance alongside it.
+    let registrations = match registry
+        .registrations(registration_from_block, pinned)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                "registration scan failed ({e:#}); minter will be null for this run \
+                 — the ladder is unaffected"
+            );
+            Default::default()
+        }
+    };
+    let mut minters: HashMap<String, Option<String>> = HashMap::new();
+    if !registrations.is_empty() {
+        let distinct_txs: Vec<String> = registrations
+            .values()
+            .map(|r| r.tx_hash.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        tracing::info!(
+            "registration scan: {} agents across {} distinct transactions",
+            registrations.len(),
+            distinct_txs.len()
+        );
+        let resolved: Vec<(String, Option<String>)> = stream::iter(distinct_txs)
+            .map(|tx| {
+                let registry = &registry;
+                async move {
+                    let sender = registry.tx_sender(&tx).await.unwrap_or_else(|e| {
+                        tracing::warn!("tx_sender({tx}) failed: {e:#}");
+                        None
+                    });
+                    (tx, sender)
+                }
+            })
+            .buffer_unordered(rpc_concurrency())
+            .collect()
+            .await;
+        minters.extend(resolved);
+        tracing::info!(
+            "minters resolved for {}/{} transactions",
+            minters.values().filter(|m| m.is_some()).count(),
+            minters.len()
+        );
+    }
+    let registrations = &registrations;
+    let minters = &minters;
+
     let mut stream = stream::iter(ids)
         .map(|id| {
             let registry = &registry;
@@ -606,6 +672,15 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+        // Attach the registration provenance captured in the pre-pass. Absent
+        // is absent: an agent whose `Registered` event we did not see keeps
+        // three nulls rather than an invented value.
+        let mut s = s;
+        if let Some(reg) = registrations.get(&id) {
+            s.registration_tx_hash = Some(reg.tx_hash.clone());
+            s.registration_block = Some(reg.block_number);
+            s.minter = minters.get(&reg.tx_hash).cloned().flatten();
+        }
         let s = &s;
         let now = Utc::now();
 
@@ -621,9 +696,9 @@ async fn main() -> Result<()> {
                 token_id: s.token_id.to_string(),
                 owner: s.owner.clone(),
                 block_number: s.block_number,
-                // The registration tx lives in raw_events from the indexer;
-                // wiring it in is Day 2 work. Null, never invented.
-                tx_hash: None,
+                // Captured from the `Registered` scan above (schema 6). Still
+                // null, never invented, when that scan did not see this agent.
+                tx_hash: s.registration_tx_hash.clone(),
             },
             now,
         );
