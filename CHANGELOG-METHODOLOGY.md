@@ -1026,3 +1026,41 @@ the check level (`crates/checks/src/rung2_resolvable.rs::tests`):
 now states the fallback policy in place of the single-gateway caveat, names
 this as a reversal of the 2026-07-28 ruling and why, and Section 6
 (Probing etiquette) notes the per-host cap applies per gateway host.
+
+---
+
+## 2026-07-30 — SPEC DRIFT CHECK: no change (no semantic effect)
+
+**What changed.** Nothing in the method. This entry records a *verification*,
+not a revision — the pinned spec was re-checked against the standard rather
+than assumed still current, and the check is logged whether or not it moves
+anything so that "we checked" is itself falsifiable.
+
+**Why.** Every rung-4 result carries a `spec_commit`, which is only meaningful
+if someone confirms that commit still describes ERC-8004. The pin
+(`68fc676`) dates from 2026-06-11 and had never been re-checked. A pinned
+spec that has silently gone stale would mean the census judged a live
+population against a superseded standard while continuing to cite it by
+commit — the failure mode this check exists to rule out.
+
+**Result.** Checked against **two independent sources**, because the repo the
+copy was taken from is not the canonical home of the standard:
+
+| source | result |
+|---|---|
+| `erc-8004/erc-8004-contracts` @ HEAD | HEAD **is** `68fc676` — unmoved since the pin |
+| `ethereum/ERCs` @ `master`, `ERCS/erc-8004.md` | **byte-identical** |
+
+All three files share the checksum `c92192bf60e67727ce87a99305ff9a31`.
+**Zero normative differences, and in fact zero differences of any kind.**
+The canonical text's last substantive change was **2026-01-25**
+(`503591a6e80e`, "Updates from community feedback") — five months before the
+pin. Status remains `Draft`.
+
+**Measured effect.** **None.** No rung's rule changes, no agent's result
+moves, no fixture is added, and no version is bumped: there is no semantic
+change to record a before/after count against. The 354,858 results already
+written were judged against text that is still current.
+
+**Documented in** `spec/SOURCE.md` (new "Drift checks" section, with the
+commands to repeat it) and `METHODOLOGY.md` §5.

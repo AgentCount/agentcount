@@ -522,6 +522,14 @@ every row it produces:
 | `checker_commit` | The exact git commit of the code that ran, stamped at build time from `git rev-parse HEAD`. A build from an uncommitted tree is stamped `<sha>-dirty` rather than silently claiming a clean commit describes it. |
 | `spec_commit` | The `ERC8004SPEC.md` commit ([pinned in `spec/SOURCE.md`](spec/SOURCE.md)) rung 4 was judged against. |
 
+A pinned spec goes stale silently, so it is re-checked against the standard
+rather than assumed: **as of 2026-07-30 the pinned text (`68fc676`) is
+byte-identical to ERC-8004 as published in `ethereum/ERCs`, so no result in
+this census was judged against a superseded version of the standard** — the
+canonical text's last substantive change was 2026-01-25, five months before
+the pin. Every such check, and how to repeat it, is recorded in
+[`spec/SOURCE.md`](spec/SOURCE.md).
+
 Every run also records a literal `rerun_command` — for example:
 
 ```

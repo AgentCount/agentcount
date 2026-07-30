@@ -28,3 +28,37 @@ Note: `spec/ERC8004SPEC.md` is the draft text of EIP/ERC-8004 ("Trustless
 Agents"), status `Draft` as of the pinned commit (see its front matter,
 lines 1-12). It is not yet a Final ERC. Re-pin when the draft advances or
 changes materially.
+
+## Drift checks
+
+A pinned spec is only honest if someone keeps checking that it still matches
+the standard. Each check below records what was compared, against what, and
+on what date.
+
+### 2026-07-30 — no drift
+
+Compared against **two independent sources**, because the upstream this copy
+was taken from is not the canonical home of the standard:
+
+| source | result |
+|---|---|
+| `erc-8004/erc-8004-contracts` @ HEAD | HEAD **is** `68fc676` — the repo has not moved since the pin |
+| `ethereum/ERCs` @ `master`, `ERCS/erc-8004.md` | **byte-identical** |
+
+All three files share one checksum: `c92192bf60e67727ce87a99305ff9a31`.
+**Zero normative differences. Zero differences of any kind.**
+
+The canonical text's last substantive change was **2026-01-25** ("Update
+ERC-8004: Updates from community feedback", `503591a6e80e`) — five months
+before the commit we pinned, and six before this check. The standard has been
+stable for that whole period, and its status is still `Draft`.
+
+Note the canonical path: ERC-8004 lives in `ethereum/ERCs` at
+`ERCS/erc-8004.md`, **not** in `ethereum/EIPs` (`EIPS/eip-8004.md` returns
+404). `eips.ethereum.org/EIPS/eip-8004` renders the former.
+
+```
+git clone https://github.com/erc-8004/erc-8004-contracts && git rev-parse HEAD
+curl -sS https://raw.githubusercontent.com/ethereum/ERCs/master/ERCS/erc-8004.md \
+  | md5   # -> c92192bf60e67727ce87a99305ff9a31
+```
