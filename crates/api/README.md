@@ -6,7 +6,7 @@ straight from Postgres (written by `crates/sweeper`) and serves them as JSON —
 seven rungs per agent, per run, each `pass`/`fail`/`skipped`/`error`, and —
 rung 5 (`bound`) only, added 2026-07-29 — `unclaimed`, with evidence. There is
 no aggregate field anywhere in the schema and this crate does not invent one.
-The Next.js app in the sibling `ledgerscope-web` repo is the frontend; this
+The Next.js app in the sibling `agentcount-web` repo is the frontend; this
 crate serves JSON only.
 
 **Rewrite (2026-07-28):** this crate used to serve a retired availability
@@ -64,6 +64,6 @@ latest run whose sweep has *finished*, never an in-flight one.
 ## Run it
 
 ```sh
-export DATABASE_URL=postgres://postgres:dev@localhost:5432/ledgerscope
+export DATABASE_URL=postgres://postgres:dev@localhost:5432/agentcount
 cargo run -p api            # listens on http://0.0.0.0:8080
 ```

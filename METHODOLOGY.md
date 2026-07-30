@@ -1,7 +1,7 @@
 # Methodology
 
 This document is published before any findings exist. It describes what
-Ledgerscope measures and how, so that anyone reading a result later — a
+AgentCount measures and how, so that anyone reading a result later — a
 registrant, a journalist, a researcher — can check the method before checking
 the number, not after.
 
@@ -11,7 +11,7 @@ being one.
 
 ## 1. What this is
 
-Ledgerscope is an independent conformance and census layer for
+AgentCount is an independent conformance and census layer for
 [ERC-8004](spec/SOURCE.md) ("Trustless Agents"). It enumerates every agent
 registered in an Identity Registry, reads the chain's current state for each
 one, fetches and evaluates the off-chain document it points at, and checks
@@ -185,8 +185,8 @@ alongside, never collapsed into the same verdict.
 checklist.** The spec invokes RFC 2119/8174 explicitly (spec line 36):
 MUST, SHOULD, and MAY are three different promises, and an earlier version
 of this rung compressed all three into one `pass`/`fail` — the exact kind
-of compression Section 1 of this document says Ledgerscope exists to
-refuse, committed by Ledgerscope itself. Rung 4 now classifies every field
+of compression Section 1 of this document says AgentCount exists to
+refuse, committed by AgentCount itself. Rung 4 now classifies every field
 it looks at into one of the three severities and reports all three, always:
 
 - **Pass:** zero MUST violations.
@@ -564,14 +564,14 @@ implemented. Where an older, retired component in this codebase used to
 behave differently, that's called out rather than glossed over.
 
 - **User-Agent:** every request will identify itself, e.g.
-  `ledgerscope-probe/0.2 (+https://ledgerscope.io/methodology; contact: probes@ledgerscope.io)`
-  — never disguised as a browser. A predecessor component in this codebase
-  (`crates/enricher`, being retired) currently sends a similar but
-  unreachable-by-design User-Agent
+  `agentcount-probe/0.2 (+https://agentcount.ai/methodology; contact: probes@agentcount.ai)`
+  — never disguised as a browser. A predecessor component
+  (`crates/enricher`) sent an unreachable-by-design User-Agent
   (`ledgerscope-observer/0.1 (+https://ledgerscope.example/methodology)`,
-  `.example` being a reserved TLD that can never resolve). This document
-  exists in part to fix that before its replacement ships.
-- **Contact:** `probes@ledgerscope.io`. If our traffic is a problem for you —
+  `.example` being a reserved TLD that can never resolve). That crate has
+  since been deleted and the placeholder retired with it; this document
+  existed in part to force that fix, and did.
+- **Contact:** `probes@agentcount.ai`. If our traffic is a problem for you —
   volume, timing, anything — email that address with the agent id or host in
   question and we will suppress it from future sweeps. There is no automated
   self-serve opt-out; exclusion will be manual and best-effort on our side,
@@ -609,14 +609,14 @@ behave differently, that's called out rather than glossed over.
   the first request, so a registered agent cannot use a redirect to bounce
   a request into an internal network.
 
-> **This URL needs human confirmation before any probing goes live.**
-> `ledgerscope.io` and the `probes@` mailbox are the proposed values recorded
-> here so the policy has a citable home; a human must register the domain (or
-> substitute a real one already owned) and confirm the mailbox actually
-> delivers before any prober ships this User-Agent. Shipping the current
-> placeholder (`ledgerscope.example`, a reserved TLD that can never resolve)
-> would leave an operator who wants to complain about our traffic with
-> nowhere to go — which is the problem this document exists to fix.
+> **The mailbox still needs human confirmation before any probing goes live.**
+> As of 2026-07-30 the domain is decided and real — `agentcount.ai` — which
+> settles half of what this note used to ask for. What remains is the half
+> that matters to the person on the other end: **a human must confirm that
+> `probes@agentcount.ai` actually delivers to someone who reads it.** An
+> address in a User-Agent that bounces is worse than no address at all: it
+> tells an operator we invited their complaint and then discarded it. Until
+> that is confirmed, this note stays and rung 6 does not ship.
 
 ## 7. Limitations, stated plainly
 
@@ -663,5 +663,5 @@ you.
 
 If you believe a specific result is wrong under the rules stated above —
 not "unfair" in the abstract, but factually incorrect given the evidence
-attached to it — email `probes@ledgerscope.io` with the run id and agent id
+attached to it — email `probes@agentcount.ai` with the run id and agent id
 and we will look at it.

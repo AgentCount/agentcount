@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Ledgerscope — Cargo WORKSPACE root
+# AgentCount — Cargo WORKSPACE root
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # In Rust, a "crate" is one compilable unit (a library or a binary). A
@@ -23,7 +23,7 @@
 # otherwise fall back to an older, dumber resolver.
 resolver = "3"
 
-# The crates that make up Ledgerscope. Each path is a directory containing
+# The crates that make up AgentCount. Each path is a directory containing
 # its own `Cargo.toml`. Data flows indexer → (Postgres) → sweeper (chain +
 # probe + checks) → api, but note the members are listed alphabetically —
 # Cargo does not care about order, it works out the real build order from the

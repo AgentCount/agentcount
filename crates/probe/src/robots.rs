@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn parse_disallow_unions_our_token_and_wildcard_groups() {
-        let body = "User-agent: ledgerscope-probe\nDisallow: /no-probe/\n\nUser-agent: *\nDisallow: /no-anyone/\n";
+        let body = "User-agent: agentcount-probe\nDisallow: /no-probe/\n\nUser-agent: *\nDisallow: /no-anyone/\n";
         let rules = parse_disallow(body);
         assert!(rules.contains(&"/no-probe/".to_string()));
         assert!(rules.contains(&"/no-anyone/".to_string()));

@@ -1,6 +1,6 @@
 # Methodology changelog
 
-This document records every change to what Ledgerscope measures or how it
+This document records every change to what AgentCount measures or how it
 measures it — as distinct from ordinary code changes that don't touch check
 semantics. Each entry is dated, states what changed and why, and reports the
 measured population effect: how many agents' results moved, counted against
@@ -381,7 +381,7 @@ with the work order's own instruction not to re-sweep for this fix:
    `IndependentInput` → `AttestedInput`, `independent()` → `attested()`),
    `METHODOLOGY.md` §2, `CHANGELOG-METHODOLOGY.md` (this file), the sweeper's
    log/doc comments, and the frontend's `/methodology` page and status
-   styling (`ledgerscope-web`).
+   styling (`agentcount-web`, then named `ledgerscope-web`).
 2. The rung no longer compares feedback authors against the agent's owner at
    all. `AttestedInput` no longer carries an `owner` field. Verdict logic
    simplifies to: `Pass` if `getClients` returns ≥1 distinct address, `Fail`
@@ -511,7 +511,7 @@ four values (`ALTER CONSTRAINT` does not exist in Postgres). `crates/api`'s
 `VALID_STATUSES` (the `status=` query-parameter allowlist on
 `GET /api/agents`) grows from four entries to five, so a client sending
 `status=unclaimed` gets real filtering rather than a 400. The frontend
-(`ledgerscope-web`) status-to-colour mapping (`lib/status.ts`) and the
+(`agentcount-web`, then named `ledgerscope-web`) status-to-colour mapping (`lib/status.ts`) and the
 `/methodology` page are updated so an unrecognised status still renders
 (neutral styling, verbatim text) rather than being guessed at as `pass` or
 `fail`.
@@ -1189,3 +1189,41 @@ automated prober writing the same value is behaving correctly, so this says
 the layer is machine-written, not that it is dishonest.
 
 **Full detail:** `analysis/feedback-values.md`.
+
+---
+
+## 2026-07-30 — RENAME: Ledgerscope becomes AgentCount (no semantic effect)
+
+**What changed.** The project's name, domain and probe identity. Nothing about
+what is measured.
+
+- Product name **Ledgerscope → AgentCount**; domain **agentcount.ai**.
+- The probe User-Agent becomes
+  `agentcount-probe/0.2 (+https://agentcount.ai/methodology; contact: probes@agentcount.ai)`.
+- Contact for suppression requests and disputes becomes
+  **`probes@agentcount.ai`**.
+
+**Why this is in the methodology changelog at all.** The User-Agent and the
+contact address are not branding — they are **promises made to every host we
+fetch from**, published in `METHODOLOGY.md` §6. An operator who saw our traffic
+last week and wants to complain about it must be able to find us. Changing that
+string is a change to a documented commitment, so it is recorded here even
+though no rung moves.
+
+**Measured effect.** **None.** No check's rule changes, no agent's status
+moves, no schema or version bumps. The one behavioural consequence is that the
+`User-agent:` token `robots.txt` is matched against changes from
+`ledgerscope-probe` to `agentcount-probe`. A site that had specifically
+targeted the old token — none is known to exist, the name was never
+published — would stop matching. Wildcard `User-agent: *` rules, which is what
+every observed `robots.txt` in the census actually uses, are unaffected.
+
+**Fixture.** `crates/probe`'s User-Agent assertion
+(`the_user_agent_is_assembled_from_the_product_token_and_contact_url`) and the
+`robots.txt` token-matching test both carry the new string; all 50 probe tests
+pass against it.
+
+**Still blocked.** §6's standing note that a human must confirm
+`probes@agentcount.ai` delivers **remains in force**. The domain is now real,
+which the old note asked for; the mailbox is not yet confirmed, and rung 6 does
+not ship until it is.

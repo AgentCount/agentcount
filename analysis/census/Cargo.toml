@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Standalone analysis scratch tool — NOT a member of the main Ledgerscope
+# Standalone analysis scratch tool — NOT a member of the main AgentCount
 # workspace (see the empty [workspace] table below, which stops Cargo from
 # trying to fold this into ../../Cargo.toml). It exists to answer one
 # question for analysis/attestation-rate.md: enumerate getClients(agentId)

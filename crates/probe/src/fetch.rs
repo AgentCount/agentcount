@@ -64,7 +64,7 @@ pub const MAX_REDIRECTS: u8 = 3;
 /// Our product token — the part of the User-Agent before the version, and
 /// what `robots.rs` matches `User-agent:` lines against. Defined once, here,
 /// so the header string and the robots.txt match never drift apart.
-pub(crate) const PRODUCT_TOKEN: &str = "ledgerscope-probe";
+pub(crate) const PRODUCT_TOKEN: &str = "agentcount-probe";
 const PRODUCT_VERSION: &str = "0.2";
 
 /// Everything one fetch attempt told us — plain data, no verdict. `crates/checks`
@@ -195,10 +195,10 @@ fn global_concurrency() -> usize {
 
 impl Prober {
     /// `contact_url` is the published contact string from `METHODOLOGY.md`
-    /// (e.g. `"https://ledgerscope.io/methodology; contact: probes@ledgerscope.io"`)
+    /// (e.g. `"https://agentcount.ai/methodology; contact: probes@agentcount.ai"`)
     /// — passed in, never hardcoded here, so METHODOLOGY.md stays the single
     /// source and this crate can't drift from what it promises. The full
-    /// User-Agent (`ledgerscope-probe/0.2 (+<contact_url>)`) is assembled in
+    /// User-Agent (`agentcount-probe/0.2 (+<contact_url>)`) is assembled in
     /// exactly one place: [`Self::build`]. `ipfs_gateways` is tried in
     /// order for every `ipfs://` URI (P0 FIX 8) — must be non-empty.
     pub fn new(contact_url: &str, ipfs_gateways: &[String]) -> anyhow::Result<Self> {
@@ -244,7 +244,7 @@ impl Prober {
     #[cfg(test)]
     pub(crate) fn new_for_test(connect_timeout: Duration, total_timeout: Duration) -> Self {
         Self::build(
-            "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io",
+            "https://agentcount.ai/methodology; contact: probes@agentcount.ai",
             &[
                 "https://ipfs.io/ipfs/".to_string(),
                 "https://cloudflare-ipfs.com/ipfs/".to_string(),
@@ -266,7 +266,7 @@ impl Prober {
         total_timeout: Duration,
     ) -> Self {
         Self::build(
-            "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io",
+            "https://agentcount.ai/methodology; contact: probes@agentcount.ai",
             &ipfs_gateways,
             connect_timeout,
             total_timeout,
@@ -890,11 +890,11 @@ mod tests {
     fn user_agent_matches_the_published_methodology_string() {
         // METHODOLOGY.md line 301 is the single source for this string;
         // Prober::new's contact_url parameter must reproduce it exactly.
-        let contact_url = "https://ledgerscope.io/methodology; contact: probes@ledgerscope.io";
+        let contact_url = "https://agentcount.ai/methodology; contact: probes@agentcount.ai";
         let ua = format!("{PRODUCT_TOKEN}/{PRODUCT_VERSION} (+{contact_url})");
         assert_eq!(
             ua,
-            "ledgerscope-probe/0.2 (+https://ledgerscope.io/methodology; contact: probes@ledgerscope.io)"
+            "agentcount-probe/0.2 (+https://agentcount.ai/methodology; contact: probes@agentcount.ai)"
         );
     }
 

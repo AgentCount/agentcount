@@ -1,10 +1,10 @@
 //! # api — serve the conformance census to the world
 //!
-//! The public face of Ledgerscope: the JSON API and the only crate the outside
+//! The public face of AgentCount: the JSON API and the only crate the outside
 //! world talks to. It reads runs, agent snapshots, check results, and the HTTP
 //! archive straight from Postgres (which `crates/sweeper` writes) and serves
 //! them as JSON — no scoring, no judgment folded in along the way. The Next.js
-//! app in the sibling `ledgerscope-web` repo is the frontend.
+//! app in the sibling `agentcount-web` repo is the frontend.
 //!
 //! This is a rewrite, not a patch: the previous version of this crate served a
 //! retired availability model whose tables (`probe_history`,
@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
-    tracing::info!("Ledgerscope API listening on http://{addr}");
+    tracing::info!("AgentCount API listening on http://{addr}");
     axum::serve(listener, app).await.context("serving")?;
     Ok(())
 }

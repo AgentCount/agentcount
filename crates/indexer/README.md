@@ -53,7 +53,7 @@ The `sol!` block in `bindings.rs` already matches the deployed Base registries
 ## Run it
 
 ```sh
-export DATABASE_URL=postgres://postgres:dev@localhost:5432/ledgerscope
+export DATABASE_URL=postgres://postgres:dev@localhost:5432/agentcount
 export RPC_URL_BASE=https://...       # your provider key
 sqlx migrate run                      # apply the schema first
 psql "$DATABASE_URL" -f scripts/seed_chains.sql
