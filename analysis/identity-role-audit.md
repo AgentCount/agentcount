@@ -220,6 +220,78 @@ contract is neither the NFT owner nor the `agentWallet`.
 
 ---
 
+---
+
+## 7. Follow-ups from the second pass
+
+**Units — settled.** All values are **US dollars**. `decimals()` on USDC
+returns 6 (verified on-chain); every raw log value is divided by 1,000,000
+before reporting, and always was — the earlier phrase "6-decimal units"
+described the encoding, not the figure, and was misleading. Spot-check:
+transaction `0x459a808c…3d990` carries a raw `Transfer` value of `68289018474`
+= **68,289.018474 USDC = $68,289**, the largest single external transfer in the
+set.
+
+**Corrected transfer counts** (not inferred by subtraction):
+
+| | pre-correction | post-mint only |
+|---|---:|---:|
+| external transfers | 18,328 | **11,580** |
+| x402 settlements | 7,519 | **6,581** |
+
+**The pre-mint finding, restated against the corrected 190.** Of the 190 agents
+with a post-mint external transfer, **99 (52%) also received money before they
+were minted**. The 123 agents whose transfers are *entirely* pre-mint are the
+ones excluded from 313 to reach 190. So the pattern is not an edge case at the
+boundary: **more than half of the agents that survive the correction were
+receiving money at that address before the agent existed.** This is promoted to
+its own section of the report — see §8.
+
+**The two-thirds claim does not hold.** Of the corrected 190, **43** belong to
+the largest registrant — **22.6%**, not two-thirds. The proposed headline is
+wrong because the mint correction hit that registrant hardest: 105 of its 148
+agents had *only* pre-mint money and dropped out. It is not two-thirds against
+the old 313 either (148/313 = 47.3%). What is true: those 43 agents account for
+**89.1% of the corrected value**, so the platform dominates by money and not by
+count — the opposite shape to the proposed sentence.
+
+**Proposed replacement headline**, arithmetic verified:
+
+> Of 60,097 registered agents, **36 have ever received a payment through x402**,
+> the ecosystem's own payment protocol. A further 40 received stablecoin from a
+> person's wallet without it. Almost all of the money — 94% — moved between
+> contracts, and for the largest holder it is provably DeFi yield, not revenue.
+
+---
+
+## 8. The registry did not create this activity; it counted it afterwards
+
+Filed initially as an attribution bug, this is the more important reading.
+
+For **123 of 313** agents, every payment their wallet ever received arrived
+**before the agent was registered**. Of the 190 that survive, **99 more** also
+have pre-registration money. Combined with §2 — per-agent contracts, a factory,
+126 distinct controllers, and DeFi vault integrations — the wallets were running
+an economic operation first, and ERC-8004 registration was attached to them
+afterwards.
+
+That reframes what the census measures. The registry is not where this activity
+originated; it is where existing operations came to be counted. It is the same
+shape as the attestation finding: rung 7's 49.2% turned out to be six addresses
+doing the vouching, not broad adoption — a number that described **who chose to
+appear in the registry**, not what the ecosystem does.
+
+Both findings say the registry is a **directory that existing activity opts
+into**, not a substrate that activity is built on. That is a claim about what
+ERC-8004 currently *is*, and it is better supported than any per-agent number in
+this report.
+
+Stated limits: registration lag is not itself evidence of intent, and a wallet
+reused from an earlier product is not the same claim as an operation
+deliberately retrofitted. The census can show the ordering; it cannot show why.
+
+---
+
 ## What this audit changes
 
 * **Do not publish** "313 agents have been paid" or "8.8M received" or "one
@@ -235,3 +307,12 @@ contract is neither the NFT owner nor the `agentWallet`.
   rather than owner-at-pinned-block.
 * **Not yet done**: this audit covers Base only. bsc, mainnet and celo have not
   been examined, and celo already differs from Base on every other measure.
+* **Third retraction, found on the second pass**: the receiving contracts are
+  DeFi portfolio/vault contracts, not payment contracts, so most of the
+  remaining value is not revenue either. See
+  [`payments-corrections-ledger.md`](payments-corrections-ledger.md) PAY-3.
+* **Platform identity**: the architecture is characterised (per-agent vault
+  contracts, Morpho integrations, Merkl rewards, admin-deposit and
+  emergency-withdraw functions, `Withdrawal` events). **No name is asserted** —
+  no label or public attribution was verified, and this document does not guess
+  at one.
