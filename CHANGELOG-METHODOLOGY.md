@@ -1119,3 +1119,73 @@ points at Supabase by default.
 
 **Full detail** — including what may and may not be said about the 105
 verdicts: `analysis/validation-registry.md`.
+
+---
+
+## 2026-07-30 — FEEDBACK VALUES: read for the first time, and a scope caveat Base needs
+
+**What changed.** No rung's rule, and no agent's status. Two things the census
+did not previously know:
+
+1. **The feedback values themselves.** `chain::Reputation::feedback` calls
+   `getSummary(agentId, clients, "", "")` and keeps `count`, discarding
+   `summaryValue` and `summaryValueDecimals`. Rung 7 has always counted
+   feedback without ever reading one.
+2. **That Base's feedback figures describe a third of Base's feedback.**
+
+**Why.** "29,570 agents carry feedback" says nothing about what the feedback
+says. The open question was whether concentrated feedback is all one identical
+value — the automation reading. It is.
+
+**Method, and a departure from the brief, reported rather than resolved
+silently.** The brief specified `getSummary`. This scans the `NewFeedback`
+event instead: `getSummary` returns one aggregate per agent and so cannot show
+the distribution *within* an agent, costs two RPC calls per attested agent
+against a few hundred for the whole scan, and — decisively — **can only be
+asked about agents the run knows about**, which is precisely what hid the
+finding below. `topic0` computed with `cast keccak` and verified against a
+known-good log (Base block 41,688,962) that matches a row the indexer had
+independently stored.
+
+**Validation.** Event-log counts versus the `feedback_count` rung 7 stored:
+
+| chain | log entries | stored sum | |
+|---|---:|---:|---|
+| bsc | 29,507 | 29,507 | exact |
+| celo | 27,532 | 27,532 | exact |
+| mainnet | 3,209 | 3,209 | exact |
+| base | 427,867 | 143,713 | 143,713 + 284,072 + 82 = 427,867 |
+
+Per agent on Base, 29,568 of 29,571 agree exactly; the 82 are real
+`FeedbackRevoked` events (which `getSummary` omits by design) affecting the
+other 2 agents.
+
+**Measured effect — the scope caveat.** The remaining 284,072 belong to
+**agent 25975, which holds 66.4% of every feedback entry ever written on
+Base and has no row in the run.** It is the single agent Base's manifest
+already records as `unreadable` (`agent_count 60098, swept 60097,
+unreadable 1`). The sweeper behaved correctly — a failed chain read is the
+census's problem, not the agent's, so the agent is excluded rather than
+failed, and the count is recorded durably. The failure was transient:
+`ownerOf(25975)` answers at the pinned block and now. **What was never done
+was joining that `1` to anything.**
+
+> **No published number becomes wrong. "Feedback on Base" as an unqualified
+> phrase becomes unsupportable.** Every Base feedback figure is correct for
+> the 60,097 agents the run measured, and must now be labelled as covering
+> **33.6% of the chain's feedback events**, naming the excluded agent.
+
+BSC's 77 unreadable agents cost nothing — its log total matches its stored sum
+exactly, so none of them holds any feedback. The Base gap is one agent that
+happened to be the largest.
+
+**The values.** 83.3% of Base's entries, and 66–78% elsewhere, carry their
+tag's single most common value. The largest tag in the dataset,
+`miner-vouch` (284,066 entries — agent 25975's traffic), has **exactly one
+distinct value**. `trust` = 85 on all four chains (78.8–94.4%); `liveness` =
+100 (95.8–99.3%). BSC's entire feedback population comes from **104
+addresses**. The automation reading completes — with the caveat that an
+automated prober writing the same value is behaving correctly, so this says
+the layer is machine-written, not that it is dishonest.
+
+**Full detail:** `analysis/feedback-values.md`.
