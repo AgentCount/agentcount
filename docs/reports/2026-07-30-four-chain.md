@@ -22,7 +22,9 @@ correction this project has made to itself, including the ones in this report.
 
 > Of those 354,858 agents, **358 have ever been paid** and **34 have ever
 > received a settlement through x402, the ecosystem's own payment protocol.**
-> One in 991, and one in 10,437.
+> One in 991, and one in 10,437. Checked against an independent index that has
+> no concept of ERC-8004: **of its 138 largest x402 sellers, none is a
+> registered agent's declared wallet.**
 
 ---
 
@@ -256,7 +258,7 @@ Five independent measurements, five times the same shape:
 |---|---|---|
 | 1 | **registration** | one registrant holds 148 paid agents on Base; two addresses hold 87.9% of Celo |
 | 2 | **reputation** | 104 addresses write all of BSC's feedback; 3 write 99.8% of CeloNova's; one agent holds 66.4% of Base's |
-| 3 | **payments** | 358 paid agents across four chains, and 32 of the 34 that ever settled through x402 are on one chain |
+| 3 | **payments** | 358 paid agents across four chains; 32 of the 34 that ever settled through x402 are on one chain, and none of x402's 138 largest sellers is a registered agent |
 | 4 | **infrastructure** | below |
 | 5 | **validation** | 27 validator addresses in the entire ecosystem; one agent holds 20% of all requests |
 
@@ -313,7 +315,9 @@ Stated so that absence is never read as evidence.
   promises neither.
 - **Every other chain.** Solana, Arbitrum, Polygon, Optimism and 25 more
   networks carry the same CREATE2 registries. Robinhood Chain (id 4663) has
-  both registries deployed and **zero agents minted**.
+  both registries deployed and **zero agents minted**. This bounds the
+  cross-check in §9 too: 21 of x402scan's top sellers are Solana addresses,
+  which our census cannot evaluate in either direction.
 - **Batch-settled x402.** Only per-transfer EIP-3009 authorisations are
   visible. Any settlement aggregated off-chain is invisible.
 - **Funding graphs beyond two hops.** "External" means the sender is not the
@@ -387,6 +391,71 @@ agents are not in it.
 everywhere (50.8%–93.9%), and on Base the largest recipient's inflows are
 provably Morpho vault yield — the operator's own capital returning from DeFi.
 
+### Checked against a second source
+
+The 34 is this census's most quotable payment number, so it was checked against
+an index built by someone else, by a different method, that has no concept of
+ERC-8004: **x402scan** (Merit Systems), which keys settlements by the seller's
+receiving address. Full working:
+[`analysis/x402scan-crosscheck.md`](../../analysis/x402scan-crosscheck.md).
+
+Our 34 agents resolve to 22 receiving addresses. **Of the 20 on Base, 18
+corroborate — 9 of them to the exact settlement count.** The 2 Celo addresses
+are outside x402scan's coverage: it indexes base, solana, polygon and optimism,
+**not Celo, BNB Chain or Ethereum mainnet.**
+
+Two addresses diverge, and both resolve against their index rather than ours —
+but the hypothesis that would have gone the other way was tested first. Our
+x402 test is transaction-level, so a batching contract could have inflated us.
+It did not: for the divergent address all **1,679 flagged transfers sit in
+1,679 distinct transactions**, and `Transfer.from` equals the
+`AuthorizationUsed` authorizer in **8 of 8** sampled. The real cause is that
+**x402scan's index is facilitator-scoped** — 29 facilitators, 151 relayer
+addresses — while ours reads the chain directly; the relayer behind 93% of that
+address's settlements appears in none of them. In the opposite case x402scan
+reports 1,713 settlements for an address that has only ever received **1,667
+USDC transfers in total**, so its unit of count cannot be an incoming transfer.
+
+**No correction to our figures is forced. The 34 stands.**
+
+### And the reverse direction, which is the stronger result
+
+The same index answers a question our data cannot ask of itself: are x402's
+*busiest* sellers registered agents?
+
+Taking x402scan's top 100 sellers by volume and top 100 by settlement count —
+**138 distinct EVM addresses** — and testing each against our census with a
+deliberately generous rule (declared `agentWallet`, **or** the NFT owner, which
+is the spec's default value for `agentWallet`, on any of the four chains):
+
+| | |
+|---|---:|
+| top EVM sellers examined | **138** |
+| …that are a declared `agentWallet` | **0** |
+| …that are an agent owner | **3** |
+
+And all three sell on Base while owning an agent on a **different chain** —
+address reuse by an operator, not an agent being paid.
+
+| | settlements | volume |
+|---|---:|---:|
+| x402scan's top 100 sellers by volume | 139,636,446 | **$49,617,581** |
+| our 20 corroborated agent addresses | 5,717 | **$8,596** |
+
+**Agent-linked value is 0.017% of the top 100's volume**, and our largest agent
+seller ($8,436) would not enter a list whose smallest member is $30,648.
+
+Two independent datasets, joined on address, agree: **the payment activity on
+x402 is not happening at registered ERC-8004 identities.**
+
+*What this does not establish:* a matching address confirms that a settlement
+occurred and who received it — never who initiated it or why. And a
+non-matching seller is not "not an agent"; it is not a **registered** ERC-8004
+identity on the four chains we sweep. That is the finding: the registry is not
+where the payment activity is. x402scan publishes no disclaimer of its own —
+its repository contains no methodology page or statement of limits — so this
+caveat is ours and is not attributed to them.
+
 **The pre-mint correction is the largest single one.** On Base, **82.5% of all
 value arriving at agent-declared addresses arrived before the agent existed** —
 only 11.9% of transfers, but the early ones are far larger. Counting them is
@@ -434,3 +503,10 @@ re-verified byte-identical to canonical ERC-8004 on 2026-07-30
 Event-derived figures — validation, feedback values, endpoint kinds — are
 reproducible with `cast` alone; each analysis document carries its own
 commands. Nothing in this report requires access to our database to check.
+
+The x402 cross-check is reproducible without us **or** our method: x402scan's
+public tRPC procedures are unauthenticated and free, and
+[`analysis/x402scan-crosscheck.md`](../../analysis/x402scan-crosscheck.md)
+carries the exact `curl` calls, the upstream commit (`bf7a0cd`), and the query
+date. Their documented REST routes are x402-paywalled at $0.01 each; **no
+payment was made for anything in this report.**
