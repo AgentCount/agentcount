@@ -1,11 +1,19 @@
 # Rust build output — big, regenerable, never committed.
-/target
+# NOTE the leading-slash trap: `/target` matches ONLY the repo root. A nested
+# crate (analysis/census) built in place slipped 3,894 files and 889 MB past it
+# in commit 0d9420d. The unanchored form below matches at any depth.
+target/
 
-# Local environment: secrets, RPC keys, DATABASE_URL. Never commit this.
+# Local environment: RPC keys, DATABASE_URL. Never commit these.
 .env
-
-/docs
 .env.local
+.env.*.local
 
 # Run exports: reproducible from Postgres + the pinned commit, never committed.
 /data
+
+# Working notes stay private; published reports are part of the record.
+# This was a bare `/docs`, which meant every report had to be `git add -f`'d —
+# one forgotten flag away from a report being silently unpublished.
+/docs/*
+!/docs/reports/
