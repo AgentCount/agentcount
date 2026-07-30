@@ -30,6 +30,15 @@ use std::net::IpAddr;
 use base64::Engine;
 
 /// The outcome of turning an `agentURI` into a fetch plan.
+///
+/// `Fetch` and `Inline` carry payloads that the current sole caller does not
+/// read: `fetch.rs` uses `resolve()` purely as the per-hop SSRF gate and
+/// matches both with `_`. They are kept rather than reduced to unit variants
+/// because they are not redundant — `Fetch` holds the URL *after* the
+/// `ipfs://` → gateway rewrite, which is not the string that went in, and
+/// `Inline` holds an already-decoded `data:` payload that a non-gate caller
+/// would otherwise decode a second time.
+#[allow(dead_code)]
 pub enum Resolution {
     /// An http(s) URL whose host resolved to only public addresses.
     Fetch(url::Url),

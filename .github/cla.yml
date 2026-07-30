@@ -1,0 +1,15 @@
+# CLA Assistant configuration.
+#
+# Set up BEFORE the first external pull request, deliberately: retrofitting a
+# CLA means chasing every prior contributor for a signature, and the ones who
+# have moved on cannot be chased at all. That is what forecloses a future
+# relicence or open-core split — see GOVERNANCE.md.
+#
+# Requires the CLA Assistant GitHub App installed on the AgentCount org, and
+# the workflow in .github/workflows/cla.yml.
+path-to-signatures: 'signatures/version1/cla.json'
+path-to-document: 'https://github.com/AgentCount/agentcount/blob/main/CLA.md'
+branch: 'main'
+allowlist: 'dependabot[bot]'
+remote-organization-name: 'AgentCount'
+remote-repository-name: 'cla-signatures'

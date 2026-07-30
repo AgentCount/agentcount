@@ -1,0 +1,32 @@
+# Every change needs the maintainer's review.
+#
+# Later rules win in CODEOWNERS, so the catch-all comes first and the
+# deliberately-called-out paths follow it.
+*                       @AgentCount/maintainers
+
+# ── The two paths where a quiet change is the actual risk ──────────────────
+#
+# crates/checks is the only place a verdict is formed. Everyone whose agent
+# fails a check has an incentive to soften one, so this path is named
+# explicitly rather than left to the catch-all — a reviewer should never be
+# able to say they did not notice which directory a diff was in.
+/crates/checks/         @AgentCount/maintainers
+
+# The schema decides what evidence survives a run. A dropped column is an
+# un-recomputable result, and unlike a bad check it cannot be fixed after the
+# fact by re-judging the archive.
+/migrations/            @AgentCount/maintainers
+
+# The rules a rung-4 verdict cites, and the pinned spec text itself.
+/spec/                  @AgentCount/maintainers
+
+# What the project promises about how it measures, and the record of every
+# time that promise changed.
+/METHODOLOGY.md         @AgentCount/maintainers
+/CHANGELOG-METHODOLOGY.md @AgentCount/maintainers
+
+# Governance and licensing.
+/LICENSE                @AgentCount/maintainers
+/TRADEMARK.md           @AgentCount/maintainers
+/GOVERNANCE.md          @AgentCount/maintainers
+/.github/               @AgentCount/maintainers

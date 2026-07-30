@@ -97,8 +97,7 @@ fn fetch_concurrency() -> usize {
 /// [`probe::Prober::new`] as a parameter, so the crate that actually sends
 /// the header never hardcodes it and cannot drift from what METHODOLOGY.md
 /// promises.
-const PROBE_CONTACT_URL: &str =
-    "https://agentcount.ai/methodology; contact: probes@agentcount.ai";
+const PROBE_CONTACT_URL: &str = "https://agentcount.ai/methodology; contact: probes@agentcount.ai";
 
 /// HTTPS gateways `ipfs://` URIs are tried against, in sequence, until one
 /// answers 2xx or all are exhausted (P0 FIX 8 — reverses the earlier ruling
@@ -859,7 +858,7 @@ async fn main() -> Result<()> {
         })?;
 
         swept += 1;
-        if swept % 500 == 0 {
+        if swept.is_multiple_of(500) {
             tracing::info!(
                 "{swept}/{remaining} agents swept this session \
                  ({unreadable} unreadable, {unwritable} unwritable this session)"

@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  # ── The gate that is not a formality ──────────────────────────────────────
+  #
+  # crates/checks is the only place a verdict is formed, and it is pure: plain
+  # data in, a status plus evidence out. That purity is what lets a verdict be
+  # re-derived from an archived run without re-reading the chain — which is in
+  # turn what lets a correction be measured against an old run instead of
+  # guessed at.
+  #
+  # A single `reqwest` or `SystemTime::now()` in this crate would end that
+  # quietly: nothing would fail, results would simply stop being reproducible,
+  # and nobody would notice until a recount disagreed with a published number.
+  # Hence a named job rather than a comment in Cargo.toml.
+  checks-purity:
+    name: checks-purity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: crates/checks has no I/O or clock dependency
+        run: |
+          set -euo pipefail
+          # Transitive dependency tree of the checks crate only.
+          cargo tree -p checks --edges normal --prefix none \
+            | awk '{print $1}' | sort -u > /tmp/checks-deps.txt
+          echo "--- crates/checks depends on ---"
+          cat /tmp/checks-deps.txt
+
+          banned='^(reqwest|hyper|sqlx|tokio|tokio-postgres|ureq|curl|surf|isahc|async-std|mio|socket2)$'
+          if grep -Eq "$banned" /tmp/checks-deps.txt; then
+            echo "::error::crates/checks gained an I/O dependency:"
+            grep -E "$banned" /tmp/checks-deps.txt
+            echo "A check must stay re-derivable from an archived run. See CONTRIBUTING.md."
+            exit 1
+          fi
+
+      - name: crates/checks reads no clock
+        run: |
+          set -euo pipefail
+          # `now` is a parameter to every check, never a call. A check that
+          # reads the clock returns a different answer tomorrow for the same
+          # archived input, which is the same failure as an I/O dependency.
+          if grep -rnE '(SystemTime::now|Instant::now|Utc::now|Local::now)' \
+               crates/checks/src --include='*.rs'; then
+            echo "::error::crates/checks reads the clock; pass `now` in as a parameter instead."
+            exit 1
+          fi
+          echo "no clock reads in crates/checks"
+
+      - name: checks does not reach the filesystem
+        run: |
+          set -euo pipefail
+          if grep -rnE 'std::fs|File::(open|create)|include_str!|env::var' \
+               crates/checks/src --include='*.rs'; then
+            echo "::error::crates/checks touches the filesystem or environment."
+            exit 1
+          fi
+          echo "no filesystem or env access in crates/checks"

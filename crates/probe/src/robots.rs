@@ -136,9 +136,7 @@ impl Prober {
         let mut current = robots_url;
 
         for hop in 0..=MAX_ROBOTS_REDIRECTS {
-            if validate_hops
-                && let Err(reason) = self.validate_hop(&current).await
-            {
+            if validate_hops && let Err(reason) = self.validate_hop(&current).await {
                 return RobotsRules::Unavailable(format!("ssrf_blocked: {reason}"));
             }
 
@@ -283,7 +281,9 @@ mod tests {
         let prober = test_prober();
         let origin = origin_of(&server).await;
         assert_eq!(
-            prober.check_robots(&origin, "/public/card.json", false).await,
+            prober
+                .check_robots(&origin, "/public/card.json", false)
+                .await,
             RobotsDecision::Allowed
         );
     }
@@ -302,7 +302,9 @@ mod tests {
         let prober = test_prober();
         let origin = origin_of(&server).await;
         assert_eq!(
-            prober.check_robots(&origin, "/private/card.json", false).await,
+            prober
+                .check_robots(&origin, "/private/card.json", false)
+                .await,
             RobotsDecision::Disallowed
         );
     }

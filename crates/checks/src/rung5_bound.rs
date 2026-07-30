@@ -375,7 +375,10 @@ mod tests {
         assert_eq!(r.status, CheckStatus::Unclaimed);
         assert_eq!(r.evidence["reason"], "unclaimed");
         assert_eq!(r.evidence["registrations_seen"], 0);
-        assert!(r.evidence["match"].is_null(), "no claim to have matched or not");
+        assert!(
+            r.evidence["match"].is_null(),
+            "no claim to have matched or not"
+        );
     }
 
     /// Deliverable fixture: `registrations` present but an empty array →

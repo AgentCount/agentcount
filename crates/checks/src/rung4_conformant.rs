@@ -210,10 +210,10 @@ pub fn conformant(input: &ConformantInput, spec_commit: &str, now: DateTime<Utc>
     // resolved through the same alias). Aggregated to ONE gap label if any
     // entry lacks it, rather than one per index — this is a completeness
     // signal about the document, not a per-entry MUST violation list.
-    if let Some(entries) = services_entries {
-        if entries.iter().any(|entry| !is_present(entry, "version")) {
-            should_gaps.push("services[].version".to_string());
-        }
+    if let Some(entries) = services_entries
+        && entries.iter().any(|entry| !is_present(entry, "version"))
+    {
+        should_gaps.push("services[].version".to_string());
     }
 
     // ---- SHOULD (special): registrations, at least one (spec line 123) --

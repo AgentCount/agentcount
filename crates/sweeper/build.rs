@@ -36,10 +36,10 @@ fn main() {
     // the binary. A run whose `checker_commit` names the wrong code is worse
     // than one with no stamp at all, because it looks trustworthy.
     println!("cargo:rerun-if-changed=.git/HEAD");
-    if let Ok(head) = std::fs::read_to_string(".git/HEAD") {
-        if let Some(reference) = head.trim().strip_prefix("ref: ") {
-            println!("cargo:rerun-if-changed=.git/{reference}");
-        }
+    if let Ok(head) = std::fs::read_to_string(".git/HEAD")
+        && let Some(reference) = head.trim().strip_prefix("ref: ")
+    {
+        println!("cargo:rerun-if-changed=.git/{reference}");
     }
     // Catches staged changes, so the `-dirty` suffix cannot go stale either.
     println!("cargo:rerun-if-changed=.git/index");

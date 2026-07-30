@@ -63,8 +63,7 @@ fn finding(
         key,
         numerator,
         denominator,
-        percent: (denominator > 0)
-            .then(|| (numerator as f64) * 100.0 / (denominator as f64)),
+        percent: (denominator > 0).then(|| (numerator as f64) * 100.0 / (denominator as f64)),
         denominator_label,
     }
 }
@@ -190,12 +189,7 @@ pub async fn get(
                 rung4_pass,
                 "documents that passed rung 4 (conformant)",
             ),
-            finding(
-                "attested",
-                attested,
-                agent_count,
-                "agents in this run",
-            ),
+            finding("attested", attested, agent_count, "agents in this run"),
             finding(
                 "attested_resolvable",
                 att_resolvable,

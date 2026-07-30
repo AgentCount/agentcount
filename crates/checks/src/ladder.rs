@@ -232,7 +232,11 @@ mod tests {
         ]);
         assert_eq!(out.len(), 6);
         let rung5 = out.iter().find(|r| r.rung == 5).unwrap();
-        assert_eq!(rung5.status, CheckStatus::Fail, "rung 5's own verdict stands");
+        assert_eq!(
+            rung5.status,
+            CheckStatus::Fail,
+            "rung 5's own verdict stands"
+        );
         let rung7 = out.iter().find(|r| r.rung == 7).unwrap();
         assert_eq!(
             rung7.status,

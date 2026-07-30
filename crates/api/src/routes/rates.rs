@@ -59,10 +59,11 @@ pub async fn get(
 ) -> ApiResult<Json<RatesResponse>> {
     // 404 rather than an empty rungs list for an unknown run id — an id that
     // was never opened is a different claim than "opened, zero results so far".
-    let agent_count: i64 = sqlx::query_scalar("SELECT count(*) FROM agent_snapshots WHERE run_id = $1")
-        .bind(run_id)
-        .fetch_one(&state.db)
-        .await?;
+    let agent_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM agent_snapshots WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&state.db)
+            .await?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE run_id = $1)")
         .bind(run_id)
         .fetch_one(&state.db)

@@ -66,10 +66,7 @@ pub async fn list(
 /// Returns [`ApiError::NotFound`] rather than `Option` so every caller gets
 /// the same 404 shape for "no completed run exists yet" without repeating
 /// the `.ok_or(ApiError::NotFound)` at each call site.
-pub async fn latest_completed(
-    pool: &sqlx::PgPool,
-    chain: Option<&str>,
-) -> ApiResult<Uuid> {
+pub async fn latest_completed(pool: &sqlx::PgPool, chain: Option<&str>) -> ApiResult<Uuid> {
     let run_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT run_id FROM runs \
          WHERE finished_at IS NOT NULL AND ($1::text IS NULL OR chain = $1) \

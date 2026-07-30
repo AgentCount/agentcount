@@ -141,13 +141,12 @@ pub async fn post(
 
     let now = Utc::now();
     // Hex by hand rather than pulling in the `hex` crate for one call.
-    let body_sha256 = Sha256::digest(&body).iter().fold(
-        String::with_capacity(64),
-        |mut acc, b| {
+    let body_sha256 = Sha256::digest(&body)
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, b| {
             let _ = write!(acc, "{b:02x}");
             acc
-        },
-    );
+        });
 
     // ── Rung 3, from the raw bytes ─────────────────────────────────────────
     let (rung3, document) = checks::parseable(
