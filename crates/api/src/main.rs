@@ -94,8 +94,22 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     // 3. Bind a TCP port and serve until the process stops.
-    let addr = "0.0.0.0:8080";
-    let listener = tokio::net::TcpListener::bind(addr)
+    //
+    // The port comes from `$PORT` when set, defaulting to 8080. Container
+    // platforms (Cloud Run among them) choose the port and inject it, and kill
+    // any container that does not listen on exactly that — a hardcoded 8080 is
+    // the single most common way a deploy fails there, and it fails as a
+    // startup timeout rather than as anything that names the port.
+    //
+    // The host stays 0.0.0.0: binding 127.0.0.1 inside a container accepts
+    // only connections from within the container itself, which looks identical
+    // to a healthy service from the inside and unreachable from the outside.
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(8080);
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
     tracing::info!("AgentCount API listening on http://{addr}");
