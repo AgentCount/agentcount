@@ -24,7 +24,14 @@ jobs:
       || github.event_name == 'pull_request_target'
     steps:
       - name: CLA Assistant
-        uses: contributor-assistant/github-action@v2.6.1
+        # Pinned to a commit SHA, not the `v2.6.1` tag. A git tag is mutable —
+        # whoever controls the action's repo can repoint it — and this is the
+        # worst workflow in the project to leave unpinned: `pull_request_target`
+        # gives it repository write access, `pull-requests: write`,
+        # `statuses: write`, and a PAT for the signatures repo, on an event any
+        # stranger can trigger by opening a PR. Dependabot (.github/dependabot.yml)
+        # opens a PR when a newer immutable SHA ships.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           # Only the built-in token. Note this workflow uses
           # `pull_request_target`, which runs with repository write access and
