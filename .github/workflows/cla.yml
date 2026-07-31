@@ -18,10 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     # Only react to the signature phrase or to pull request events — not to
     # every comment on every issue.
+    # Only external contributors need a CLA. A pull request from a branch in
+    # THIS repository is the maintainer's or Dependabot's, and neither signs
+    # anything — running the action for them just fails noisily and, worse,
+    # trains everyone to ignore a red CLA check.
+    #
+    # `head.repo.full_name != github.repository` is the fork test. It is used
+    # here only to DECIDE WHETHER TO RUN — never interpolated into a shell
+    # command, which is the injection risk that makes `pull_request_target`
+    # dangerous.
     if: >
       (github.event.issue.pull_request
         && github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')
-      || github.event_name == 'pull_request_target'
+      || (github.event_name == 'pull_request_target'
+          && github.event.pull_request.head.repo.full_name != github.repository)
     steps:
       - name: CLA Assistant
         # Pinned to a commit SHA, not the `v2.6.1` tag. A git tag is mutable —
