@@ -1,0 +1,12 @@
+# Keep the build context small and free of anything that should never reach an
+# image layer. A .env copied into a layer survives even if a later layer deletes
+# it — layers are additive and independently extractable.
+.env
+.env.*
+.git
+target/
+data/
+docs/
+analysis/
+node_modules/
+*.md
