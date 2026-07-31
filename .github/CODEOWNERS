@@ -1,8 +1,14 @@
-# Every change needs the maintainer's review.
+# Owned by the maintainer.
+#
+# A personal username, not an @AgentCount/team: with one maintainer a team
+# buys nothing and can fail silently — GitHub does not error on a CODEOWNERS
+# reference to a team that does not exist or was renamed, it simply matches
+# nobody, leaving a file that looks like review protection and is not.
+# Switch to a team when there is a second maintainer to put in it.
 #
 # Later rules win in CODEOWNERS, so the catch-all comes first and the
 # deliberately-called-out paths follow it.
-*                       @AgentCount/maintainers
+*                       @NemboKid
 
 # ── The two paths where a quiet change is the actual risk ──────────────────
 #
@@ -10,23 +16,23 @@
 # fails a check has an incentive to soften one, so this path is named
 # explicitly rather than left to the catch-all — a reviewer should never be
 # able to say they did not notice which directory a diff was in.
-/crates/checks/         @AgentCount/maintainers
+/crates/checks/         @NemboKid
 
 # The schema decides what evidence survives a run. A dropped column is an
 # un-recomputable result, and unlike a bad check it cannot be fixed after the
 # fact by re-judging the archive.
-/migrations/            @AgentCount/maintainers
+/migrations/            @NemboKid
 
 # The rules a rung-4 verdict cites, and the pinned spec text itself.
-/spec/                  @AgentCount/maintainers
+/spec/                  @NemboKid
 
 # What the project promises about how it measures, and the record of every
 # time that promise changed.
-/METHODOLOGY.md         @AgentCount/maintainers
-/CHANGELOG-METHODOLOGY.md @AgentCount/maintainers
+/METHODOLOGY.md         @NemboKid
+/CHANGELOG-METHODOLOGY.md @NemboKid
 
 # Governance and licensing.
-/LICENSE                @AgentCount/maintainers
-/TRADEMARK.md           @AgentCount/maintainers
-/GOVERNANCE.md          @AgentCount/maintainers
-/.github/               @AgentCount/maintainers
+/LICENSE                @NemboKid
+/TRADEMARK.md           @NemboKid
+/GOVERNANCE.md          @NemboKid
+/.github/               @NemboKid
