@@ -30,13 +30,13 @@ latest run whose sweep has *finished*, never an in-flight one.
 | `GET /api/agents?run=&chain=&rung=&status=&limit=&offset=` | The directory, one page at a time: `{items, page:{limit,offset,total}}`. `rung`+`status` filter to e.g. "everything failing rung 4"; `limit` clamped to 500 (default 100). `run` defaults to the latest completed run. |
 | `GET /api/agents/{chain}/{id}?run=` | One agent: its snapshot, every rung this run asked (in rung order, with full evidence), and the HTTP archive summary (status, content-type, size, sha256, final URL — never the body). `run` defaults to the latest completed run. |
 | `GET /api/methodology` | `spec_commit`, `checker_version`, `schema_version`, and the rung-4 required-field list — re-exported from `checks`, never restated. |
-| `GET /healthz` | Liveness: process up + Postgres reachable. |
+| `GET /api/healthz` | Liveness: process up + Postgres reachable. Not `/healthz` — that path is reserved on Cloud Run and never reaches the container. |
 
 ## Files
 
 | File | What's in it |
 |------|--------------|
-| `src/main.rs` | Router, shared `AppState`, `/healthz`, timeout + concurrency-limit layers. |
+| `src/main.rs` | Router, shared `AppState`, `/api/healthz`, timeout + concurrency-limit layers. |
 | `src/error.rs` | `ApiError` + `IntoResponse`/`From` impls (so handlers can `?`). `NotFound` → 404, `BadRequest` → 400, `Internal` → 500. |
 | `src/routes/runs.rs` | `GET /api/runs`, and `latest_completed` — the shared "fill in a missing `run=`" lookup every other handler calls into. |
 | `src/routes/rates.rs` | `GET /api/runs/{id}/rates` — the one permitted aggregate: population counts, never a per-agent one. |

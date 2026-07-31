@@ -42,8 +42,16 @@ pub struct AppState {
     pub db: sqlx::PgPool,
 }
 
-/// `GET /healthz` — proves the process is up AND can reach Postgres. This is
-/// liveness for OUR service; a supervisor or uptime monitor hits it.
+/// `GET /api/healthz` — proves the process is up AND can reach Postgres. This
+/// is liveness for OUR service; a supervisor or uptime monitor hits it.
+///
+/// **Not `/healthz`.** That path is reserved on Cloud Run: Google's frontend
+/// intercepts it for its own health checking and never forwards it to the
+/// container. The failure is deeply confusing, because the container is
+/// completely healthy — the identical image serves `/healthz` with a 200 when
+/// run locally, and every other route works when deployed. What comes back is
+/// Google's own 404 page, so it looks like the app is not routing, which sends
+/// you looking at the router rather than at the platform.
 async fn healthz(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<&'static str, error::ApiError> {
@@ -83,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
         // The one endpoint that writes nothing and reads no run: it judges a
         // document the caller supplies, with the same checker the sweep uses.
         .route("/api/validate", post(routes::validate::post))
-        .route("/healthz", get(healthz))
+        .route("/api/healthz", get(healthz))
         // Crude but effective public-endpoint hardening: cap request time and
         // total in-flight requests. Per-IP rate limiting is a fast-follow.
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
