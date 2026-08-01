@@ -114,24 +114,34 @@ Done. Two things this script does NOT set up, both of which matter:
     resource.labels.job_name="agentcount-sweep"
     severity>=ERROR
 
-  ALERTING ON SILENCE is now handled, but needs one thing from you.
+  ALERTING ON SILENCE — and why the default is to skip it.
 
-  The `heartbeat` binary runs LAST in the weekly job and pings an external
-  monitor only once every chain has a finished run that is actually PUBLISHED.
-  It stays silent otherwise — including when a sweep succeeded but its upload
-  did not, which from a reader's side is the same as no sweep at all.
+  `heartbeat` runs LAST in the weekly job and does two separable things:
 
-  For that to alert, set HEARTBEAT_URL before running this script:
+    1. A SELF-CHECK. It verifies every enabled chain has a finished run that
+       actually reached the public bucket, and exits non-zero if not. That
+       fails the job, which the log-based alert above catches. No external
+       service, no configuration, on by default.
 
-    HEARTBEAT_URL=https://... ./scripts/deploy-weekly-sweep.sh
+       This is the part worth having. It catches PARTIAL publication — three
+       chains upload, one does not, the job exits 0 and the week looks fine.
+       Total absence is easy to notice; a missing quarter of the data inside a
+       report that arrived on time is not.
 
-  Any dead-man's-switch service works (healthchecks.io, Better Stack, Cronitor
-  — all have free tiers). Create a check with a period of 1 week and a grace
-  of 2 days, and use the ping URL it gives you.
+    2. A DEAD MAN'S PING to an outside monitor, which catches the scheduler
+       never firing at all. This is OPTIONAL and off unless HEARTBEAT_URL is
+       set, because at a weekly cadence with someone reading and publishing
+       each result, that person already is the dead man's switch — a report
+       that does not arrive on Monday is noticed about as fast as a monitor
+       would notice it. An external service to detect something you would
+       detect anyway is a moving part that earns nothing.
 
-  Unset, the job logs a warning and pings nothing — which means a schedule that
-  stops firing is STILL invisible. That is the one gap this deployment cannot
-  close on its own, because a watchdog hosted on the same infrastructure as the
-  thing it watches goes down in the same outage.
+       Set it if the cadence ever gets faster, if the results stop being read
+       by a human every time, or if nobody would notice a quiet month:
+
+         HEARTBEAT_URL=https://... ./scripts/deploy-weekly-sweep.sh
+
+       healthchecks.io, Better Stack and Cronitor are all free at this scale.
+       A 1-week period with a 2-day grace matches this schedule.
 
 NOTES

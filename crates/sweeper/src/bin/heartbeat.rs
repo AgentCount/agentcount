@@ -24,17 +24,34 @@
 //! inside the job. It needs something that runs on its own clock and expects
 //! to hear from the census.
 //!
-//! ## How this closes it
+//! ## Two separable jobs, and only one of them is on by default
 //!
-//! A dead man's switch. This binary asks the database a question with a
-//! definite answer — "does every enabled chain have a finished, PUBLISHED run
-//! inside the freshness window?" — and pings an external monitor only if the
-//! answer is yes. Miss two pings and the monitor alerts.
+//! Both start from the same question, asked of the database and answered
+//! definitely: does every enabled chain have a finished run inside the
+//! freshness window, and did that run's data actually reach the public bucket?
 //!
-//! The monitor is deliberately not ours. A watchdog hosted on the same
-//! infrastructure as the thing it watches fails in the same outage, and would
-//! have been just as silent as the schedule it was meant to be watching. Any
-//! of the free heartbeat services works; the URL is all this needs.
+//! **1. The self-check, always on.** If the answer is no, this exits non-zero
+//! and fails the weekly job, which the platform's own failure alerting
+//! catches. No external service, nothing to configure.
+//!
+//! This is the part that earns its place, and the case it earns it on is
+//! PARTIAL publication: three chains upload, one does not, the job exits 0 and
+//! the week looks fine. Total absence is easy for a person to notice; a
+//! missing quarter of the data inside a report that arrived on time is not.
+//!
+//! **2. The dead man's ping, off unless `HEARTBEAT_URL` is set.** Pings an
+//! outside monitor when everything is healthy; miss two and the monitor
+//! alerts. That catches the scheduler never firing at all — but at a weekly
+//! cadence, with a person reading and publishing each result, that person
+//! already is the dead man's switch. A report that does not arrive on Monday
+//! is noticed about as fast as a monitor would notice it, so an external
+//! service to detect it is a moving part earning nothing. Worth setting if
+//! the cadence gets faster, if results stop being read by a human every time,
+//! or if nobody would notice a quiet month.
+//!
+//! The monitor, when used, is deliberately not ours: a watchdog hosted on the
+//! same infrastructure as the thing it watches fails in the same outage, and
+//! would be exactly as silent as the schedule it was meant to catch.
 //!
 //! ## Where it runs in the weekly job, and why that ORDER
 //!
@@ -156,9 +173,14 @@ async fn main() -> Result<()> {
 
     match std::env::var("HEARTBEAT_URL") {
         Err(_) => {
-            tracing::warn!(
-                "all {} chains healthy, but HEARTBEAT_URL is unset — nothing was pinged. \
-                 Until it is set, a schedule that stops firing is still invisible.",
+            // Not a warning: this is the intended default. The self-check
+            // above already passed, which is the part that catches partial
+            // publication. See the module doc for when the ping is worth
+            // turning on.
+            tracing::info!(
+                "all {} chains healthy and published. No HEARTBEAT_URL set, so \
+                 nothing was pinged — the scheduler not firing at all is caught \
+                 by whoever expects this week's report, not by this.",
                 chains.len()
             );
         }
