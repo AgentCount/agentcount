@@ -302,10 +302,14 @@ async fn main() -> Result<()> {
         .collect();
     tracing::info!("{} URLs to probe", todo.len());
 
-    let gateways: Vec<String> = Vec::new();
-    // No IPFS gateways: ruling 2 probes http(s) only, so the gateway chain is
-    // unreachable from here and an empty list says that rather than carrying
-    // three URLs nothing will use.
+    // Rung 6 probes `http(s)` only (ruling 2), so `crates/probe`'s IPFS
+    // gateway chain is unreachable from this binary — nothing here ever hands
+    // it an `ipfs://` URI. `Prober::new` still refuses an empty list, and
+    // rightly so for its main caller, where an empty list would mean every
+    // `ipfs://` document silently failed. One entry satisfies it and is never
+    // dialled; it is the same default the sweeper uses so the two cannot
+    // drift into disagreeing about which gateway this project talks to.
+    let gateways = vec!["https://ipfs.io/ipfs/".to_string()];
     let prober = probe::Prober::new(PROBE_CONTACT_URL, &gateways)?;
     let concurrency = probe_concurrency();
     let db_ref = &db;
@@ -424,6 +428,14 @@ async fn main() -> Result<()> {
                 // leave rung 6 absent rather than invent a verdict. If rung 4
                 // did not pass, the ladder's `Skipped` is the right row.
                 if c.rung4_status == "pass" {
+                    // Cleared, not just skipped over: this pass may be a
+                    // re-run, and a row an earlier pass wrote for this agent
+                    // would otherwise stand as a verdict this one declined to
+                    // reach. Every branch that decides "no row" has to say so
+                    // to the database, or absence stops meaning absence.
+                    if let Err(e) = db.clear_rung6(run_id, c.agent_id).await {
+                        tracing::warn!("could not clear rung 6 for {}: {e}", c.agent_id);
+                    }
                     absent += 1;
                     continue;
                 }
