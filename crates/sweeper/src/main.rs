@@ -47,7 +47,10 @@
 //! mean tuning one starves the other.
 
 mod export;
-mod store;
+// `store` moved into this crate's library so the `liveness` binary (rung 6)
+// writes to the same tables through the same code — see `src/lib.rs`.
+// `export` stays private here: only a full sweep produces `data/<run_id>/`.
+use sweeper::store;
 
 use std::collections::{HashMap, HashSet};
 
@@ -819,7 +822,7 @@ async fn sweep() -> Result<()> {
             None
         };
         // The URI goes into rung 2's evidence, which is a `jsonb` column, and
-        // Postgres rejects ` ` in jsonb outright — so the same escape the
+        // Postgres rejects `\0` in jsonb outright — so the same escape the
         // TEXT writes use has to be applied here too, or an agent with a NUL
         // in its tokenURI aborts the run AFTER its snapshot row has landed.
         // Escaping once here means the store and the checks cannot disagree

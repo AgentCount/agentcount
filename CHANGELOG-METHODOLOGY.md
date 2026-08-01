@@ -20,6 +20,98 @@ Format per entry:
 
 ---
 
+## 2026-08-01 — Rung 6 (`live`) ships, with a sixth status and a disclosed sample
+
+**What changed.** The service track stops being absent from every result. A
+new pure checker, `crates/checks/src/rung6_live.rs`, answers "does anything
+answer at the endpoints this document declares", and a new binary
+(`crates/sweeper`'s `liveness`) collects the observations it judges. Schema
+version 6 → 7; checker 0.5.0 → 0.6.0; migration 0015.
+
+Four decisions — three settled in advance, one made here:
+
+1. **Live means 2xx *or* 402.** A payment challenge proves something is
+   listening; a dead host does not bill you. Counted separately as
+   `endpoints_payment_gated`. This is the **opposite** of rung 2's ruling on
+   the same status, and both are right: rung 2 asks whether the document
+   could be retrieved (a 402 means no), rung 6 asks whether anything is alive
+   (a 402 means yes). Anyone reconciling a 402 count across the two rungs
+   needs that sentence, so it appears in `METHODOLOGY.md` §2 under both.
+2. **Only `http(s)` is probed, and having nothing probeable is its own
+   status.** `check_results.status` gains `unprobeable`, produced only by
+   rung 6, for an agent whose every declared entry is a CAIP-10 chain
+   address, an email address, an empty string, an `ipfs://` URI, or carries
+   no `endpoint` field. That is `unclaimed`'s reasoning one rung over, and
+   deliberately a *different* word: an agent that published a CAIP-10 address
+   made a claim, it is simply not one you can dial.
+3. **Distinct URLs are probed once, and mega-hosts are sampled** at 500
+   distinct URLs per host, chosen by a fixed FNV-1a hash of the URL so the
+   sample is identical on a resume, a re-run, or someone else's machine. An
+   agent whose every URL fell outside the budget gets **no rung-6 row** — it
+   is not assigned its host's rate, because that would be inventing a status
+   for an agent nobody checked.
+4. **Aggregation was not among the settled rulings, and is decided here:** an
+   agent passes if **any** probeable endpoint answered live. See below.
+
+**Why.** The rung was fully specified and unimplemented since the ladder was
+written, blocked on two things, both now cleared. The method needed settling
+(402 is payment-gated rather than dead; a `GET` 404 may front a POST-only
+service; liveness is not functionality). And the probe's User-Agent had to
+carry a domain that resolves and a mailbox that answers before it was decent
+to send a single request — `agentcount.ai` and `probes@agentcount.ai` were
+confirmed working end-to-end on 2026-07-30.
+
+**Three changes to the previously published specification.** That
+specification was public, and this file exists so nothing is quietly
+overwritten:
+
+- **Pass was "every declared endpoint returns 2xx"; it is now "at least
+  one".** Sampling forces it. Once some of an agent's endpoints may go
+  unprobed, "every endpoint answered" is not a claim we can make about a
+  partially-probed agent, and an all-must-pass rule would have had to return
+  no row at all for every multi-endpoint agent it sampled. The any-match rule
+  is what rung 5 already uses for `registrations`, and it matches the question
+  the rung is named for — whether the agent is reachable, not whether every
+  URL it lists is perfect. Every endpoint's own outcome is in evidence with
+  the counts, so the all-must-pass definition stays computable from published
+  rows by anyone who prefers it.
+- **Zero declared endpoints was "a rung-4 concern, not this one"; it is now
+  `unprobeable` here.** Rung 4 still checks `services` presence. Leaving rung
+  6 silent about an agent it plainly cannot probe conflated "declared
+  nothing" with "was not sampled".
+- **The method was "HEAD, falling back to GET"; it is GET only.** Enough
+  servers answer HEAD with a 405 or 404 while serving the same URL correctly
+  on GET that the fallback would have produced false `fail`s — an accusation
+  about a working service, traded for a bandwidth saving.
+
+**Measured effect**, computed against the four archived runs (`cfbfcc01…`,
+`f78c7891…`, `18a25593…`, `7833fc49…`) **before any request was sent**:
+
+| | |
+|---|---:|
+| declared `http(s)` entries, rung-4-passing agents | 124,364 |
+| distinct URLs after exact-string dedupe | **62,243** |
+| distinct hosts | 3,348 |
+| hosts over the 500-URL budget | **12** |
+| distinct URLs actually requested | **14,494** |
+| agents declaring at least one probeable endpoint | 56,794 |
+| agents that receive a rung-6 row | **27,956 (49.2%)** |
+
+The budget does nearly all the work, and it is worth being precise about why:
+deduplication alone only halves the request count, because the largest hosts
+give each agent its own path — `evoevo.ai` declares 26,147 distinct URLs for
+26,273 agents. Raising the budget to 5,000 would take coverage from 49.2% to
+62.6% at 2.4× the requests, aimed almost entirely at one server. 500 was kept.
+
+**No existing agent's status moves.** No other rung's rule changes, and a row
+written under schema ≤ 6 has no rung-6 sibling — that absence continues to
+mean exactly what it always meant. The schema bump is how a reader tells,
+from the row alone, whether a missing rung 6 means "this run did not
+implement it" (≤ 6) or "this run implemented it and this agent was not
+probed" (7).
+
+---
+
 ## 2026-07-28 — FIX 1: accept `endpoints` as a legacy alias for `services`
 
 **What changed.** Rung 4 (`conformant`) now reads the services array as

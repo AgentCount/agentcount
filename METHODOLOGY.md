@@ -299,25 +299,103 @@ fetched *from*?
 
 ### Rung 6 — `live`
 
-**Question:** Does every service endpoint the document declares respond to a
-HEAD or GET request?
+**Implemented 2026-08-01.** This section previously specified a rung no code
+executed. Three parts of that specification changed when it shipped, and all
+three are listed under "What changed from the specification" below rather
+than silently overwritten.
 
-- **Pass:** every declared endpoint returns HTTP 2xx.
-- **Fail:** at least one declared endpoint does not.
-- **Evidence:** a per-endpoint record of `url`, `status`, `elapsed_ms`,
-  `checked_at`.
+**Question:** Does anything answer at the service endpoints the document
+declares?
+
+- **Pass:** at least one probeable declared endpoint answered HTTP 2xx **or
+  402**.
+- **Fail:** every probeable declared endpoint that we reached gave a definite
+  answer that was not live — any other HTTP status, or a URL that could not be
+  reached by anyone (`ssrf_blocked`: it does not resolve, or resolves only to
+  a private, loopback or link-local address).
+- **Error:** every probeable endpoint failed on **our** side — a timeout, a
+  TLS failure, a `robots.txt` we could not read or that disallowed us. Never
+  the agent's fault, so never a `fail`.
+- **`unprobeable`:** the document declared no service endpoint that a prober
+  can dial. Its entries are CAIP-10 chain addresses, email addresses, empty
+  strings, `ipfs://` URIs, or carry no `endpoint` field at all — or it
+  declared no services. Across the four-chain census **11.0% of all declared
+  "endpoints" are not network endpoints**, so this is a large population, not
+  a rounding case. See Section 2's status list for why it is its own word and
+  not `unclaimed`.
+- **Absent (no row):** the agent declares a probeable endpoint but **none of
+  its URLs was probed**, because its host's sampling budget was already spent.
+  See "Sampling" below. This is the ordinary Section 4 meaning of an absent
+  rung — we did not ask — and it is the only honest answer available.
+- **Evidence:** `endpoints_declared`, `endpoints_probeable`,
+  `endpoints_probed`, `endpoints_live`, `endpoints_payment_gated`,
+  `endpoints_answered_not_live`, `endpoints_our_error`, plus an `endpoints[]`
+  array carrying, per declared entry: its index, its `name`, the **raw
+  declared string**, its classified kind, whether it was probed, and its own
+  URL, final URL, status, elapsed time and outcome.
 - **Does not mean:** that the endpoint does anything useful, correctly, or at
-  all beyond answering the HTTP request — only that something is listening
-  and answering. A single unreachable endpoint among several still fails the
-  whole rung; a document that declares zero endpoints is a rung-4 concern
-  (`services` presence), not this one.
-- **Not yet implemented.** The pass/fail conditions and evidence shape above
-  are final, but no code executes this rung yet — `crates/checks` has no
-  `rung6` module, and `checks::run_ladder` never calls one. **This rung
-  produces no row for any agent in any run to date.** An absent rung 6 means
-  exactly what Section 4 says an absent rung always means: we did not ask,
-  not that every agent's endpoints failed to answer. Do not read a rung-6
-  gap in a report as a rung-6 failure — it is not in the data at all.
+  all beyond answering. **Liveness is not functionality**, and three cases
+  make that concrete: a `GET` returning 404 may front a perfectly working
+  POST-only service; a 200 may be a parking page, a login wall or a load
+  balancer's default backend; and nothing here checks that the thing
+  answering is the agent, speaks any particular protocol, or would do
+  anything if asked. This rung does not read the response body at all.
+
+**HTTP 402 is live here, and fails rung 2.** Both are correct, because the
+two rungs ask different questions. Rung 2 asks whether the registration
+document could be *retrieved*; a 402 means it could not. Rung 6 asks whether
+anything is *alive* at a service endpoint; a 402 is a payment challenge, and
+a dead host does not bill you. It is counted separately as
+`endpoints_payment_gated` so no reader has to take "live" on trust. Anyone
+reconciling a 402 count between the two rungs needs this paragraph.
+
+**Sampling.** 125,705 declared HTTP(S) endpoints across the census resolve to
+3,399 distinct hosts, and four hosts carry 59.2% of them. Probing every
+declared entry would send 26,273 requests to one server to learn one fact
+about it, which is indistinguishable from an attack and would not be more
+true for the volume. So:
+
+1. Exact URLs are **deduplicated** — one request per distinct URL, however
+   many agents declared it. On the four-chain data this takes 124,364
+   declared entries down to 62,243 distinct URLs.
+2. A **per-host budget of 500 distinct URLs** is then applied. 12 hosts
+   exceed it; the remaining 3,336 are probed in full. That leaves 14,494
+   URLs actually requested.
+3. Which 500 is chosen by a **fixed FNV-1a hash of the URL**, not by arrival
+   order, alphabetical order or chance. The sample is therefore identical on
+   a resume, on a re-run, and on anyone else's machine — a sample nobody can
+   reproduce is not evidence. Alphabetical order was rejected because a host
+   whose URLs are `…/agent/0001`, `…/agent/0002` would be sampled entirely
+   from its lowest ids.
+4. An agent whose every probeable URL fell outside the budget gets **no
+   rung-6 row**. It is *not* assigned its host's sampled rate. Doing that
+   would be inventing a status for an agent nobody checked, which is the one
+   thing this project's six statuses exist to prevent. Of 56,794 agents
+   declaring a probeable endpoint, **27,956 (49.2%) receive a rung-6 row**;
+   any published rate is stated over those, and says so.
+
+**What changed from the specification this section previously carried:**
+
+1. **Pass was "every declared endpoint returns 2xx"; it is now "at least
+   one".** Sampling forces this: once some of an agent's endpoints may go
+   unprobed, "every endpoint answered" is a claim we cannot make for a
+   partially-probed agent, and an all-must-pass rule would have had to
+   return no row for every multi-endpoint agent it sampled. The any-match
+   rule is also the one rung 5 already uses for `registrations`, and it
+   matches what the rung is named for: whether the agent is reachable, not
+   whether every URL it lists is perfect. Every endpoint's own outcome is in
+   evidence with the counts, so a reader who prefers the all-must-pass
+   definition can compute it from the published rows without this rung
+   having chosen it for them.
+2. **Zero declared endpoints was "a rung-4 concern, not this one"; it is now
+   `unprobeable` here.** Rung 4 does check whether `services` is present, and
+   still does — but leaving rung 6 to say nothing about an agent it plainly
+   cannot probe meant conflating "declared nothing" with "was not sampled",
+   which are different facts.
+3. **The method was "HEAD, falling back to GET"; it is GET only.** A
+   meaningful number of servers answer HEAD with a 405 or a 404 while serving
+   the same URL correctly on GET, which would have produced false `fail`s —
+   an accusation about a real project, from an optimisation.
 
 ### Rung 7 — `attested`
 
@@ -415,10 +493,12 @@ published as, three separate tracks:
 
 - **Document** (1 → 2 → 3 → 4 → 5): a straight chain, each rung needs the one
   directly below it to have passed. Unchanged from before this fix.
-- **Service** (6, not yet implemented): depends on rung 4 — a document that
-  conforms enough to declare `services`, not the full chain back to rung 1,
-  and *not* rung 5 (an agent can decline to bind its document to the chain
-  and still have live endpoints worth checking).
+- **Service** (6): depends on rung 4 — a document that conforms enough to
+  declare `services`, not the full chain back to rung 1, and *not* rung 5 (an
+  agent can decline to bind its document to the chain and still have live
+  endpoints worth checking). This dependency was fixed here, and tested,
+  while rung 6 was still unimplemented; rung 6 shipped on 2026-08-01 without
+  it needing to change.
 - **Reputation** (7): depends on rung 1 *alone*. A rung-2, -3, -4, or -5
   failure must never skip rung 7 — reputation feedback is readable for any
   agent id that exists on chain, independent of whether its document ever
@@ -454,15 +534,18 @@ they are not interchangeable:
   but it is recorded distinctly so a reader can tell "the agent failed this"
   from "we failed to find out."
 - **An absent rung** — no row exists for this (run, agent, rung) at all.
-  **P0 FIX 6 (2026-07-29) narrows this to one meaning**: the rung has not
-  been implemented yet (currently rung 6 alone). Before this fix, "this run
-  did not attempt it" was a second, silently overlapping reason an
-  implemented rung could also be absent — rungs 4 and 5 were only
-  *constructed* when a document existed to judge, so an agent whose document
-  never resolved or never parsed got no rung-4/5 row at all, indistinguishable
-  from rung 6, which genuinely is not implemented. That case is `skipped`
-  now, not absent — see `CHANGELOG-METHODOLOGY.md`'s FIX 6 entry for the
-  defect and its measured population effect. The one remaining exception is
+  **P0 FIX 6 (2026-07-29) narrows this to one meaning**: we did not ask.
+  Before this fix, "this run did not attempt it" was a second, silently
+  overlapping reason an implemented rung could also be absent — rungs 4 and 5
+  were only *constructed* when a document existed to judge, so an agent whose
+  document never resolved or never parsed got no rung-4/5 row at all,
+  indistinguishable from rung 6, which was then unimplemented. That case is
+  `skipped` now, not absent — see `CHANGELOG-METHODOLOGY.md`'s FIX 6 entry
+  for the defect and its measured population effect. Since 2026-08-01, when
+  rung 6 shipped, the one rung that is still legitimately absent for some
+  agents is **rung 6, for an agent whose declared URLs all fell outside their
+  host's sampling budget** — the same claim as before (we did not ask), for a
+  different reason. The other remaining exception is
   an agent absent from the run *entirely* (every rung, not just one) because
   its chain read or database write failed on our side — reported separately
   by `crates/sweeper` as `unreadable`/`unwritable`, never presented as a
@@ -480,6 +563,17 @@ they are not interchangeable:
   of any row (a rung-5 row always exists for an agent that reached rung 5),
   and not a checker malfunction (`error`) — see Rung 5's entry in §2 for the
   full reasoning.
+- **`unprobeable`** *(rung 6 only, added 2026-08-01)* — the same shape of
+  claim as `unclaimed`, one rung over: the rung was asked, it ran to
+  completion, and it found nothing it could reach, because every endpoint the
+  agent declared is something no prober can dial (a CAIP-10 chain address, an
+  email address, an empty string, an `ipfs://` URI, or no `endpoint` field at
+  all) — or the document declared no services. It is deliberately **not**
+  `unclaimed`: an agent that published a CAIP-10 address made a claim, it is
+  simply not one you can send a request to, and collapsing the two would
+  erase that difference exactly as folding `unclaimed` into `fail` would
+  have. It is also not `fail`, because the spec does not require an agent to
+  publish a URL.
 
 **Current implementation status, stated plainly:** rungs 1 (`registered`),
 2 (`resolvable`), 3 (`parseable`), 4 (`conformant`), 5 (`bound`), and 7
@@ -490,9 +584,13 @@ be gated on; the only agents it produces no row for are the rare case where
 rung 1 itself fails (an owner-is-zero-address token) and the read is never
 attempted, plus any agent where the chain read failed on our side (counted
 and reported, never silently dropped — see `crates/sweeper`). **Rung 6
-(`live`) is not implemented** — it is fully specified above, its pass/fail
-conditions and evidence shape are final, but no code executes it, and it
-writes no row for any agent. Rungs 4 (`conformant`) and 5 (`bound`) are
+(`live`) shipped on 2026-08-01** and writes a row for every agent except two
+populations, both of which are absences rather than verdicts: an agent whose
+declared URLs all fell outside their host's sampling budget, and an agent
+whose rung-4-passing document left no archived body to read `services` from.
+It is produced by a separate pass (`crates/sweeper`'s `liveness` binary) over
+a run that has already finished, because its unit of work is a URL and the
+sweep's is an agent. Rungs 4 (`conformant`) and 5 (`bound`) are
 **always constructed**, for every swept agent, regardless of whether a
 document ever existed to judge (P0 FIX 6, 2026-07-29) — when there is
 nothing to judge, they come back `skipped`, naming whichever earlier rung
@@ -557,11 +655,12 @@ downloaded and diffed without a database connection.
 
 Rungs 2 and 6 fetch resources we do not control: an agent's declared document
 and its declared service endpoints. This is the policy that behavior commits
-to. The probe layer described below (`crates/probe`) now implements rung 2's
-fetching, robots.txt handling, and redirect-following; rung 6 (checking each
-declared service endpoint) is still specified (Section 2) but not yet
-implemented. Where an older, retired component in this codebase used to
-behave differently, that's called out rather than glossed over.
+to. The probe layer described below (`crates/probe`) implements the fetching,
+robots.txt handling and redirect-following for **both** — rung 6 shipped on
+2026-08-01 and reuses rung 2's probe unchanged, so every guarantee in this
+section applies to service-endpoint requests exactly as it does to document
+fetches. Where an older, retired component in this codebase used to behave
+differently, that's called out rather than glossed over.
 
 - **User-Agent:** every request will identify itself, e.g.
   `agentcount-probe/0.2 (+https://agentcount.ai/methodology; contact: probes@agentcount.ai)`
@@ -583,10 +682,21 @@ behave differently, that's called out rather than glossed over.
   the probe layer's implementation, not to this document, so they can change
   without this policy going stale — check the probe layer's own
   configuration for the current values in force.
-- **Methods used:** HTTP GET for rung 2 (fetching the registration document);
-  HEAD, falling back to GET, for rung 6 (checking each declared service
-  endpoint). Probing does not crawl beyond the single declared document and
-  the service endpoints it lists — nothing here is meant to spider a site.
+- **Rung 6 is stricter than one-per-agent, deliberately.** It is one request
+  per *distinct URL*, not per agent, and above that a **per-host budget of
+  500 distinct URLs per run**. Without it the largest operator in the census
+  would receive 26,273 requests from us in one sweep. With it, no host sees
+  more than 500 — and the 3,336 hosts below that number are probed in full.
+  The cost is that agents beyond the budget get no rung-6 row; see Rung 6 in
+  Section 2 for why that is the honest outcome rather than a gap to fill in.
+- **Methods used:** HTTP GET, for both rung 2 (fetching the registration
+  document) and rung 6 (checking each declared service endpoint). Rung 6 was
+  specified as "HEAD, falling back to GET" before it shipped; that was
+  dropped because a meaningful number of servers answer HEAD with a 405 or a
+  404 while serving the same URL correctly on GET, and the saving is not
+  worth publishing a false `fail` about a working service. Probing does not
+  crawl beyond the single declared document and the service endpoints it
+  lists — nothing here is meant to spider a site.
 - **`robots.txt` is checked and honored**, including its own redirects: a
   301/302 on `/robots.txt` (`http`→`https`, `www`→apex, and the like) is
   followed for up to 5 hops, per RFC 9309 §2.3.1.2, before the 2xx/4xx/5xx
