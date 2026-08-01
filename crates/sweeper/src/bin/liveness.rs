@@ -150,13 +150,38 @@ struct Declared {
 /// The alias rule is rung 4's, deliberately not re-derived: `services` wins
 /// when both are present. Duplicating "which field counts" would let rung 4
 /// and rung 6 disagree about whether an agent declared anything at all.
+///
+/// # `None` means "we could not read the document", NOT "it declared nothing"
+///
+/// This distinction was got wrong on the first real run, and it put 169,656
+/// BNB Chain agents in the wrong bucket — so it is worth stating plainly.
+///
+/// A document that PARSES and simply has no `services` array has made a
+/// perfectly readable claim: it declared no endpoints. That is
+/// `unprobeable`/`no_services_declared`, a verdict, and it is the largest
+/// population rung 6 has — 61.0% of valid registration documents across the
+/// census declare no way to reach the agent at all. Returning `None` for it
+/// made every one of those agents *absent* instead, which asserts "we did not
+/// ask" about a question that was asked and answered.
+///
+/// So `None` is reserved for the one case where it is true: bytes that are not
+/// JSON, meaning we have no document to read. Everything else returns `Some`,
+/// with `entries` empty when there was nothing declared.
 fn declared_endpoints(body: &[u8]) -> Option<Declared> {
     let doc: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let services = doc
+    let Some(services) = doc
         .get("services")
         .filter(|v| !v.is_null())
-        .or_else(|| doc.get("endpoints").filter(|v| !v.is_null()))?;
-    let array = services.as_array()?;
+        .or_else(|| doc.get("endpoints").filter(|v| !v.is_null()))
+    else {
+        return Some(Declared { entries: vec![] });
+    };
+    // Present but not an array — nothing to walk. Treated exactly like an
+    // absent one, which is the same rule rung 5 applies to a non-array
+    // `registrations`.
+    let Some(array) = services.as_array() else {
+        return Some(Declared { entries: vec![] });
+    };
     let entries = array
         .iter()
         .map(|e| {
@@ -591,21 +616,46 @@ mod tests {
         assert!(d.entries.iter().all(|(_, e)| e.is_none()));
     }
 
+    /// A readable document that declares no services is a VERDICT
+    /// (`unprobeable`), not an absence.
+    ///
+    /// The first version of this test asserted `is_none()` for every case
+    /// below — it encoded the behaviour the code had rather than the behaviour
+    /// the code owed, so it passed while 169,656 BNB Chain agents were being
+    /// recorded as "not asked" about a question that was asked and answered.
+    /// 61.0% of valid registration documents across the census declare no way
+    /// to reach the agent, so this is the largest population rung 6 has.
     #[test]
-    fn a_document_with_no_services_yields_nothing_to_probe() {
-        assert!(declared_endpoints(br#"{"name":"x"}"#).is_none());
-        assert!(declared_endpoints(br#"{"services":null}"#).is_none());
-        // Present but not an array: nothing to walk.
-        assert!(declared_endpoints(br#"{"services":{"a":1}}"#).is_none());
-        // An empty array IS a claim — zero entries — and must be distinguished
-        // from an absent field, because `checks::live` reports the two with
-        // different reasons.
-        let d = declared_endpoints(br#"{"services":[]}"#).unwrap();
-        assert!(d.entries.is_empty());
+    fn a_readable_document_with_no_services_is_judgeable_not_absent() {
+        for doc in [
+            &br#"{"name":"x"}"#[..],         // no `services` key at all
+            &br#"{"services":null}"#[..],    // present and null
+            &br#"{"services":{"a":1}}"#[..], // present but not an array
+            &br#"{"services":[]}"#[..],      // present and empty
+        ] {
+            let d = declared_endpoints(doc)
+                .unwrap_or_else(|| panic!("{} must be judgeable", String::from_utf8_lossy(doc)));
+            assert!(d.entries.is_empty());
+        }
+
+        // And end to end: zero entries reaches `checks::live` as
+        // `unprobeable`, never as a missing row.
+        let r = checks::live(
+            &checks::LiveInput {
+                endpoints: vec![],
+                host_budget_reached: false,
+            },
+            Utc::now(),
+        )
+        .expect("a document that declared nothing still gets a row");
+        assert_eq!(r.status, checks::CheckStatus::Unprobeable);
+        assert_eq!(r.evidence["reason"], "no_services_declared");
     }
 
+    /// `None` is reserved for the one case where "we could not read the
+    /// document" is true.
     #[test]
-    fn unparseable_bytes_never_panic() {
+    fn only_unreadable_bytes_yield_no_document() {
         assert!(declared_endpoints(b"not json").is_none());
         assert!(declared_endpoints(b"").is_none());
         assert!(declared_endpoints(&[0xff, 0xfe]).is_none());
