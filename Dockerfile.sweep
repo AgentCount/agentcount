@@ -1,0 +1,74 @@
+# The weekly sweep, as a Cloud Run Job image.
+#
+# Separate from `Dockerfile`, which builds the public API, and deliberately so.
+# That file's own comment says the sweeper and indexer "are operator tools run
+# from a workstation against an RPC endpoint; they have no business in a
+# public-facing image" — which is still true. The public API image must not
+# carry a binary that holds RPC credentials and writes to every table.
+#
+# This image is the opposite: it is never served, never reachable from the
+# internet, and runs to completion. It carries the three binaries a scheduled
+# census needs and nothing else.
+#
+#   sweeper <chain>   pin a block, read every agent, answer rungs 1-5 and 7
+#   liveness <chain>  rung 6 — probe the service endpoints those documents declared
+#   delta <chain>     what changed against the previous finished run
+#
+# `scripts/weekly-sweep.sh` is the entrypoint and runs them in that order, per
+# chain. The order matters: rung 6 reads documents the sweep archived, and the
+# delta compares a run that has finished.
+
+FROM rust:1-slim-bookworm AS build
+WORKDIR /src
+
+# Dependencies first, in their own layer — same technique and same reason as
+# the API image. Cargo needs every workspace member's manifest and a stub
+# source before it will resolve anything.
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY crates/api/Cargo.toml crates/api/
+COPY crates/chain/Cargo.toml crates/chain/
+COPY crates/checks/Cargo.toml crates/checks/
+COPY crates/indexer/Cargo.toml crates/indexer/
+COPY crates/probe/Cargo.toml crates/probe/
+COPY crates/sweeper/Cargo.toml crates/sweeper/
+RUN set -eux; \
+    for c in api chain checks indexer probe sweeper; do \
+        mkdir -p "crates/$c/src"; \
+        echo 'fn main() {}' > "crates/$c/src/main.rs"; \
+        echo '' > "crates/$c/src/lib.rs"; \
+    done; \
+    mkdir -p crates/sweeper/src/bin; \
+    echo 'fn main() {}' > crates/sweeper/src/bin/liveness.rs; \
+    echo 'fn main() {}' > crates/sweeper/src/bin/delta.rs; \
+    cargo build --release -p sweeper || true
+
+COPY crates crates
+COPY scripts scripts
+# Cargo caches by mtime and the stubs above are newer than what was just
+# copied, so without this the release binaries stay `fn main() {}` — silently,
+# and the job would "succeed" every week having done nothing.
+RUN set -eux; \
+    find crates -name '*.rs' -exec touch {} +; \
+    cargo build --release -p sweeper; \
+    strip target/release/sweeper target/release/liveness target/release/delta
+
+FROM debian:bookworm-slim AS runtime
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+# Non-root. This process holds RPC credentials and a database password; there
+# is no reason for it to also be root.
+RUN useradd --system --create-home --shell /usr/sbin/nologin agentcount
+USER agentcount
+
+COPY --from=build /src/target/release/sweeper /usr/local/bin/sweeper
+COPY --from=build /src/target/release/liveness /usr/local/bin/liveness
+COPY --from=build /src/target/release/delta /usr/local/bin/delta
+COPY --chmod=755 scripts/weekly-sweep.sh /usr/local/bin/weekly-sweep
+
+ENV RUST_LOG=info
+ENTRYPOINT ["/usr/local/bin/weekly-sweep"]
