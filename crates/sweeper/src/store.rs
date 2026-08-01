@@ -1059,6 +1059,127 @@ impl Db {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Week-over-week deltas — the `delta` binary's half of this store.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Everything one `run_deltas` row needs, bundled so this method's signature
+/// does not grow an argument every time a new figure is worth publishing.
+pub struct DeltaWrite<'a> {
+    pub run_id: Uuid,
+    pub previous_run_id: Uuid,
+    pub chain: &'a str,
+    pub agents_before: i32,
+    pub agents_after: i32,
+    pub newly_registered: i32,
+    pub disappeared: i32,
+    pub newly_resolving: i32,
+    pub stopped_resolving: i32,
+    pub flips: &'a serde_json::Value,
+    /// The two runs' checker builds. When they differ, some flips are method
+    /// changes rather than changes in the world — see migration 0016.
+    pub checker_before: &'a str,
+    pub checker_after: &'a str,
+    pub schema_before: i32,
+    pub schema_after: i32,
+}
+
+impl Db {
+    /// The most recent finished runs for a chain, newest first.
+    pub async fn finished_runs(&self, chain: &str, limit: i64) -> Result<Vec<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT run_id FROM runs \
+             WHERE chain = $1 AND finished_at IS NOT NULL AND status = 'finished' \
+             ORDER BY started_at DESC LIMIT $2",
+        )
+        .bind(chain)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("listing finished runs")?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Every `(agent_id, rung) -> status` this run recorded.
+    ///
+    /// The whole run in memory, deliberately. Comparing two 244,208-agent runs
+    /// is a full join either way; doing it in Rust rather than SQL keeps the
+    /// rule about what counts as a "flip" — both sides must have a row — in
+    /// one readable place next to the reasoning for it, rather than encoded in
+    /// a join condition where the next person reads it as an optimisation.
+    pub async fn rung_statuses(&self, run_id: Uuid) -> Result<HashMap<(u64, i16), String>> {
+        let rows: Vec<(i64, i16, String)> =
+            sqlx::query_as("SELECT agent_id, rung, status FROM check_results WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_all(&self.pool)
+                .await
+                .context("loading rung statuses")?;
+        Ok(rows
+            .into_iter()
+            .map(|(agent, rung, status)| ((agent as u64, rung), status))
+            .collect())
+    }
+
+    /// Write (or replace) a run's delta.
+    ///
+    /// Replaceable, unlike a run's own results: a delta is DERIVED, so
+    /// recomputing it after fixing the computation is legitimate in a way that
+    /// rewriting a measurement never is.
+    pub async fn write_delta(&self, d: &DeltaWrite<'_>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO run_deltas \
+               (run_id, previous_run_id, chain, agents_before, agents_after, \
+                newly_registered, disappeared, newly_resolving, stopped_resolving, flips, \
+                checker_before, checker_after, schema_before, schema_after) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
+             ON CONFLICT (run_id) DO UPDATE SET \
+               previous_run_id = EXCLUDED.previous_run_id, \
+               agents_before = EXCLUDED.agents_before, \
+               agents_after = EXCLUDED.agents_after, \
+               newly_registered = EXCLUDED.newly_registered, \
+               disappeared = EXCLUDED.disappeared, \
+               newly_resolving = EXCLUDED.newly_resolving, \
+               stopped_resolving = EXCLUDED.stopped_resolving, \
+               flips = EXCLUDED.flips, \
+               checker_before = EXCLUDED.checker_before, \
+               checker_after = EXCLUDED.checker_after, \
+               schema_before = EXCLUDED.schema_before, \
+               schema_after = EXCLUDED.schema_after, \
+               computed_at = now()",
+        )
+        .bind(d.run_id)
+        .bind(d.previous_run_id)
+        .bind(d.chain)
+        .bind(d.agents_before)
+        .bind(d.agents_after)
+        .bind(d.newly_registered)
+        .bind(d.disappeared)
+        .bind(d.newly_resolving)
+        .bind(d.stopped_resolving)
+        .bind(d.flips)
+        .bind(d.checker_before)
+        .bind(d.checker_after)
+        .bind(d.schema_before)
+        .bind(d.schema_after)
+        .execute(&self.pool)
+        .await
+        .context("writing the run delta")?;
+        Ok(())
+    }
+
+    /// A run's checker build and schema version, for the delta's confound
+    /// columns.
+    pub async fn run_provenance(&self, run_id: Uuid) -> Result<(String, i32)> {
+        let row: (String, i32) =
+            sqlx::query_as("SELECT checker_version, schema_version FROM runs WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_one(&self.pool)
+                .await
+                .with_context(|| format!("reading provenance for run {run_id}"))?;
+        Ok(row)
+    }
+}
+
 /// One archived probe observation, as read back for a resume.
 #[derive(Debug, Clone)]
 pub struct ProbeRow {
