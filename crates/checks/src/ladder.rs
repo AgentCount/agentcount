@@ -20,11 +20,13 @@
 //!
 //! - **Document track** (1 → 2 → 3 → 4 → 5): unchanged, a straight chain —
 //!   each rung needs the one directly below it to have passed.
-//! - **Service track** (6, not yet implemented): depends on rung 4 — it
-//!   needs a document that at least conforms enough to declare `services`,
-//!   not the full chain down to rung 1 re-litigated, and *not* rung 5 (a
-//!   document can decline to bind itself to the chain and still have live
-//!   endpoints worth checking).
+//! - **Service track** (6): depends on rung 4 — it needs a document that at
+//!   least conforms enough to declare `services`, not the full chain down to
+//!   rung 1 re-litigated, and *not* rung 5 (a document can decline to bind
+//!   itself to the chain and still have live endpoints worth checking). This
+//!   dependency was decided and tested here while rung 6 was still
+//!   unimplemented; it shipped on 2026-08-01 without the table needing to
+//!   change, which was the point of deciding it early.
 //! - **Reputation track** (7): depends on rung 1 *alone*. Reputation
 //!   feedback lives in a different registry, readable for any agent id that
 //!   exists on chain, regardless of whether its document ever resolved,
@@ -47,10 +49,9 @@ use crate::model::{CheckResult, CheckStatus};
 /// root. This is the entire dependency graph — see the module doc for why it
 /// is three short chains, not one long one.
 ///
-/// Rung 6 is listed even though no code constructs a rung-6 `CheckResult`
-/// yet (see `crates/checks::lib`'s module doc and `METHODOLOGY.md` §2): the
-/// dependency is part of the rung's specification, decided now so this table
-/// does not need revisiting the day rung 6 ships.
+/// Rung 6 was listed here before any code constructed a rung-6 `CheckResult`,
+/// because the dependency is part of the rung's specification rather than of
+/// its implementation. It shipped on 2026-08-01 and this table did not change.
 fn depends_on(rung: u8) -> Option<u8> {
     match rung {
         2 => Some(1),
@@ -184,12 +185,14 @@ mod tests {
         assert_eq!(out[2].status, CheckStatus::Skipped);
     }
 
-    /// The first place this gap occurs in production: rung 6 (`live`) is not
-    /// implemented at all (deferred to Day 4) — this is not "rung 6 skipped",
-    /// it is "rung 6 was never asked", and the input vector reflects that by
-    /// simply never containing a rung-6 element. `run_ladder` must not
-    /// invent one to fill the gap, and it must not let the gap confuse
-    /// skip-propagation for rung 7, which sits directly above it.
+    /// A ladder with no rung-6 row. Before 2026-08-01 this was every agent,
+    /// because rung 6 was unimplemented; since it shipped it is the agent
+    /// whose declared URLs all fell outside their host's sampling budget
+    /// (`rung6_live::live` returns `None` for exactly that case). Either way
+    /// the claim is the same — "rung 6 was never asked", not "rung 6 skipped"
+    /// — and the input vector says it by simply not containing a rung-6
+    /// element. `run_ladder` must not invent one to fill the gap, and must not
+    /// let the gap confuse skip-propagation for rung 7 above it.
     #[test]
     fn a_sparse_ladder_missing_rung_6_does_not_invent_a_row_for_it() {
         let out = run_ladder(vec![
@@ -279,13 +282,11 @@ mod tests {
         assert_eq!(rung7.evidence["skipped_because_rung"], 1);
     }
 
-    /// The service track's declared (but not yet implemented) dependency:
-    /// rung 6 depends on rung 4, not on rung 5. Exercised directly against
-    /// [`depends_on`] via a synthetic rung-6 row, since no production code
-    /// constructs one yet — this only proves the table entry itself behaves
-    /// as documented, ready for the day rung 6 ships.
+    /// The service track's dependency: rung 6 depends on rung 4, not rung 5.
+    /// A document that declines to bind itself to the chain can still have
+    /// live endpoints worth checking, so a rung-5 failure must not reach here.
     #[test]
-    fn rung_6_would_depend_on_rung_4_not_rung_5() {
+    fn rung_6_depends_on_rung_4_not_rung_5() {
         let out = run_ladder(vec![
             res(1, "registered", CheckStatus::Pass),
             res(2, "resolvable", CheckStatus::Pass),
@@ -296,5 +297,35 @@ mod tests {
         let rung6 = out.iter().find(|r| r.rung == 6).unwrap();
         assert_eq!(rung6.status, CheckStatus::Skipped);
         assert_eq!(rung6.evidence["skipped_because_rung"], 4);
+
+        // And the other half of the same rule: rung 5 failing leaves rung 6
+        // alone entirely.
+        let out = run_ladder(vec![
+            res(1, "registered", CheckStatus::Pass),
+            res(2, "resolvable", CheckStatus::Pass),
+            res(3, "parseable", CheckStatus::Pass),
+            res(4, "conformant", CheckStatus::Pass),
+            res(5, "bound", CheckStatus::Fail),
+            res(6, "live", CheckStatus::Pass),
+        ]);
+        let rung6 = out.iter().find(|r| r.rung == 6).unwrap();
+        assert_eq!(rung6.status, CheckStatus::Pass);
+    }
+
+    /// `unprobeable` is not `pass`, so it must stop nothing — but nothing
+    /// depends on rung 6 anyway, and this pins that. If a rung 8 is ever added
+    /// on the service track, this test is where the question gets asked.
+    #[test]
+    fn an_unprobeable_rung_6_does_not_disturb_any_other_rung() {
+        let out = run_ladder(vec![
+            res(1, "registered", CheckStatus::Pass),
+            res(4, "conformant", CheckStatus::Pass),
+            res(6, "live", CheckStatus::Unprobeable),
+            res(7, "attested", CheckStatus::Pass),
+        ]);
+        let rung6 = out.iter().find(|r| r.rung == 6).unwrap();
+        assert_eq!(rung6.status, CheckStatus::Unprobeable);
+        let rung7 = out.iter().find(|r| r.rung == 7).unwrap();
+        assert_eq!(rung7.status, CheckStatus::Pass);
     }
 }

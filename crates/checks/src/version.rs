@@ -50,7 +50,31 @@
 /// (schema ≤ 5) or "we looked and the chain had nothing" (schema 6) — the
 /// same distinction between *did not ask* and *asked and got nothing* that
 /// the six statuses keep everywhere else.
-pub const SCHEMA_VERSION: i32 = 6;
+/// 7 (2026-08-01): **rung 6 (`live`) ships.** The service track stops being
+/// absent from every result and starts producing rows — the largest single
+/// change to what a run contains since the ladder was written.
+///
+/// - `check_results.status` gains a sixth value, `unprobeable`, produced only
+///   by rung 6 for an agent whose every declared endpoint is something no
+///   prober can dial: a CAIP-10 chain address, an email address, an empty
+///   string, or an absent `endpoint` field (migration 0015 widens the `CHECK`
+///   constraint accordingly).
+/// - A new table, `endpoint_probes`, archives one row per (run, URL) rather
+///   than per agent, because one URL is declared by many agents.
+/// - Rung 6's evidence contract is defined for the first time:
+///   `endpoints_declared` / `_probeable` / `_probed` / `_live` /
+///   `_payment_gated` / `_answered_not_live` / `_our_error`, plus a per-entry
+///   `endpoints[]` array carrying each declared string, its kind and its own
+///   outcome.
+///
+/// **No other rung's rule changes and no existing agent's status moves.** A
+/// row written under schema ≤ 6 has no rung-6 sibling, and that absence
+/// continues to mean what it always meant: not asked. The bump is how a reader
+/// tells, from the row alone, whether a missing rung 6 means "this run did not
+/// implement it" (schema ≤ 6) or "this run implemented it and this agent was
+/// not probed" (schema 7) — the same *did not ask* versus *asked and got
+/// nothing* distinction the statuses keep everywhere else.
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// The checks crate's own version — the semantics of the rungs.
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
