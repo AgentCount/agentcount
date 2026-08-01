@@ -137,7 +137,18 @@ else
            cp -n "/tmp/$ARCHIVE.sha256" "$BUCKET/runs/$ARCHIVE.sha256"
 fi
 
-echo "==> 4/5 recording the hash for git"
+echo "==> 4/5 recording the hash"
+# Seed the local index from the bucket when there is not one on disk.
+#
+# On a workstation the repository checkout provides it. In the weekly job's
+# container there is no checkout, so without this the index would start empty
+# and the upload below would replace the published history with a single
+# entry — silently losing every earlier run from the machine-readable index
+# while the archives themselves stayed fine. Fetch first, append second.
+if [ ! -f "$INDEX" ]; then
+    gsutil cp "$BUCKET/runs/index.json" "$INDEX" 2>/dev/null \
+        || echo "[]" > "$INDEX"
+fi
 # The point of this file: a hash in a commit that predates any dispute is
 # evidence. A hash that only exists on a server we control is not.
 python3 - "$RUN_ID" "$SHA" "$SIZE" "$INDEX" <<'PY'
@@ -185,9 +196,29 @@ else:
     print(f"    added to {index}")
 PY
 
-echo "==> 5/5 done"
+echo "==> 5/5 uploading the index"
+# The index also goes to the bucket, not only to git.
+#
+# Git is where the hash becomes EVIDENCE — a value in a commit predating any
+# dispute. But the weekly job runs in a container with no checkout and no push
+# credentials, and giving an unattended job write access to the source
+# repository to record a hash is a worse trade than committing it by hand
+# afterwards.
+#
+# So the bucket holds the machine-readable index (what `heartbeat` checks, and
+# what anyone can fetch), and the commit stays a human step taken when the
+# week's report is written. The two must agree; `heartbeat` fails the job if
+# the bucket's copy is missing a chain, and a divergence between bucket and git
+# is visible to anyone who compares them.
+gsutil -h "Content-Type:application/json" \
+       -h "Cache-Control:public, max-age=60" \
+       cp "$INDEX" "$BUCKET/runs/index.json"
+
+echo "==> done"
 echo
 echo "    https://data.agentcount.ai/runs/$ARCHIVE"
 echo
-echo "Commit $INDEX. The hash is only evidence once it is in the history:"
+echo "$BUCKET/runs/index.json updated."
+echo
+echo "Now commit $INDEX. The hash is only evidence once it is in the history:"
 echo "    git add $INDEX && git commit -m 'data: publish run $RUN_ID'"

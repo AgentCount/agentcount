@@ -91,21 +91,25 @@ for chain in $CHAINS; do
         || { echo "!!! $chain: publish failed"; failed="$failed $chain(publish)"; }
 done
 
-# ── The git summary, committed BEFORE the heartbeat ──────────────────────────
+# ── The index is published; the COMMIT is a human step ───────────────────────
 #
-# A hash that only exists on a server we control is not evidence. Committing it
-# is what makes the archive attestable, so it happens before anything reports
-# the week healthy.
-if git -C . diff --quiet -- published-runs.json; then
-    echo "published-runs.json unchanged — nothing new to commit"
-else
-    echo "═══════════════════════════════════════════ committing the run summary"
-    git add published-runs.json
-    git -c user.name="agentcount-sweep" -c user.email="probes@agentcount.ai" \
-        commit -q -m "data: publish $(date -u +%Y-%m-%d) runs" \
-        && git push -q origin HEAD \
-        || { echo "!!! could not commit/push published-runs.json"; failed="$failed git-summary"; }
-fi
+# `publish-run.sh` uploads `runs/index.json` to the bucket, which is what
+# `heartbeat` below verifies and what anyone can fetch. It does NOT commit the
+# hashes to git, and this job deliberately cannot:
+#
+#   * the image carries binaries and scripts, not a checkout, so there is
+#     nothing here to commit into; and
+#   * giving an unattended weekly job write access to the source repository, to
+#     record a hash, is a worse trade than typing one command afterwards.
+#
+# Git is still where a hash becomes EVIDENCE — a value in a commit predating
+# any dispute — so the commit happens when the week's report is written:
+#
+#     gsutil cp gs://agentcount-data/runs/index.json published-runs.json
+#     git add published-runs.json && git commit -m "data: publish <date> runs"
+#
+# A divergence between the bucket and git is visible to anyone who compares
+# them, which is the property that matters.
 
 if [ -n "$failed" ]; then
     echo
