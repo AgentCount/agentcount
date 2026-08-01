@@ -70,12 +70,62 @@ for chain in $CHAINS; do
 
     echo "═══════════════════════════════════════════ $chain: delta"
     delta "$chain" || { echo "!!! $chain: delta exited $?"; failed="$failed $chain(delta)"; }
+
+    echo "═══════════════════════════════════════════ $chain: publish"
+    # The run id this pass just finished, asked of the database rather than
+    # remembered — the sweeper may have resumed an existing run rather than
+    # opening a new one, and a remembered id would publish the wrong week.
+    run_id=$(psql "$DATABASE_URL" -tAc \
+        "SELECT run_id FROM runs WHERE chain = '$chain' AND status = 'finished' \
+         ORDER BY finished_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$run_id" ]; then
+        echo "!!! $chain: no finished run to publish"
+        failed="$failed $chain(publish)"
+        continue
+    fi
+    # Export → archive → checksum → upload → record the hash for git. All of it
+    # before the heartbeat below, which is the point: the ping means "this
+    # week's data is published and verifiable", not "the process exited".
+    export-run "$run_id" \
+        && ./scripts/publish-run.sh "$run_id" \
+        || { echo "!!! $chain: publish failed"; failed="$failed $chain(publish)"; }
 done
+
+# ── The git summary, committed BEFORE the heartbeat ──────────────────────────
+#
+# A hash that only exists on a server we control is not evidence. Committing it
+# is what makes the archive attestable, so it happens before anything reports
+# the week healthy.
+if git -C . diff --quiet -- published-runs.json; then
+    echo "published-runs.json unchanged — nothing new to commit"
+else
+    echo "═══════════════════════════════════════════ committing the run summary"
+    git add published-runs.json
+    git -c user.name="agentcount-sweep" -c user.email="probes@agentcount.ai" \
+        commit -q -m "data: publish $(date -u +%Y-%m-%d) runs" \
+        && git push -q origin HEAD \
+        || { echo "!!! could not commit/push published-runs.json"; failed="$failed git-summary"; }
+fi
 
 if [ -n "$failed" ]; then
     echo
     echo "FAILED:$failed"
+    # No heartbeat. The monitor alerts on silence, so the correct thing to do
+    # when anything went wrong is to say nothing to it.
     exit 1
 fi
+
+# ── The dead man's switch, LAST ──────────────────────────────────────────────
+#
+# Everything above can fail loudly. The one failure that cannot is the schedule
+# never firing at all — no log line, no exit code, because nothing ran. The only
+# signal for that is an absence, and an absence can only be noticed from
+# outside. `heartbeat` re-reads the published index from disk rather than
+# trusting the steps above: a step that reported success but wrote nothing is
+# exactly what this is for.
 echo
-echo "all chains complete"
+echo "═══════════════════════════════════════════ heartbeat"
+heartbeat || { echo "!!! heartbeat declined to ping — the census is NOT healthy"; exit 1; }
+
+echo
+echo "all chains complete and published"

@@ -18,3 +18,10 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
+
+# One HTTP GET, in `bin/heartbeat.rs`: the dead man's switch pings an external
+# monitor. Deliberately not routed through `crates/probe` — that client carries
+# robots.txt handling, an SSRF netguard and a per-host cap, all correct for
+# fetching a stranger's document and all meaningless for calling a URL we
+# configured ourselves.
+reqwest = { workspace = true }

@@ -85,6 +85,7 @@ RPC_URL_BASE=rpc-url-base:latest,\
 RPC_URL_BSC=rpc-url-bsc:latest,\
 RPC_URL_MAINNET=rpc-url-mainnet:latest,\
 RPC_URL_CELO=rpc-url-celo:latest" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,HEARTBEAT_URL=${HEARTBEAT_URL:-}" \
     --task-timeout 24h \
     --max-retries 0 \
     --memory 2Gi --cpu 2 \
@@ -113,16 +114,24 @@ Done. Two things this script does NOT set up, both of which matter:
     resource.labels.job_name="agentcount-sweep"
     severity>=ERROR
 
-  ALERTING ON SILENCE. The worse failure is the one that produces no error at
-  all — the Celo scan that sat at 0% CPU for three hours. Migration 0014 makes
-  that visible in the data (`runs.status`, `runs.last_progress_at`), and the
-  sweeper's own watchdog exits 75 on a stall, which the job surfaces as a
-  failure. But NOTHING notices a run that never started, because a scheduler
-  job that silently stops firing produces no log line to alert on.
+  ALERTING ON SILENCE is now handled, but needs one thing from you.
 
-  The check for that is an absence: no finished run for a chain in 8 days.
-  It needs somewhere to run that is not this job — a second, tiny scheduled
-  check, or an uptime check against an API endpoint that reports it. Until it
-  exists, a schedule that stops firing is invisible.
+  The `heartbeat` binary runs LAST in the weekly job and pings an external
+  monitor only once every chain has a finished run that is actually PUBLISHED.
+  It stays silent otherwise — including when a sweep succeeded but its upload
+  did not, which from a reader's side is the same as no sweep at all.
+
+  For that to alert, set HEARTBEAT_URL before running this script:
+
+    HEARTBEAT_URL=https://... ./scripts/deploy-weekly-sweep.sh
+
+  Any dead-man's-switch service works (healthchecks.io, Better Stack, Cronitor
+  — all have free tiers). Create a check with a period of 1 week and a grace
+  of 2 days, and use the ping URL it gives you.
+
+  Unset, the job logs a warning and pings nothing — which means a schedule that
+  stops firing is STILL invisible. That is the one gap this deployment cannot
+  close on its own, because a watchdog hosted on the same infrastructure as the
+  thing it watches goes down in the same outage.
 
 NOTES
