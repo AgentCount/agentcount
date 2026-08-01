@@ -11,6 +11,10 @@
 //!   * [`methodology`] — the provenance constants and rung-4 field list, as data.
 //!   * [`validate`] — the pre-flight checker: judge a draft document before it
 //!     is minted, using `crates/checks` unmodified.
+//!   * [`subscribe`] — the only endpoint that stores something a person typed,
+//!     and the only one that writes a row about anybody. Read its module doc
+//!     before changing it: most of the care is in the parts that look like
+//!     they are missing.
 //!
 //! `pub mod` (rather than plain `mod`) because `main.rs` needs to name these
 //! handlers when building the router, e.g. `routes::agents::list`.
@@ -20,4 +24,5 @@ pub mod findings;
 pub mod methodology;
 pub mod rates;
 pub mod runs;
+pub mod subscribe;
 pub mod validate;

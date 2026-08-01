@@ -91,6 +91,11 @@ async fn main() -> anyhow::Result<()> {
         // The one endpoint that writes nothing and reads no run: it judges a
         // document the caller supplies, with the same checker the sweep uses.
         .route("/api/validate", post(routes::validate::post))
+        // The one endpoint that writes a row about a person. It is called by
+        // the front end's own route handler, server-side, never by a browser
+        // directly — which is why the browser is never told this API's
+        // address. See `routes::subscribe`.
+        .route("/api/subscribe", post(routes::subscribe::post))
         .route("/api/healthz", get(healthz))
         // Crude but effective public-endpoint hardening: cap request time and
         // total in-flight requests. Per-IP rate limiting is a fast-follow.
