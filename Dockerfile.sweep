@@ -13,6 +13,8 @@
 #   sweeper <chain>   pin a block, read every agent, answer rungs 1-5 and 7
 #   liveness <chain>  rung 6 — probe the service endpoints those documents declared
 #   delta <chain>     what changed against the previous finished run
+#   export-run <run>  rebuild the run's export from the rows it wrote
+#   heartbeat         the dead man's switch, pinged only once data is published
 #
 # `scripts/weekly-sweep.sh` is the entrypoint and runs them in that order, per
 # chain. The order matters: rung 6 reads documents the sweep archived, and the
@@ -40,8 +42,9 @@ RUN set -eux; \
         echo '' > "crates/$c/src/lib.rs"; \
     done; \
     mkdir -p crates/sweeper/src/bin; \
-    echo 'fn main() {}' > crates/sweeper/src/bin/liveness.rs; \
-    echo 'fn main() {}' > crates/sweeper/src/bin/delta.rs; \
+    for b in liveness delta export-run heartbeat; do \
+        echo 'fn main() {}' > "crates/sweeper/src/bin/$b.rs"; \
+    done; \
     cargo build --release -p sweeper || true
 
 COPY crates crates
@@ -52,12 +55,18 @@ COPY scripts scripts
 RUN set -eux; \
     find crates -name '*.rs' -exec touch {} +; \
     cargo build --release -p sweeper; \
-    strip target/release/sweeper target/release/liveness target/release/delta
+    strip target/release/sweeper target/release/liveness target/release/delta \
+          target/release/export-run target/release/heartbeat
 
 FROM debian:bookworm-slim AS runtime
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates; \
+    # The publish step shells out: `psql` to find the run id, `git` to commit
+    # the archive hash, and `zstd` for the archive itself. `gsutil` comes from
+    # the Cloud SDK, which the job image gets from the base layer at deploy
+    # time — see `scripts/deploy-weekly-sweep.sh`.
+    apt-get install -y --no-install-recommends \
+        ca-certificates postgresql-client git zstd python3; \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root. This process holds RPC credentials and a database password; there
@@ -68,6 +77,8 @@ USER agentcount
 COPY --from=build /src/target/release/sweeper /usr/local/bin/sweeper
 COPY --from=build /src/target/release/liveness /usr/local/bin/liveness
 COPY --from=build /src/target/release/delta /usr/local/bin/delta
+COPY --from=build /src/target/release/export-run /usr/local/bin/export-run
+COPY --from=build /src/target/release/heartbeat /usr/local/bin/heartbeat
 COPY --chmod=755 scripts/weekly-sweep.sh /usr/local/bin/weekly-sweep
 
 ENV RUST_LOG=info
