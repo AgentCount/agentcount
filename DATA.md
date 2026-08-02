@@ -120,6 +120,18 @@ history attests the archives and not only the numbers derived from them. An
 archive that verifies against a hash in a commit predating any dispute is
 evidence; one that only matches a file on a server we control is not.
 
+## Loading an archive into Postgres
+
+An archive is also how you get a real census into a local database without
+sweeping a chain: `import-run`, in this repository, is the exact inverse of
+the export — it reads `manifest.json` and the per-agent files and writes the
+`runs`, `agent_snapshots`, `check_results` and `http_archive` rows they came
+from. `DATABASE_URL=… cargo run -p sweeper --bin import-run -- <archive.tar.zst>`
+after `sqlx migrate run`; the README's "Local data without sweeping" section
+has the full steps. The one asymmetry is the one stated above: bodies are not
+in archives, so an imported `http_archive` row carries the summary columns
+(status, content-type, size, `body_sha256`, final URL) and never the bytes.
+
 ## Re-deriving a headline number
 
 The July 2026 census reports that **61.0% of valid registration documents
