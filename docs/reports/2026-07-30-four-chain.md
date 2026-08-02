@@ -21,9 +21,10 @@ correction this project has made to itself, including the ones in this report.
 > existence.**
 
 > Of those 354,858 agents, **358 have ever been paid** and **34 have ever
-> received a settlement through x402, the ecosystem's own payment protocol.**
+> received a settlement through [x402](https://www.x402.org), the payment
+> protocol the ERC-8004 spec itself name-checks.**
 > One in 991, and one in 10,437. Checked against an independent index that has
-> no concept of ERC-8004: **of its 138 largest x402 sellers, none is a
+> no concept of ERC-8004: **of its 138 largest EVM sellers, none is a
 > registered agent's declared wallet.**
 
 ---
@@ -313,8 +314,9 @@ Stated so that absence is never read as evidence.
   liveness ≠ functionality) and because **the probe's User-Agent must first
   carry a domain that resolves and a mailbox that answers** — currently it
   promises neither.
-- **Every other chain.** Solana, Arbitrum, Polygon, Optimism and 25 more
-  networks carry the same CREATE2 registries. Robinhood Chain (id 4663) has
+- **Every other chain.** Arbitrum, Polygon, Optimism and roughly twenty more
+  EVM networks carry the same CREATE2 registries; Solana carries a
+  third-party port, not the CREATE2 contracts. Robinhood Chain (id 4663) has
   both registries deployed and **zero agents minted**. This bounds the
   cross-check in §9 too: 21 of x402scan's top sellers are Solana addresses,
   which our census cannot evaluate in either direction.
@@ -365,9 +367,21 @@ nothing else — every figure is a **lower bound**. Symbols and decimals were re
 from each contract: **BSC's USDC and USDT are 18 decimals, not 6**, and Celo's
 long-known cUSD address now reports `USDm` at 18.
 
+Why x402 is the protocol-level signal, and what the flag actually detects:
+plain transfers are the primary measure above; on top of it, a payment is
+flagged **x402-style** when its transaction also carries an EIP-3009
+`AuthorizationUsed` from the same token, which is how
+[x402](https://www.x402.org) settles on EVM chains. x402 is singled out
+because it is the one payment protocol the ERC-8004 spec name-checks (a
+registration document may declare `x402Support`) and the one with an
+independent index to check the count against. Other rails — Google's AP2,
+Solana's — exist and are out of scope. The authorisation signal is broader
+than x402 itself (any gasless EIP-3009 transfer authorises the same way),
+which is exactly why the 34 was checked against a second source below.
+
 **Payment is three orders of magnitude rarer than registration.** 358 agents of
-354,858 — **1 in 991** — have ever been paid. **34 have ever received an x402
-settlement: 1 in 10,437**, and 32 of the 34 are on Base.
+354,858 — **1 in 991** — have ever been paid. **34 have ever received an
+x402-style settlement: 1 in 10,437**, and 32 of the 34 are on Base.
 
 **The thin-BSC prediction holds.** BSC has 4.1× Base's agents and fewer paid
 ones, at a rate six times lower — on the chain holding 69% of all ERC-8004
@@ -379,7 +393,8 @@ writing feedback for one platform's batch (§6); it was never a measure of
 commerce, and the payment data shows what was underneath it. No report should
 let one of these measures stand in for the other.
 
-**x402 is a busy protocol that agents are barely part of.** Base's stablecoins
+**EIP-3009 authorisation — x402's settlement rail — is busy, and agents are
+barely part of it.** Base's stablecoins
 carried **6,875,861** `AuthorizationUsed` transactions in the blocks scanned;
 **8,904** reached an agent-declared address, averaging **$1.07** — metering, not
 revenue. Mainnet's carried 26,260 and **not one** reached an agent. BSC has not
@@ -389,14 +404,14 @@ agents are not in it.
 
 **Most of the value is not revenue.** Contract-sourced flow dominates
 everywhere (50.8%–93.9%), and on Base the largest recipient's inflows are
-provably Morpho vault yield — the operator's own capital returning from DeFi.
+Morpho vault yield — the operator's own capital returning from DeFi.
 
 ### Checked against a second source
 
 The 34 is this census's most quotable payment number, so it was checked against
 an index built by someone else, by a different method, that has no concept of
-ERC-8004: **x402scan** (Merit Systems), which keys settlements by the seller's
-receiving address. Full working:
+ERC-8004: [**x402scan**](https://www.x402scan.com) (Merit Systems), which keys
+settlements by the seller's receiving address. Full working:
 [`analysis/x402scan-crosscheck.md`](../../analysis/x402scan-crosscheck.md).
 
 Our 34 agents resolve to 22 receiving addresses. **Of the 20 on Base, 18
@@ -452,9 +467,10 @@ x402 is not happening at registered ERC-8004 identities.**
 occurred and who received it — never who initiated it or why. And a
 non-matching seller is not "not an agent"; it is not a **registered** ERC-8004
 identity on the four chains we sweep. That is the finding: the registry is not
-where the payment activity is. x402scan publishes no disclaimer of its own —
-its repository contains no methodology page or statement of limits — so this
-caveat is ours and is not attributed to them.
+where the payment activity is. x402scan published no disclaimer of its own —
+its repository contained no methodology page or statement of limits at the
+pinned commit (`bf7a0cd`), re-checked 2026-08-01 — so this caveat is ours and
+is not attributed to them.
 
 **The pre-mint correction is the largest single one.** On Base, **82.5% of all
 value arriving at agent-declared addresses arrived before the agent existed** —
