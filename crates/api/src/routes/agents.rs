@@ -64,7 +64,7 @@ pub struct ListParams {
     /// linkable than this one.
     pub facet: Option<String>,
     /// Free-text search over the document's `name` and `description`, or an
-    /// owner-address prefix. See `search_sql` below for why the owner is
+    /// owner-address prefix. See [`q_match_sql`] for why the owner is
     /// matched by prefix rather than folded into the full-text vector.
     pub q: Option<String>,
     #[serde(default = "default_limit")]
@@ -102,6 +102,42 @@ fn parse_facets(raw: &str) -> ApiResult<Vec<(i16, String)>> {
         out.push((rung, status));
     }
     Ok(out)
+}
+
+/// The one definition of what `q` matches, over the aliases every caller
+/// binds: `s` = `agent_snapshots`, `d` = `agent_documents` (LEFT JOINed on
+/// run/chain/agent). Three OR'd forms: full text over name+description (the
+/// generated `search` column, GIN-indexed), trigram similarity on the name
+/// (the "typed it slightly wrong" case), and an owner-address prefix — prefix
+/// rather than folded into the full-text vector because an address is one
+/// 42-char token nobody types in full, and `LIKE 'prefix%'` is what
+/// `idx_snapshots_owner` can serve.
+///
+/// The agent's on-chain `agentWallet` is deliberately NOT matched: no table
+/// stores it (rung 1 evidence carries `ownerOf`, not `getAgentWallet` — see
+/// `analysis/payments-per-chain.md` on why it cannot be reconstructed from
+/// events either). Matching it means a sweep-time `getAgentWallet` read into
+/// a real column first, not a scan of evidence JSONB here.
+///
+/// `p` is the SQL placeholder (e.g. `"$7"`), passed in because the two
+/// endpoints that share this fragment bind it at different positions. Shared
+/// verbatim by `/api/agents` and `/api/search` so "a match" can never mean
+/// two different things depending on which box the text was typed into.
+pub(crate) fn q_match_sql(p: &str) -> String {
+    format!(
+        "({p}::text IS NULL \
+          OR d.search @@ plainto_tsquery('simple', {p}) \
+          OR d.name % {p} \
+          OR s.owner LIKE lower({p}) || '%')"
+    )
+}
+
+/// The relevance both search-ordered queries sort by. Negated because ASC is
+/// the only direction that keeps `/api/agents`' NULL-search branch (a
+/// constant 0) sorting consistently, and `/api/search` inherits the sign so
+/// the two endpoints rank identically.
+pub(crate) fn q_relevance_sql(p: &str) -> String {
+    format!("-similarity(coalesce(d.name, ''), {p})")
 }
 
 /// One rung's bare status for an agent in the directory — no evidence (that
@@ -223,11 +259,12 @@ pub async fn list(
     //    matching `check_results` row. Counting matched facets and requiring
     //    the count to equal `cardinality` is what makes this AND rather than
     //    OR. `idx_check_results_lookup` backs the correlated subquery.
-    // 3. Free text ($7).
+    // 3. Free text ($7) — the shared `q_match_sql` fragment, spliced in by
+    //    `format!` below.
     //
     // None of these folds a per-agent count into a verdict — they select WHICH
     // agents appear, never how well any one of them did.
-    let filter_sql = "WHERE s.run_id = $1 \
+    let filter_head = "WHERE s.run_id = $1 \
          AND ($2::text IS NULL OR s.chain = $2) \
          AND ( \
            ($3::smallint IS NULL AND $4::text IS NULL) \
@@ -248,22 +285,19 @@ pub async fn list(
                  AND c.rung = f.rung AND c.status = f.status \
              ) \
            ) = cardinality($5::smallint[]) \
-         ) \
-         AND ( \
-           $7::text IS NULL \
-           OR d.search @@ plainto_tsquery('simple', $7) \
-           OR d.name % $7 \
-           OR s.owner LIKE lower($7) || '%' \
          )";
+    let filter_sql = format!("{filter_head} AND {}", q_match_sql("$7"));
 
     // Relevance first when searching, and only then — an unsearched directory
     // stays in the stable (chain, agent_id) order that makes pagination
-    // reproducible. `similarity` is negated because ASC is the only direction
-    // that keeps the NULL-search branch's constant 0 sorting consistently.
-    let order_sql = "ORDER BY \
+    // reproducible. See `q_relevance_sql` for why the similarity is negated.
+    let order_sql = format!(
+        "ORDER BY \
          CASE WHEN $7::text IS NULL THEN 0::real \
-              ELSE -similarity(coalesce(d.name, ''), $7) END, \
-         s.chain, s.agent_id";
+              ELSE {} END, \
+         s.chain, s.agent_id",
+        q_relevance_sql("$7")
+    );
 
     let items_sql = format!(
         "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, s.observed_at, d.name \

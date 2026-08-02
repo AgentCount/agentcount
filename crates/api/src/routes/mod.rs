@@ -8,6 +8,9 @@
 //!   * [`findings`] — the same population, cross-cut into the handful of
 //!     numbers the census leads with. Still counts, still no score.
 //!   * [`agents`] — the directory and single-agent detail.
+//!   * [`search`] — one `q` across several caller-named runs, grouped per
+//!     run. The only endpoint that touches more than one run, and it still
+//!     never blends their rows.
 //!   * [`methodology`] — the provenance constants and rung-4 field list, as data.
 //!   * [`validate`] — the pre-flight checker: judge a draft document before it
 //!     is minted, using `crates/checks` unmodified.
@@ -24,5 +27,6 @@ pub mod findings;
 pub mod methodology;
 pub mod rates;
 pub mod runs;
+pub mod search;
 pub mod subscribe;
 pub mod validate;
