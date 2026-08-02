@@ -125,6 +125,37 @@ Bring your own RPC provider. Note that going *over* a provider's rate limit is
 slower than staying under it — 429s trigger retries that spend more quota than
 they save.
 
+## Local data without sweeping
+
+You do not need an RPC endpoint or a multi-hour sweep to work on the API or
+the checks: every published run is a free archive ([`DATA.md`](DATA.md)), and
+`import-run` loads one into your local database in under a minute.
+
+```sh
+createdb agentcount
+export DATABASE_URL=postgres://localhost:5432/agentcount
+cargo install sqlx-cli
+sqlx migrate run
+
+# celo, the smallest published run: 4.1 MB, 9,747 agents
+run=7833fc49-a5b7-477b-99ce-946f650f0064
+curl -LO https://data.agentcount.ai/runs/$run.tar.zst
+cargo run -p sweeper --bin import-run -- $run.tar.zst
+
+cargo run -p api      # GET /api/runs now serves a real census
+```
+
+`import-run` takes an archive or an already-extracted directory, refuses a
+run id that is already in the database unless `--replace` is passed (delete
+and re-import, one transaction), and seeds a minimal `chains` row when the
+manifest names a chain your database has not seen — run
+`scripts/seed_chains.sql` whenever you want the full chain configuration.
+Extraction shells out to `tar --zstd` (falling back to `zstd -dc | tar`), so
+have zstd installed. One caveat, inherited from the archives themselves:
+document **bodies** are not in exports, so `http_archive` gets summary
+columns only — verdicts and evidence import completely, re-judging from raw
+bytes needs a sweep of your own.
+
 ## Reproducing a published figure
 
 Most figures need neither this codebase nor our database. Event-derived
