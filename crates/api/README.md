@@ -29,6 +29,7 @@ latest run whose sweep has *finished*, never an in-flight one.
 | `GET /api/runs/{id}/rates` | The headline output: per rung, the count of each status (`pass`/`fail`/`skipped`/`error`/`unclaimed`), plus `agent_count` as the shared denominator. `GROUP BY rung, status` over one run, backed by `idx_check_results_rates`. |
 | `GET /api/agents?run=&chain=&rung=&status=&limit=&offset=` | The directory, one page at a time: `{items, page:{limit,offset,total}}`. `rung`+`status` filter to e.g. "everything failing rung 4"; `limit` clamped to 500 (default 100). `run` defaults to the latest completed run. |
 | `GET /api/agents/{chain}/{id}?run=` | One agent: its snapshot, every rung this run asked (in rung order, with full evidence), and the HTTP archive summary (status, content-type, size, sha256, final URL — never the body). `run` defaults to the latest completed run. |
+| `GET /api/search?q=&runs=` | One `q` (same match semantics as `/api/agents?q=`) across several caller-named runs — `runs` is comma-separated UUIDs, both parameters required, at most 16 runs. Returns `[{run_id, chain, total, items}]` in the caller's order: `total` counts every match in that run, `items` is the top 5 by the shared relevance, each the same shape as a directory row. Unknown run ids are dropped, not fatal. The only endpoint that spans runs — and it never blends their rows. |
 | `GET /api/methodology` | `spec_commit`, `checker_version`, `schema_version`, and the rung-4 required-field list — re-exported from `checks`, never restated. |
 | `GET /api/healthz` | Liveness: process up + Postgres reachable. Not `/healthz` — that path is reserved on Cloud Run and never reaches the container. |
 
@@ -40,7 +41,8 @@ latest run whose sweep has *finished*, never an in-flight one.
 | `src/error.rs` | `ApiError` + `IntoResponse`/`From` impls (so handlers can `?`). `NotFound` → 404, `BadRequest` → 400, `Internal` → 500. |
 | `src/routes/runs.rs` | `GET /api/runs`, and `latest_completed` — the shared "fill in a missing `run=`" lookup every other handler calls into. |
 | `src/routes/rates.rs` | `GET /api/runs/{id}/rates` — the one permitted aggregate: population counts, never a per-agent one. |
-| `src/routes/agents.rs` | The directory and single-agent detail. |
+| `src/routes/agents.rs` | The directory and single-agent detail, plus `q_match_sql`/`q_relevance_sql` — the one definition of what `q` matches, shared with `/api/search`. |
+| `src/routes/search.rs` | `GET /api/search` — cross-run search, grouped per run. The caller names the runs because "canonical" is decided by the web repo's `published-runs.json`, not by this API. |
 | `src/routes/methodology.rs` | The provenance constants and rung-4 field list, served as data. |
 
 ## Design notes
@@ -58,6 +60,9 @@ latest run whose sweep has *finished*, never an in-flight one.
 - **Every query is run-scoped.** `agent_snapshots` and `check_results` are
   both keyed by `run_id`; blending rows from two different runs would compare
   an agent to itself across two different points in time as if they were one.
+  `/api/search` reads several runs in one request, but its results stay
+  partitioned per run — the rule is about blending, not about how many runs a
+  response may mention.
 - **Hardening.** 10s request timeout, 256 in-flight request cap, clamped page
   sizes. Per-IP rate limiting is a fast-follow.
 

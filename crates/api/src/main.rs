@@ -81,12 +81,17 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         // JSON API — chain is part of every agent identity path, and every
         // endpoint below is scoped to one run (explicit `?run=`, or the
-        // latest completed one).
+        // latest completed one), except `/api/search`, which spans several
+        // runs precisely by keeping them in separate groups.
         .route("/api/runs", get(routes::runs::list))
         .route("/api/runs/{id}/rates", get(routes::rates::get))
         .route("/api/runs/{id}/findings", get(routes::findings::get))
         .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
+        // The one read endpoint that spans runs — the caller names them (the
+        // canonical set lives in the web repo, not here), and results stay
+        // grouped per run. See `routes::search`.
+        .route("/api/search", get(routes::search::get))
         .route("/api/methodology", get(routes::methodology::get))
         // The one endpoint that writes nothing and reads no run: it judges a
         // document the caller supplies, with the same checker the sweep uses.
