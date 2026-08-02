@@ -38,8 +38,10 @@ effect: none" is a valid and useful result.
 
 ## Everything else
 
-Ordinary changes — performance, tests, docs, tooling, the frontend, API
-plumbing — need none of the above. Open a pull request.
+Ordinary changes — performance, tests, docs, tooling, API plumbing — need none
+of the above. Open a pull request. Frontend and display issues belong in
+[`AgentCount/agentcount-web`](https://github.com/AgentCount/agentcount-web);
+anything that can move a status is decided here.
 
 ## Ground rules for the codebase
 
