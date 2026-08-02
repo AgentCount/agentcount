@@ -23,7 +23,9 @@ that is recorded as such rather than guessed.
 
 ## Scale
 
-Four chains, each pinned to a block — 354,858 agents:
+The 2026-07-30 census: four chains, each pinned to a block — 354,858 agents.
+The current chain set is whatever [`published-runs.json`](published-runs.json)
+lists; this table is a dated snapshot, not the live scope.
 
 | chain | agents | pinned block |
 |---|---:|---:|
@@ -84,6 +86,11 @@ corrupt another.
 out, with no network and no database. That is what makes a verdict
 re-derivable from an archived run without re-reading the chain, and CI enforces
 it as a named job.
+
+The frontend that renders `crates/api` lives in
+[`AgentCount/agentcount-web`](https://github.com/AgentCount/agentcount-web).
+Display issues get filed there; this repo is canonical for anything that can
+move a status.
 
 ## Running a census
 
