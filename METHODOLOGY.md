@@ -651,6 +651,32 @@ handed to someone without the rest of the run — is exported to
 `data/<run_id>/` alongside the Postgres rows, specifically so it can be
 downloaded and diffed without a database connection.
 
+### Clean commits, and who wrote the export
+
+Two provenance rules, adopted 2026-08-02 after this project's own review
+found the published index disagreeing with the database about which checker
+produced the four canonical runs.
+
+**Canonical runs are swept from clean commits only, from the next sweep
+onward.** Three of the four July 2026 runs were built from uncommitted trees
+and carry a `-dirty` checker commit. The stamp is honest, but a `-dirty`
+build cannot be checked out and rerun by anyone, including us, which is a
+poor foundation for a census whose claim is recomputability. The July runs
+stay published as they are — the stamp says what happened — and no future
+run is published from a dirty build.
+
+**Manifests record the checker and the exporter separately.** A rebuilt
+export is written by a different build than the sweep it rebuilds.
+`checker_version`/`checker_commit` are the sweep-time values from the `runs`
+table and answer "what judged this run"; `exporter_version`/
+`exporter_commit` name the binary that wrote the files. The four July
+archives predate this rule: their internal manifests carry the export era's
+`schema_version: 7` / `checker_version: 0.6.0` in the checker fields, which
+is wrong — the database, the API, and `published-runs.json` record the
+sweep-time `5` / `0.5.0`, and the archives are immutable so their manifests
+keep the error. Where the two disagree, the database is authoritative. The
+correction is logged in [`CHANGELOG-METHODOLOGY.md`](CHANGELOG-METHODOLOGY.md).
+
 ## 6. Probing etiquette
 
 Rungs 2 and 6 fetch resources we do not control: an agent's declared document

@@ -20,6 +20,77 @@ Format per entry:
 
 ---
 
+## 2026-08-02 — CLAIM CORRECTION: the homepage said "the four largest chains", and it was false
+
+**What changed.** No rung's rule. The site's H1 claimed the census covered
+"the four largest chains" by ERC-8004 registrations. Nobody had verified the
+ranking before publishing it. Counting registrations on every chain the
+canonical registry is deployed on — by binary search on `ownerOf` at
+`0x8004a169…a432`, the census's own population definition, validated by
+reproducing the census's Celo count exactly at its pin time — places the
+swept chains at **#1 (BNB Chain), #2 (Base), #3 (Ethereum mainnet), and #8
+(Celo)**. Billions (chain id 45056) held 25,974 agents at the census's own
+pin date, 2.7 times Celo's population; MegaETH, X Layer and Monad also
+exceed Celo. The claim was false at publication, not stale.
+
+**Why.** The 2026-08 product review checked it. The claim originated when
+Celo was added for other reasons and the H1 was written as if population
+rank had been the selection criterion.
+
+**The fix.** The H1 now names the chains it counted, derived from the
+published-runs list at render time, and links to a new `/coverage` page
+listing every known deployment with its count — probe script committed, one
+command to recompute. No coverage percentage or chain count is typed
+anywhere in the site's copy. The footer and methodology sentences that said
+"every AI agent registered under ERC-8004" unqualified are scoped the same
+way. As of 2026-08-01 the swept chains hold 83.0% of the 439,582
+registrations the probe could count; that figure lives on `/coverage`,
+computed from the committed probe data, and is not quoted in the H1 because
+it moves.
+
+**Measured effect.** No agent's result moves — this was a claim about scope,
+not a measurement. The 354,858 population figure was and remains correct.
+
+---
+
+## 2026-08-02 — PROVENANCE CORRECTION: the published index misstated which checker swept the four canonical runs (no semantic effect)
+
+**What changed.** No rung's rule, and no archive byte. `published-runs.json`
+recorded all four canonical runs as `schema_version: 7`,
+`checker_version: 0.6.0`. The database — served verbatim by `/api/runs` —
+records all four as `schema_version: 5`, `checker_version: 0.5.0`, and the
+homepage displayed those values beside a `/data` page displaying the others:
+the same run, two different checkers, on one site. The checker *commits*
+were correct everywhere; only the version and schema numbers were wrong, and
+they belonged to the era of the 2026-08-01 rebuild that produced the
+archives, not to the sweeps.
+
+**Why.** The four runs were swept before anything published exports, so
+their archives were rebuilt from the database on 2026-08-01, and the rebuilt
+manifests carried the rebuild era's schema and checker versions in the
+fields that should have named the sweep's. The exact path by which the wrong
+values reached the manifests was not fully reconstructed; the effect is
+plain in the artifacts.
+
+**The fix.** The index now records the sweep-time values (`5` / `0.5.0`,
+matching the database) plus each archive's `rebuilt_at`. Manifests gain
+`exporter_version` / `exporter_commit` so the writer and the judge are never
+again one field; `publish-run.sh` carries both into the index. The archives
+themselves are immutable and keep their overstated internal manifests —
+where an archive manifest and the database disagree, the database is
+authoritative, and `METHODOLOGY.md` §5 now says so.
+
+**Also adopted.** Canonical runs are swept from clean commits only, from the
+next sweep onward. Three of the four July runs carry a `-dirty` checker
+commit — an honest stamp of an unreproducible build. They stay published;
+the policy prevents a fifth.
+
+**Measured effect.** None on any agent or rate. Four index entries
+corrected; the archives' sha256 hashes are unchanged and re-verified against
+the published checksums during this correction.
+
+---
+
 ## 2026-08-01 — Rung 6 (`live`) ships, with a sixth status and a disclosed sample
 
 **What changed.** The service track stops being absent from every result. A

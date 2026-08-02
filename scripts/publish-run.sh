@@ -165,6 +165,11 @@ entry = {
     "schema_version": manifest["schema_version"],
     "checker_version": manifest["checker_version"],
     "checker_commit": manifest["checker_commit"],
+    # Who wrote the export, as distinct from what judged the run. Absent from
+    # manifests written before 2026-08-02; .get() keeps those publishable.
+    "exporter_version": manifest.get("exporter_version"),
+    "exporter_commit": manifest.get("exporter_commit"),
+    "rebuilt_at": manifest.get("rebuilt_at"),
     "spec_commit": manifest["spec_commit"],
     "rerun_command": manifest["rerun_command"],
     "agent_count": manifest.get("agent_count"),
