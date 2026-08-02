@@ -22,6 +22,14 @@ pub struct RunManifest<'a> {
     pub checker_commit: &'a str,
     pub spec_commit: &'a str,
     pub rerun_command: &'a str,
+    /// The binary that wrote these files, as distinct from the checker whose
+    /// semantics judged the run. For a live sweep the two are one build; for
+    /// a rebuilt export they are not — and conflating them is how four
+    /// published runs came to claim a checker version that postdated them.
+    /// `checker_*` answers "what judged this run"; `exporter_*` answers "what
+    /// wrote this file".
+    pub exporter_version: &'a str,
+    pub exporter_commit: &'a str,
     /// How many agents this run intends to sweep — the enumerated population,
     /// or the `SWEEP_MAX_AGENTS` cap when one is set.
     pub agent_count: usize,

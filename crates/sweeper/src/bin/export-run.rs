@@ -54,6 +54,12 @@ struct RebuiltManifest {
     /// Set only on a rebuilt manifest. Its presence is the signal that
     /// `unreadable`/`unwritable` are unknown rather than zero.
     rebuilt_at: String,
+    /// The binary that wrote this file — a rebuild is by definition a
+    /// different build than the sweep, and the two must not share fields.
+    /// `checker_version`/`checker_commit` above are the sweep-time values
+    /// from the `runs` row; these two name the rebuilder.
+    exporter_version: String,
+    exporter_commit: String,
 }
 
 #[derive(Serialize)]
@@ -276,6 +282,8 @@ async fn main() -> Result<()> {
         unwritable: None,
         finished_at: run.2.map(|t| t.to_rfc3339()),
         rebuilt_at: chrono::Utc::now().to_rfc3339(),
+        exporter_version: env!("CARGO_PKG_VERSION").to_string(),
+        exporter_commit: env!("CHECKER_COMMIT").to_string(),
     };
     std::fs::write(
         std::path::Path::new("data")

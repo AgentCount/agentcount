@@ -585,6 +585,12 @@ async fn sweep() -> Result<()> {
             checker_commit,
             spec_commit,
             rerun_command: &rerun,
+            // The writing binary's own identity — NOT the local
+            // `checker_commit`, which on a resume is the sweep-time value
+            // read back from the database and may name a different build
+            // than the one writing this file.
+            exporter_version: env!("CARGO_PKG_VERSION"),
+            exporter_commit: env!("CHECKER_COMMIT"),
             agent_count: planned,
             swept,
             unreadable,
