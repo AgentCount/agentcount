@@ -11,6 +11,10 @@
 //!   * [`search`] — one `q` across several caller-named runs, grouped per
 //!     run. The only endpoint that touches more than one run, and it still
 //!     never blends their rows.
+//!   * [`tail`] — the one module that serves rows belonging to NO run: agents
+//!     the chain has that no census has checked yet. Its response shape shares
+//!     almost nothing with a census result, on purpose — read its module doc
+//!     before adding a field to it.
 //!   * [`methodology`] — the provenance constants and rung-4 field list, as data.
 //!   * [`validate`] — the pre-flight checker: judge a draft document before it
 //!     is minted, using `crates/checks` unmodified.
@@ -29,4 +33,5 @@ pub mod rates;
 pub mod runs;
 pub mod search;
 pub mod subscribe;
+pub mod tail;
 pub mod validate;

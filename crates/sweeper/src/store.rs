@@ -348,6 +348,24 @@ impl Db {
         Ok(())
     }
 
+    /// Mark a run finished — and, as the same act, retire the tail rows it has
+    /// now swept.
+    ///
+    /// **Why the supersede lives here.** "A census run finished covering this
+    /// id" is exactly the event that makes a tail row stop being interesting,
+    /// and this is the one place in the codebase where that event happens. Any
+    /// other home (a cron job, a step in the weekly script) would be a second
+    /// place that has to remember, and the failure mode of forgetting is the
+    /// site showing an agent as "not yet checked" while its seven answers sit
+    /// in the database.
+    ///
+    /// It is deliberately NOT in the same transaction, and a failure here is
+    /// logged rather than propagated. The run's own status is a census fact
+    /// and must land; whether a tail row still says "unswept" is a display
+    /// detail that the poller's own backstop pass fixes on its next tick (see
+    /// `bin/tail.rs`). Coupling them the other way would mean a missing
+    /// migration 0018 could stop a completed sweep from ever being marked
+    /// finished — a real census lost to a cosmetic table.
     pub async fn close_run(&self, run_id: Uuid, agent_count: i32, at: DateTime<Utc>) -> Result<()> {
         sqlx::query(
             "UPDATE runs SET finished_at = $2, agent_count = $3, status = 'finished' \
@@ -359,6 +377,18 @@ impl Db {
         .execute(&self.pool)
         .await
         .context("closing run")?;
+
+        match self.supersede_tail(run_id).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                "run {run_id}: {n} registration-tail row(s) superseded — those agents \
+                 now have real check results and the tail stops showing them"
+            ),
+            Err(e) => tracing::warn!(
+                "run {run_id} closed, but the registration tail could not be updated: {e:#} \
+                 — the tail poller's backstop pass will retire those rows instead"
+            ),
+        }
         Ok(())
     }
 

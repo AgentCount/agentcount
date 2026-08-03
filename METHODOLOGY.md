@@ -677,6 +677,49 @@ sweep-time `5` / `0.5.0`, and the archives are immutable so their manifests
 keep the error. Where the two disagree, the database is authoritative. The
 correction is logged in [`CHANGELOG-METHODOLOGY.md`](CHANGELOG-METHODOLOGY.md).
 
+### The continuous registration tail is not a measurement
+
+Added 2026-08-03. A census pins a block, and that pin is where its authority
+comes from: a figure is a statement about a population that existed
+*simultaneously*. The cost is that an agent minted after the sweep does not
+exist as far as this site is concerned — searching finds nothing, and its
+permalink returns 404. The person most likely to hit that is the registrant,
+minutes after minting.
+
+So AgentCount also runs a **registration tail**: a poller that reads the
+registry's current highest agent id (the same contiguous-id binary search over
+`ownerOf` the census uses) and records, for each id above the last sweep's,
+only what an on-chain read gives cheaply — the owner, the URI it declares, and
+the block both were read at. Those rows make a new agent findable and
+linkable. The boundary around them is absolute:
+
+- **A tail row carries no check results.** Not `pass`, not `fail`, not
+  `skipped`, not an empty list. No document was fetched and no rung was
+  answered, so there is nothing to report and nothing to infer. The API
+  returns tail agents in a shape that has no rungs array at all, marked
+  `"source": "tail"`, so no client can render seven statuses for an agent that
+  has none.
+- **No census figure includes tail data, ever.** Every population count, base
+  rate, finding, delta and archived export is computed by joining down from a
+  `runs` row. The tail's table (migration 0018) has no `run_id` and no foreign
+  key to `runs`, so those queries cannot reach it — the separation is
+  structural, not a filter someone has to remember to write.
+- **A tail row is a receipt, not an observation of the population.** It says
+  "the registry contained this id at this block". It does not say the agent was
+  present at any census's pinned block, and it is never added to one to make a
+  more current-looking total. When a later sweep covers the id, the agent's
+  real answers come from that run, and the tail row is marked superseded and
+  stops being served.
+- **"Discovered at" is when we looked**, not when the agent was minted. The
+  poller reads state, not logs, so it knows the block it read at and nothing
+  about the registration transaction. Registration provenance (`minter`,
+  `registration_tx_hash`, `registration_block`) is captured by the census, from
+  logs, and stays there.
+
+The number of unswept tail agents is published per chain (`/api/tail/summary`)
+precisely so the gap between the pin and now is visible rather than papered
+over. It is a count of things this census has **not** measured.
+
 ## 6. Probing etiquette
 
 Rungs 2 and 6 fetch resources we do not control: an agent's declared document
