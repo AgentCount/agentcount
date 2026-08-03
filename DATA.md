@@ -168,6 +168,29 @@ from `GET /api/runs/<run_id>/findings` as `services_absent_or_empty`.
 If your result disagrees, the published figure is wrong and we want to know.
 Open an issue with the run id and the commands you ran.
 
+## Archives are census runs only — never the registration tail
+
+An archive is one run: the agents a pinned block held, and the seven answers
+that sweep produced for each of them. Nothing else is in it.
+
+In particular, the **registration tail** is not. Between sweeps a poller
+records agents minted since the last census — id, owner, declared URI, and the
+block it read them at — so a brand-new agent can still be found and linked to
+on the site (`/api/tail`). Those rows carry no check results, belong to no run,
+and are in a table (`registration_tail`, migration 0018) with no `run_id` and
+no foreign key to `runs`. The export walks a run's rows, so there is no path by
+which a tail row could reach an archive; and `scripts/publish-run.sh` publishes
+a fixed list of paths, so a new table cannot start being uploaded by accident.
+
+This matters if you are re-deriving a number. A run's `agent_count` is the
+population at that run's pinned block, and it will be smaller than what the
+chain holds today — that difference is real, and it is the point of a pinned
+census rather than a rolling one. If you want the current gap, ask
+`GET /api/tail/summary`, which reports per chain how many agents the tail has
+seen that no census has checked. Adding that count to a run's population
+produces a number that describes no moment in time and is not a figure this
+project publishes.
+
 ## Schema versions
 
 `schema_version` in the manifest says which evidence contract a run was
@@ -194,6 +217,8 @@ Full detail for every one of these is in
 - **RPC endpoint URLs**, which carry API keys.
 - **Database credentials.**
 - **Document bodies** — see above; the hashes are published instead.
+- **Registration-tail rows** — see above; they are not census data, so they
+  are not in any run's archive.
 
 The publish script writes an explicit list of paths rather than uploading a
 directory, so adding a new table or a new file to the working tree cannot

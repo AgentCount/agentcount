@@ -92,6 +92,13 @@ async fn main() -> anyhow::Result<()> {
         // canonical set lives in the web repo, not here), and results stay
         // grouped per run. See `routes::search`.
         .route("/api/search", get(routes::search::get))
+        // The two endpoints that serve rows belonging to NO run: agents the
+        // chain has that no census has checked yet. Separate paths, and a
+        // response shape that shares almost nothing with a census result, so
+        // an unchecked agent can be found without ever being counted as a
+        // measured one. See `routes::tail`.
+        .route("/api/tail", get(routes::tail::list))
+        .route("/api/tail/summary", get(routes::tail::summary))
         .route("/api/methodology", get(routes::methodology::get))
         // The one endpoint that writes nothing and reads no run: it judges a
         // document the caller supplies, with the same checker the sweep uses.

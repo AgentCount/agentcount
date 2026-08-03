@@ -195,21 +195,45 @@ pub struct PageMeta {
     pub total: i64,
 }
 
+/// The directory page: one run's agents, plus — strictly beside them, never
+/// mixed in — whatever the registration tail holds that no census has checked.
+///
+/// **Why a sibling field and not a merged list.** `items` is a statement about
+/// one pinned run: every row in it has seven answers (or a documented absence)
+/// and a block it was read at. A tail row has none of that. Merging the two
+/// would mean `total`, every count derived from this page, and every consumer
+/// iterating `items` would silently start mixing measured agents with unmeasured
+/// ones — the single failure this whole feature is designed to make structurally
+/// impossible. A separate array cannot be iterated by accident.
+///
+/// `tail` is a fixed, unpaginated head (at most [`TAIL_HEAD`] rows, newest
+/// discovery first) filtered by the same `chain` and `q` as the page. It is
+/// deliberately not paged: it is a pointer to `/api/tail`, where the full list
+/// lives, not a second result set to walk.
 #[derive(Debug, Serialize)]
-pub struct Page<T> {
-    pub items: Vec<T>,
+pub struct AgentPage {
+    pub items: Vec<AgentListItem>,
     pub page: PageMeta,
+    pub tail: Vec<crate::routes::tail::TailAgent>,
 }
+
+/// How many tail rows ride along with a directory page.
+const TAIL_HEAD: i64 = 10;
 
 /// `GET /api/agents?run=&chain=&rung=&status=&facet=&q=&limit=&offset=` — the
 /// directory, one page at a time. `rung`+`status` filter to "agents failing
 /// rung 4"; `facet=2:pass,5:pass` ANDs several such conditions; `q` searches
 /// names, descriptions and owner prefixes. `run` defaults to the latest
 /// completed run (never an in-flight one, whose counts are still changing).
+///
+/// The response also carries a `tail` array beside `items` — agents the chain
+/// has that no census has checked. See [`AgentPage`] for why they travel
+/// separately rather than merged, and [`crate::routes::tail`] for what a tail
+/// row is.
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Page<AgentListItem>>> {
+) -> ApiResult<Json<AgentPage>> {
     let chain = params
         .chain
         .map(|c| c.trim().to_lowercase())
@@ -373,13 +397,21 @@ pub async fn list(
         })
         .collect();
 
-    Ok(Json(Page {
+    // Read AFTER the run-scoped page and kept in its own array. This query
+    // touches `registration_tail` only — it cannot alter `items`, `total`, or
+    // anything the caller would quote as a census figure.
+    let tail =
+        crate::routes::tail::matches(&state.db, chain.as_deref(), q.as_deref(), TAIL_HEAD, 0)
+            .await?;
+
+    Ok(Json(AgentPage {
         items,
         page: PageMeta {
             limit,
             offset,
             total,
         },
+        tail,
     }))
 }
 
@@ -426,6 +458,10 @@ pub struct ArchiveSummary {
 
 #[derive(Debug, Serialize)]
 pub struct AgentDetail {
+    /// Always `"census"`. Added so a client has ONE field to branch on across
+    /// both shapes this endpoint can return; existing clients that ignore it
+    /// are unaffected, because everything else is exactly where it was.
+    pub source: &'static str,
     pub run_id: Uuid,
     pub chain: String,
     pub agent_id: i64,
@@ -447,30 +483,105 @@ pub struct AgentDetail {
     pub archive: Option<ArchiveSummary>,
 }
 
+/// Either answer this endpoint can give, as one response type.
+///
+/// `#[serde(untagged)]`: each variant serializes as its own object, with no
+/// wrapper key. The discriminator is the `source` field INSIDE each shape —
+/// `"census"` or `"tail"` — so a caller reads one field at the top level of
+/// the body it already has, rather than unwrapping an envelope.
+///
+/// The two shapes share only `chain` and `agent_id`. A census result has
+/// `run_id`, `snapshot` and `rungs`; a tail result has none of those and has
+/// no array at all. That is the safety property: a client that ignores
+/// `source` and reaches for `rungs` finds nothing there, so it fails loudly
+/// instead of rendering seven blank statuses as though the agent had been
+/// checked and found wanting.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum AgentDetailResponse {
+    /// One agent as a pinned run measured it. `Box`ed because this variant is
+    /// far larger than the other, and clippy is right that a lopsided enum
+    /// makes every value pay for the big one.
+    Census(Box<AgentDetail>),
+    /// One agent the chain has and no census has checked.
+    Tail(crate::routes::tail::TailAgent),
+}
+
 /// `GET /api/agents/{chain}/{id}?run=` — one agent's snapshot, every rung
 /// with its evidence, and the archive summary. Defaults to the latest
 /// completed run when `run` is omitted.
+///
+/// **The tail fallback.** When the run has no row for this agent, the
+/// registration tail is asked before giving up. This is the fix for a real
+/// and predictable failure: an agent minted after the last sweep 404s here,
+/// and the person most likely to click that link is the registrant, minutes
+/// after minting, who reasonably concludes the site is broken.
+///
+/// What comes back in that case is NOT a census result wearing a thin
+/// disguise. It is a different shape ([`AgentDetailResponse::Tail`]) with a
+/// `"source": "tail"` discriminator, no `run_id` — there is no run to cite —
+/// and no rungs array of any kind, because no check was run. A 404 is still
+/// the answer when neither table knows the id.
+///
+/// Only UNSWEPT tail rows answer here. Once a census has covered an id, the
+/// tail row is marked superseded and this endpoint's run-scoped path is the
+/// only one that can describe it — asking `?run=` for an older run that
+/// predates the agent correctly 404s rather than quietly substituting a
+/// receipt for a measurement.
 pub async fn get_one(
     State(state): State<AppState>,
     Path((chain, agent_id)): Path<(String, i64)>,
     Query(params): Query<GetParams>,
-) -> ApiResult<Json<AgentDetail>> {
+) -> ApiResult<Json<AgentDetailResponse>> {
     let chain = chain.trim().to_lowercase();
+    // Resolved as an `Option`, not with `?`. A chain that has never had a
+    // completed run has no census to look in — but it can still have a tail,
+    // and that is exactly the case (a newly enabled chain) where a 404 for
+    // every agent would be most misleading.
     let run_id = match params.run {
-        Some(id) => id,
-        None => runs::latest_completed(&state.db, Some(&chain)).await?,
+        Some(id) => Some(id),
+        None => match runs::latest_completed(&state.db, Some(&chain)).await {
+            Ok(id) => Some(id),
+            Err(ApiError::NotFound) => None,
+            Err(e) => return Err(e),
+        },
     };
 
-    let snapshot = sqlx::query_as::<_, SnapshotDetail>(
-        "SELECT token_id::text AS token_id, owner, agent_uri, block_number, observed_at \
-         FROM agent_snapshots WHERE run_id = $1 AND chain = $2 AND agent_id = $3",
-    )
-    .bind(run_id)
-    .bind(&chain)
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(ApiError::NotFound)?;
+    let snapshot =
+        match run_id {
+            Some(run_id) => sqlx::query_as::<_, SnapshotDetail>(
+                "SELECT token_id::text AS token_id, owner, agent_uri, block_number, observed_at \
+                 FROM agent_snapshots WHERE run_id = $1 AND chain = $2 AND agent_id = $3",
+            )
+            .bind(run_id)
+            .bind(&chain)
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await?,
+            None => None,
+        };
+
+    let (Some(run_id), Some(snapshot)) = (run_id, snapshot) else {
+        // No census row. Ask the tail before 404ing — but ONLY when the caller
+        // did not pin a run.
+        //
+        // `?run=` is a request for one measurement, at one block. Answering it
+        // from the tail would hand back a receipt for an agent that did not
+        // exist when that run was taken, and a caller who pinned a run is
+        // precisely the caller who must not be given data from outside it. A
+        // run id that names nothing must 404 for the same reason: silently
+        // widening the question is how a pinned figure stops meaning anything.
+        //
+        // Without the pin the question is "what do you know about this
+        // agent", and the tail is a legitimate answer to it.
+        if params.run.is_some() {
+            return Err(ApiError::NotFound);
+        }
+        return match crate::routes::tail::lookup(&state.db, &chain, agent_id).await? {
+            Some(t) => Ok(Json(AgentDetailResponse::Tail(t))),
+            None => Err(ApiError::NotFound),
+        };
+    };
 
     let rungs = sqlx::query_as::<_, RungResult>(
         "SELECT rung, name, status, evidence, checked_at FROM check_results \
@@ -508,7 +619,8 @@ pub async fn get_one(
     .fetch_optional(&state.db)
     .await?;
 
-    Ok(Json(AgentDetail {
+    Ok(Json(AgentDetailResponse::Census(Box::new(AgentDetail {
+        source: "census",
         run_id,
         chain,
         agent_id,
@@ -517,5 +629,5 @@ pub async fn get_one(
         snapshot,
         rungs,
         archive,
-    }))
+    }))))
 }

@@ -7,18 +7,26 @@
 # carry a binary that holds RPC credentials and writes to every table.
 #
 # This image is the opposite: it is never served, never reachable from the
-# internet, and runs to completion. It carries the three binaries a scheduled
-# census needs and nothing else.
+# internet, and runs to completion. It carries the binaries a scheduled census
+# needs, plus the between-census discovery poller, and nothing else.
 #
 #   sweeper <chain>   pin a block, read every agent, answer rungs 1-5 and 7
 #   liveness <chain>  rung 6 — probe the service endpoints those documents declared
 #   delta <chain>     what changed against the previous finished run
 #   export-run <run>  rebuild the run's export from the rows it wrote
 #   heartbeat         the dead man's switch, pinged only once data is published
+#   tail --once       one discovery pass over each chain, between censuses
 #
-# `scripts/weekly-sweep.sh` is the entrypoint and runs them in that order, per
-# chain. The order matters: rung 6 reads documents the sweep archived, and the
-# delta compares a run that has finished.
+# `scripts/weekly-sweep.sh` is the entrypoint and runs the first five in that
+# order, per chain. The order matters: rung 6 reads documents the sweep
+# archived, and the delta compares a run that has finished.
+#
+# `tail` is NOT part of that sequence and must not be added to it. It runs on
+# its own, far shorter schedule — a second Cloud Run Job on this same image
+# with the entrypoint overridden to `/usr/local/bin/tail --once`, fired every
+# few minutes by Cloud Scheduler. It is in this image because it needs the same
+# RPC credentials and the same database, and in no case in the public API
+# image, for the reason at the top of this file.
 
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
@@ -42,7 +50,7 @@ RUN set -eux; \
         echo '' > "crates/$c/src/lib.rs"; \
     done; \
     mkdir -p crates/sweeper/src/bin; \
-    for b in liveness delta export-run heartbeat; do \
+    for b in liveness delta export-run heartbeat tail; do \
         echo 'fn main() {}' > "crates/sweeper/src/bin/$b.rs"; \
     done; \
     cargo build --release -p sweeper || true
@@ -56,7 +64,7 @@ RUN set -eux; \
     find crates -name '*.rs' -exec touch {} +; \
     cargo build --release -p sweeper; \
     strip target/release/sweeper target/release/liveness target/release/delta \
-          target/release/export-run target/release/heartbeat
+          target/release/export-run target/release/heartbeat target/release/tail
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 #
@@ -86,6 +94,7 @@ COPY --from=build /src/target/release/liveness /usr/local/bin/liveness
 COPY --from=build /src/target/release/delta /usr/local/bin/delta
 COPY --from=build /src/target/release/export-run /usr/local/bin/export-run
 COPY --from=build /src/target/release/heartbeat /usr/local/bin/heartbeat
+COPY --from=build /src/target/release/tail /usr/local/bin/tail
 COPY scripts/ /opt/agentcount/scripts/
 # `chmod` in a RUN rather than `COPY --chmod`, which needs BuildKit — Cloud
 # Build's docker builder does not enable it, and the build fails outright.

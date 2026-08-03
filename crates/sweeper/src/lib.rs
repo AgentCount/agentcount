@@ -22,8 +22,19 @@
 //! without re-sweeping the chain — the probe is the slow, rate-limited,
 //! interruptible half, and it should not be able to cost a chain read.
 //!
+//! A third binary runs on a different clock and answers a different question:
+//!
+//! * **`tail`** (`src/bin/tail.rs`) — the continuous registration tail. NOT a
+//!   census pass. It discovers ids minted since the last sweep, so an agent
+//!   registered five minutes ago can still be found and linked to, and it
+//!   records only what an on-chain read gives cheaply: owner, URI, block. No
+//!   document is fetched and no rung is answered. See [`tail`]'s module doc
+//!   for why its table is unreachable from every census aggregate by
+//!   construction rather than by convention.
+//!
 //! `store` is here because both binaries write to the same tables and must
 //! agree exactly about how. `export` stays private to the sweeper binary: it
 //! writes the `data/<run_id>/` files, which only a full sweep produces.
 
 pub mod store;
+pub mod tail;

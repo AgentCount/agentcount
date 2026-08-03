@@ -20,6 +20,68 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — NOT A CHECK-SEMANTICS CHANGE: a continuous registration tail, kept outside the census
+
+**What changed.** No rung's rule, no evidence shape, no status, no schema
+version. Nothing about how any agent is judged, and nothing about how any
+published figure is computed. This entry exists because a new source of agent
+data now appears on the site, and a reader is entitled to know exactly what it
+is and what it is not.
+
+Between censuses, a poller (`sweeper`'s `tail` binary) reads each enabled
+chain's current highest agent id — the same contiguous-id binary search over
+`ownerOf` the census uses for enumeration — and records, for every id above the
+last sweep's, only what an on-chain read gives cheaply: the owner, the declared
+URI, and the block both were read at. Those rows make a newly registered agent
+findable and linkable. They carry **no check results of any kind**, and no
+census figure includes them.
+
+**Why.** An agent minted after a sweep was invisible: search returned nothing
+and its permalink 404'd. The person most likely to hit that is the registrant,
+minutes after minting, and the reasonable conclusion from a 404 is that the
+site is broken. Discovery is the cheap half of a census (~17 RPC calls to find
+the top of the id range, two more per new agent); the expensive half — fetching
+each document, probing endpoints, judging seven rungs — is what makes a sweep a
+scheduled multi-hour job. Doing the cheap half continuously closes the gap
+without touching the pin.
+
+**How the boundary is enforced.** Structurally, not by a filter anyone has to
+remember. `registration_tail` (migration 0018) has no `run_id` and no foreign
+key to `runs`. Every census aggregate — every rate, finding, delta and export —
+is computed by joining down from a `runs` row, so no such query can reach a
+tail row at all. The alternative considered and rejected was a flag column on
+`agent_snapshots`: that inverts the default, because every existing aggregate
+would silently start including unchecked agents until someone added
+`WHERE is_tail = false` to all of them, and the one that got missed would be
+the one that published a wrong number.
+
+Three further consequences, all deliberate:
+
+- The API returns a tail agent in a shape with **no rungs array at all** — not
+  an empty one — marked `"source": "tail"`, sharing no field name with a census
+  result beyond `chain` and `agent_id`. A client that ignores the discriminator
+  cannot render it as a checked agent; it breaks visibly instead. An empty
+  array was rejected as the more dangerous shape: "seven statuses missing" and
+  "seven statuses failed" look alike in a UI.
+- Tail results never merge into a run-scoped list. `/api/agents` carries them
+  in a sibling `tail` array beside `items`; `/api/tail` serves them on their
+  own. `total` and every count on that page remain the run's.
+- Once a census run covers an id, its tail row is marked superseded and stops
+  being served — the agent's real answers come from the run, and the row
+  survives only as the record of when the id was first seen.
+
+**Measured effect. None — no agent's result moves.** Not one `check_results`
+row is written, read, altered or re-judged by any of this; no run's
+`agent_count` changes; no archive gains or loses a byte; the 354,858 population
+figure and every rate derived from it are untouched. The effect is on what can
+be *found* between sweeps, not on what has been *measured*: an agent minted
+after the last pin now resolves at its permalink as an explicitly unchecked
+discovery instead of returning 404. The count of such agents is published per
+chain at `/api/tail/summary`, as a count of things this census has not
+measured.
+
+---
+
 ## 2026-08-02 — CLAIM CORRECTION: the homepage said "the four largest chains", and it was false
 
 **What changed.** No rung's rule. The site's H1 claimed the census covered
