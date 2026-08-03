@@ -562,7 +562,21 @@ pub async fn get_one(
         };
 
     let (Some(run_id), Some(snapshot)) = (run_id, snapshot) else {
-        // No census row. Ask the tail before 404ing.
+        // No census row. Ask the tail before 404ing — but ONLY when the caller
+        // did not pin a run.
+        //
+        // `?run=` is a request for one measurement, at one block. Answering it
+        // from the tail would hand back a receipt for an agent that did not
+        // exist when that run was taken, and a caller who pinned a run is
+        // precisely the caller who must not be given data from outside it. A
+        // run id that names nothing must 404 for the same reason: silently
+        // widening the question is how a pinned figure stops meaning anything.
+        //
+        // Without the pin the question is "what do you know about this
+        // agent", and the tail is a legitimate answer to it.
+        if params.run.is_some() {
+            return Err(ApiError::NotFound);
+        }
         return match crate::routes::tail::lookup(&state.db, &chain, agent_id).await? {
             Some(t) => Ok(Json(AgentDetailResponse::Tail(t))),
             None => Err(ApiError::NotFound),
