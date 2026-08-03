@@ -298,7 +298,15 @@ impl Registry {
     /// `Ok(false)`; any other failure is NOT evidence of non-existence and
     /// propagates as `Err` — see [`is_revert`]'s doc comment for why
     /// conflating the two would be dangerous here.
-    async fn exists(&self, agent_id: u64, block: u64) -> Result<bool> {
+    ///
+    /// `pub` since 2026-08-03: `crates/api`'s on-demand spot check must refuse
+    /// to probe anything that is not a real registered agent, and the only
+    /// honest way to establish that is to ask the registry the same question
+    /// the census asks. A second implementation of "does this id exist" —
+    /// even a faithful one — would be free to drift, and the drift would show
+    /// up as an endpoint willing to send requests on behalf of an id the
+    /// census does not believe in.
+    pub async fn exists(&self, agent_id: u64, block: u64) -> Result<bool> {
         let c = IIdentityRegistry::new(self.address, &self.provider);
         let token_id = U256::from(agent_id);
         match retry_throttled(|| async {

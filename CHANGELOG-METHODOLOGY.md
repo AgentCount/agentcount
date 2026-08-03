@@ -79,6 +79,70 @@ after the last pin now resolves at its permalink as an explicitly unchecked
 discovery instead of returning 404. The count of such agents is published per
 chain at `/api/tail/summary`, as a count of things this census has not
 measured.
+## 2026-08-03 — NOT A CHECK-SEMANTICS CHANGE: on-demand spot checks ship, and no published number moves
+
+**What changed.** A new endpoint, `POST /api/agents/{chain}/{id}/spot-check`,
+and a button on every agent page: run the conformance ladder for that one
+agent against the chain's current head and show the answer now, instead of
+waiting for the next sweep. `METHODOLOGY.md` gains a Section 5 subsection
+("Spot checks are not measurements of record") and two Section 6 bullets.
+
+**No rung's rule changes.** Not one line of `crates/checks` was touched, and
+this entry exists to say so rather than to record a semantic change. The
+endpoint calls the same pure checker functions the sweeper calls
+(`registered`, `resolvable`, `parseable`, `conformant`, `bound`, `attested`)
+and takes its skip-propagation from `checks::run_ladder`, the same single
+implementation the sweeper and `/api/validate` use. A spot check and a census
+row can disagree about the world — a server that was up in July may be down
+today, which is the point of the feature — but they cannot disagree about
+what a status means, because there is only one implementation of the meaning.
+
+The one code move in service of that: `crates/sweeper`'s private
+`checks_scheme` — which reduces a fetch outcome to the scheme bucket rung 2
+is judged against — became `probe::FetchOutcome::scheme_bucket`, so the
+sweeper and the spot check share it rather than each keeping a copy free to
+drift. Behaviour is byte-identical; the sweeper's own function is now a
+one-line delegation.
+
+**A spot check is not a run, and never enters a published figure.** It has no
+`run_id`, because it belongs to no run. It is **not stored** — no table, no
+migration, no row anywhere — so no census query can reach it by forgetting a
+filter, and nobody can later aggregate a self-selected sample of "agents
+somebody happened to click on" into something that looks like a rate. Its
+response carries `"source": "spot_check"`, a notice in the body, and its own
+`checked_at` / `block_number` / `checker_version` / `checker_commit` /
+`schema_version` / `spec_commit`; it shares no top-level field name with the
+census's agent-detail response, so a screenshot of one cannot be read as the
+other.
+
+**Rung 6 (`live`) is not probed on demand**, and its absence carries the
+existing not-checked meaning — no row, never a guessed status — with the
+reason stated explicitly in the response. Rung 6 sends one request per
+*declared* endpoint, a document may declare any number of them at any hosts
+its author chose, and there is no run to apply the census's
+500-distinct-URLs-per-host budget against. An on-demand rung 6 would
+therefore be an unbounded burst aimed at a target the caller picks. Rungs 1
+to 5 and 7 are asked; rung 6 answers come from runs or not at all.
+
+**Probing etiquette (Section 6) gains two commitments**, because this is the
+first thing here that lets a stranger cause us to send a request. Five spot
+checks per ten minutes per caller, and — the limit that actually protects
+third parties, since it is keyed on the host of the URI the agent published
+on chain rather than on anything the caller controls — one per minute and
+twenty per hour per target host. Rotating addresses or agent ids does not
+move the second number. Over the limit is a `429` with `Retry-After`.
+Everything else is the census's existing discipline unchanged: the same
+`probe::Prober`, so the same identifying User-Agent and contact mailbox, the
+same robots.txt handling including its redirects, the same per-host
+concurrency cap, the same timeouts, redirect cap and response-size cap, and
+the same SSRF netguard re-validated on every hop. Only agent ids the Identity
+Registry confirms exist can be checked; there is no arbitrary-URL probing
+endpoint.
+
+**Measured effect. None.** No rung's rule changed, no archived result was
+re-judged, no published rate, finding, archive or count is affected, and no
+agent's status moves. `published-runs.json`, `docs/reports/` and `analysis/`
+are untouched by this change.
 
 ---
 

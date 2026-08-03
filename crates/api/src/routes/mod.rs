@@ -15,6 +15,11 @@
 //!     the chain has that no census has checked yet. Its response shape shares
 //!     almost nothing with a census result, on purpose — read its module doc
 //!     before adding a field to it.
+//!   * [`spot_check`] — one agent, checked on demand, right now. The only
+//!     endpoint that reads a chain or sends a request to a third party, and
+//!     therefore the only one whose module doc is mostly about restraint:
+//!     two rate limits, an existence guard, and a written argument for why
+//!     its answer is never stored and never a census figure.
 //!   * [`methodology`] — the provenance constants and rung-4 field list, as data.
 //!   * [`validate`] — the pre-flight checker: judge a draft document before it
 //!     is minted, using `crates/checks` unmodified.
@@ -32,6 +37,7 @@ pub mod methodology;
 pub mod rates;
 pub mod runs;
 pub mod search;
+pub mod spot_check;
 pub mod subscribe;
 pub mod tail;
 pub mod validate;

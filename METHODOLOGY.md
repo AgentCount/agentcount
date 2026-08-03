@@ -719,6 +719,47 @@ linkable. The boundary around them is absolute:
 The number of unswept tail agents is published per chain (`/api/tail/summary`)
 precisely so the gap between the pin and now is visible rather than papered
 over. It is a count of things this census has **not** measured.
+### Spot checks are not measurements of record
+
+Added 2026-08-03. Any agent page offers a **spot check**: a button that runs
+the ladder for that one agent against the chain's current head and shows the
+answer immediately (`POST /api/agents/{chain}/{id}/spot-check`). It exists
+because someone who has just fixed their registration document should not have
+to wait for the next sweep to find out whether the fix took.
+
+**A spot check is not a run, and its answer never enters a published figure.**
+That is a structural claim, not a promise to be careful:
+
+- It has no `run_id`, because it belongs to no run. No rate, no finding, no
+  `/data` archive and no published count is computed from it, and none can be:
+  the endpoint writes no row anywhere, so there is nothing for a query to
+  reach. `crates/api/src/routes/spot_check.rs` carries the full argument,
+  including why storing nothing was chosen over storing in a separate table.
+- Its response carries `"source": "spot_check"` and a notice saying so in the
+  body, alongside its own `checked_at`, `block_number`, `checker_version`,
+  `checker_commit`, `schema_version` and `spec_commit` — the same provenance
+  set a run stamps, so a spot check is as reproducible as anything else here.
+  It simply describes a different moment. Its response shares no top-level
+  field name with the census's agent detail, so a screenshot of one cannot be
+  passed off as the other.
+- The pin is the difference that matters. A census figure is *N agents as they
+  existed simultaneously at block X*. A spot check is one agent at whatever
+  block the chain had reached when somebody clicked a button. Both are true;
+  only the first is a statement about a population, and averaging spot checks
+  would produce a rate whose denominator is "agents somebody happened to click
+  on" — the most self-selected sample imaginable.
+
+**The verdicts are the census's verdicts.** Every rung comes from
+`crates/checks`, through the same functions the sweeper calls, and the gating
+between them from `checks::run_ladder` and nowhere else. A spot check and a
+census row can disagree about the world — a server that was up in July may be
+down today, which is the entire point of the feature — but they can never
+disagree about what a status means.
+
+**Rungs 1 to 5 and 7 are asked. Rung 6 (`live`) is not**, and its absence from
+the response means what absence always means here: not checked, never a
+guessed status. The response says so explicitly, with the reason. See Section
+6 below for what that reason is.
 
 ## 6. Probing etiquette
 
@@ -787,6 +828,22 @@ differently, that's called out rather than glossed over.
   re-validated against this same guard before it is fetched, exactly like
   the first request, so a registered agent cannot use a redirect to bounce
   a request into an internal network.
+- **On-demand spot checks are the tightest budget here** (added 2026-08-03;
+  see Section 5). A spot check is a request a stranger can cause us to send,
+  so it is limited twice: at most **five spot checks per ten minutes from one
+  caller**, and — the limit that actually protects you — **at most one per
+  minute and twenty per hour to any one host**, counted on the host of the
+  URI the agent published on chain. Rotating callers or agent ids does not
+  move the second number: whoever asks and however many ids they use, a host
+  receives at most one spot-check request per minute from us in total. Over
+  the limit returns `429` with a `Retry-After`.
+- **A spot check never probes rung 6.** It fetches the single registration
+  document (rung 2) and stops. Rung 6 sends one request per *declared*
+  endpoint, a document may declare any number of them at any hosts its author
+  chose, and there is no run to apply the 500-URL per-host budget against —
+  so an on-demand rung 6 would be an unbounded burst aimed at a target the
+  caller picks rather than the census. Rung 6 answers come from runs, under
+  the budget above, or not at all.
 
 **Confirmed live 2026-07-30.** `agentcount.ai` is registered and
 `probes@agentcount.ai` was tested end-to-end and delivers. This section

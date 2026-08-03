@@ -211,40 +211,18 @@ fn ipfs_gateways() -> Vec<String> {
 }
 
 /// Reduce a `probe::FetchOutcome`'s raw scheme label to the six buckets
-/// `checks::ResolvableInput` and the `http_archive.scheme` column agree on:
-/// `"empty"`, `"unsupported"`, `"data"`, `"http"`, `"https"`, `"ipfs"`.
+/// `checks::ResolvableInput` and the `http_archive.scheme` column agree on.
 ///
-/// `FetchOutcome::scheme` alone is ambiguous for `data:` and `ipfs://`: a
-/// MALFORMED one carries the SAME label as a genuine one (see
-/// `probe::resolve::Target::Unsupported`'s doc comment — `probe` only knows
-/// which scheme it tried to parse, not whether parsing succeeded), so
-/// `scheme == "data"` alone cannot tell a decoded inline document from a
-/// `data:` URI with no comma separator. `request_url` disambiguates: it is
-/// set if, and only if, an actual HTTP(s) request was attempted — `fetch_http`
-/// sets it as its very first action, before the netguard, robots check, or
-/// the request itself can fail — so a malformed `ipfs://` (which never
-/// reaches `fetch_http`) is caught here rather than misread as a passing
-/// rung 2. A malformed `data:` URI is caught the same way via `body`: only a
-/// successfully decoded inline payload ever has one.
-///
-/// **P0 FIX 7:** a `data:` URI declaring an unsupported `enc=` compression
-/// algorithm also carries no `body` (there is nothing decoded to hand
-/// forward) but DOES carry `.error` — that must still land in the `"data"`
-/// bucket, not `"unsupported"`, so rung 2 can tell OUR limitation apart from
-/// a malformed document (see `checks::resolvable`'s `"data"` match arm).
+/// The reduction itself lives on `probe::FetchOutcome::scheme_bucket` — read
+/// that doc comment for why `outcome.scheme` alone is ambiguous and what
+/// disambiguates it. It moved there on 2026-08-03 when `crates/api` gained
+/// the on-demand spot check and became a second caller: two copies of this
+/// reduction would let a spot check and a census row disagree about which
+/// bucket an agent's URI fell into, and therefore about what rung 2 means
+/// for it. This wrapper stays so the call site below keeps reading in the
+/// sweep's own vocabulary.
 fn checks_scheme(outcome: &probe::FetchOutcome) -> String {
-    if outcome.scheme.is_empty() {
-        "empty".to_string()
-    } else if outcome.request_url.is_some() {
-        // A real HTTP(s) request was attempted (http, https, or ipfs via one
-        // of the gateways) — keep whichever of those labels probe already
-        // assigned.
-        outcome.scheme.clone()
-    } else if outcome.scheme == "data" && (outcome.body.is_some() || outcome.error.is_some()) {
-        outcome.scheme.clone()
-    } else {
-        "unsupported".to_string()
-    }
+    outcome.scheme_bucket()
 }
 
 /// Sweep only the first N discovered agent ids, if set. Exists so a bounded
