@@ -58,28 +58,51 @@ RUN set -eux; \
     strip target/release/sweeper target/release/liveness target/release/delta \
           target/release/export-run target/release/heartbeat
 
-FROM debian:bookworm-slim AS runtime
+# ── runtime ──────────────────────────────────────────────────────────────────
+#
+# Based on the Cloud SDK image rather than `debian:bookworm-slim`, because
+# `publish-run.sh` shells out to `gsutil` and there is no lighter honest way to
+# get it. An earlier version of this file claimed the SDK arrived "from the
+# base layer at deploy time", which was simply not true — nothing would have
+# installed it, and the publish step would have failed on the first run with
+# `gsutil: not found`.
+#
+# The image is large (~1 GB against ~120 MB). That is the right trade here and
+# would not be for the API: this is a weekly batch job that runs to completion,
+# so pull size costs a few seconds once a week, whereas the API is
+# scale-to-zero and pays image size on every cold start.
+FROM google/cloud-sdk:slim AS runtime
 RUN set -eux; \
     apt-get update; \
-    # The publish step shells out: `psql` to find the run id, `git` to commit
-    # the archive hash, and `zstd` for the archive itself. `gsutil` comes from
-    # the Cloud SDK, which the job image gets from the base layer at deploy
-    # time — see `scripts/deploy-weekly-sweep.sh`.
-    apt-get install -y --no-install-recommends \
-        ca-certificates postgresql-client git zstd python3; \
+    # `psql` finds the run id the sweep just finished; `zstd` compresses the
+    # archive. Python and gsutil come with the base image. `git` is NOT here:
+    # the job publishes the index to the bucket and the commit is a human step
+    # taken when the week's report is written — see `weekly-sweep.sh`.
+    apt-get install -y --no-install-recommends postgresql-client zstd; \
     rm -rf /var/lib/apt/lists/*
-
-# Non-root. This process holds RPC credentials and a database password; there
-# is no reason for it to also be root.
-RUN useradd --system --create-home --shell /usr/sbin/nologin agentcount
-USER agentcount
 
 COPY --from=build /src/target/release/sweeper /usr/local/bin/sweeper
 COPY --from=build /src/target/release/liveness /usr/local/bin/liveness
 COPY --from=build /src/target/release/delta /usr/local/bin/delta
 COPY --from=build /src/target/release/export-run /usr/local/bin/export-run
 COPY --from=build /src/target/release/heartbeat /usr/local/bin/heartbeat
-COPY --chmod=755 scripts/weekly-sweep.sh /usr/local/bin/weekly-sweep
+COPY scripts/ /opt/agentcount/scripts/
+# `chmod` in a RUN rather than `COPY --chmod`, which needs BuildKit — Cloud
+# Build's docker builder does not enable it, and the build fails outright.
+RUN chmod 755 /opt/agentcount/scripts/*.sh \
+    && ln -s /opt/agentcount/scripts/weekly-sweep.sh /usr/local/bin/weekly-sweep
+
+# `publish-run.sh` is invoked as `./scripts/publish-run.sh` and writes
+# `published-runs.json` and `data/` relative to the working directory, so the
+# job runs from a writable directory that has `scripts/` beneath it.
+WORKDIR /opt/agentcount
+
+# Non-root. This process holds RPC credentials and a database password; there
+# is no reason for it to also be root. Created after the copies so the chmod
+# above still runs as root, and given the workdir so the export can be written.
+RUN useradd --system --create-home --shell /usr/sbin/nologin agentcount \
+    && chown -R agentcount:agentcount /opt/agentcount
+USER agentcount
 
 ENV RUST_LOG=info
 ENTRYPOINT ["/usr/local/bin/weekly-sweep"]
