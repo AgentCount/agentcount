@@ -40,6 +40,13 @@ use sqlx::postgres::PgPoolOptions;
 #[derive(Clone)]
 pub struct AppState {
     pub db: sqlx::PgPool,
+    /// The on-demand spot check's long-lived state: the shared `probe::Prober`
+    /// (so its per-host concurrency cap and robots cache span the whole
+    /// process, not one request), the lazily-connected chain clients, and the
+    /// two rate limiters. Behind an `Arc` because none of it is cheap to clone
+    /// and all of it must be *the same instance* for every request — a limiter
+    /// cloned per request limits nothing.
+    pub spot: std::sync::Arc<routes::spot_check::SpotCheckService>,
 }
 
 /// `GET /api/healthz` — proves the process is up AND can reach Postgres. This
@@ -73,7 +80,16 @@ async fn main() -> anyhow::Result<()> {
         .connect(&std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?)
         .await
         .context("connecting to Postgres")?;
-    let state = AppState { db };
+    // Built once, at startup, and shared: the spot check's prober carries a
+    // per-host concurrency cap and a robots.txt cache that only mean anything
+    // if every request goes through the same instance, and its rate limiters
+    // are the same story with sharper consequences. Fails the process on a bad
+    // configuration rather than starting an API whose spot check would 500 —
+    // the only way this constructor fails is an empty IPFS gateway list.
+    let spot = std::sync::Arc::new(
+        routes::spot_check::SpotCheckService::new().context("building the spot-check service")?,
+    );
+    let state = AppState { db, spot };
 
     // 2. Build the router. Each `.route(path, get(handler))` wires a URL to a
     //    handler; `.with_state(state)` makes `AppState` reachable from all of
@@ -110,10 +126,34 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/subscribe", post(routes::subscribe::post))
         .route("/api/healthz", get(healthz))
         // Crude but effective public-endpoint hardening: cap request time and
-        // total in-flight requests. Per-IP rate limiting is a fast-follow.
+        // total in-flight requests. Per-IP rate limiting is a fast-follow —
+        // except on the spot check below, which has its own, because it is the
+        // one endpoint that can point traffic at somebody else's server.
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(10),
+        ))
+        // ── Added AFTER the 10s layer, deliberately ──────────────────────────
+        //
+        // `Router::layer` wraps the routes registered *so far*, so a route
+        // added below it is not covered by it. That is what this needs: 10
+        // seconds is right for a database read and wrong for a spot check,
+        // which pins a block, reads two contracts, fetches `robots.txt` and
+        // then fetches a stranger's document — each with the sweeper's own
+        // 5s connect / 10s total budget, unchanged so that a spot check and a
+        // census row observe under identical conditions rather than the spot
+        // check calling a slow host dead sooner.
+        //
+        // POST, not GET: a spot check sends real traffic to a third party, so
+        // it must not be reachable by prefetchers, link unfurlers, crawlers or
+        // an `<img src>`. See `routes::spot_check`'s module doc.
+        .route(
+            "/api/agents/{chain}/{id}/spot-check",
+            post(routes::spot_check::post),
+        )
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(45),
         ))
         .layer(tower::limit::ConcurrencyLimitLayer::new(256))
         .with_state(state);
@@ -138,6 +178,16 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {addr}"))?;
     tracing::info!("AgentCount API listening on http://{addr}");
-    axum::serve(listener, app).await.context("serving")?;
+    // `into_make_service_with_connect_info` is what puts the TCP peer address
+    // in reach of a handler. Only `routes::spot_check` uses it, as the fallback
+    // key for its per-client rate limit when no proxy header is present — and
+    // without this the extractor would fail at runtime rather than at compile
+    // time, so the two must be changed together.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .context("serving")?;
     Ok(())
 }

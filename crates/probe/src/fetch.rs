@@ -152,6 +152,51 @@ impl FetchOutcome {
             gateway_attempts: Vec::new(),
         }
     }
+
+    /// Reduce this outcome's raw [`scheme`](FetchOutcome::scheme) label to the
+    /// six buckets `checks::ResolvableInput` and the `http_archive.scheme`
+    /// column agree on: `"empty"`, `"unsupported"`, `"data"`, `"http"`,
+    /// `"https"`, `"ipfs"`.
+    ///
+    /// `scheme` alone is ambiguous for `data:` and `ipfs://`: a MALFORMED one
+    /// carries the SAME label as a genuine one (see
+    /// [`crate::Target::Unsupported`] — this crate only knows which scheme it
+    /// tried to parse, not whether parsing succeeded), so `scheme == "data"`
+    /// alone cannot tell a decoded inline document from a `data:` URI with no
+    /// comma separator. `request_url` disambiguates: it is set if, and only
+    /// if, an actual HTTP(s) request was attempted — [`Prober::fetch_http`]
+    /// sets it as its very first action, before the netguard, the robots
+    /// check, or the request itself can fail — so a malformed `ipfs://` (which
+    /// never reaches `fetch_http`) is caught here rather than misread as a
+    /// passing rung 2. A malformed `data:` URI is caught the same way via
+    /// `body`: only a successfully decoded inline payload ever has one.
+    ///
+    /// **P0 FIX 7:** a `data:` URI declaring an unsupported `enc=` compression
+    /// algorithm also carries no `body` (there is nothing decoded to hand
+    /// forward) but DOES carry `.error` — that must still land in the `"data"`
+    /// bucket, not `"unsupported"`, so rung 2 can tell OUR limitation apart
+    /// from a malformed document (see `checks::resolvable`'s `"data"` arm).
+    ///
+    /// **Lives here rather than in a caller** because there is now more than
+    /// one caller: `crates/sweeper` (a census run) and `crates/api`'s
+    /// on-demand spot check. Two copies of this reduction would let a spot
+    /// check and a census row disagree about which bucket an agent's URI fell
+    /// into, and therefore about what rung 2 means for it — the one thing
+    /// neither is allowed to do.
+    pub fn scheme_bucket(&self) -> String {
+        if self.scheme.is_empty() {
+            "empty".to_string()
+        } else if self.request_url.is_some() {
+            // A real HTTP(s) request was attempted (http, https, or ipfs via
+            // one of the gateways) — keep whichever of those labels the
+            // resolver already assigned.
+            self.scheme.clone()
+        } else if self.scheme == "data" && (self.body.is_some() || self.error.is_some()) {
+            self.scheme.clone()
+        } else {
+            "unsupported".to_string()
+        }
+    }
 }
 
 /// A response we've already read fully (up to the body cap), permits and all

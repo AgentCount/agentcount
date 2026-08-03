@@ -34,8 +34,34 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# A path dependency on the pure conformance-checks library — not for running
-# checks (only the sweeper does that), but so `/api/methodology` can publish
-# the exact provenance constants and rung-4 required-field list the checker
-# itself uses, rather than restating them and risking drift.
+# A path dependency on the pure conformance-checks library. Two jobs:
+#   * `/api/methodology` publishes the exact provenance constants and rung-4
+#     required-field list the checker itself uses, rather than restating them
+#     and risking drift.
+#   * `/api/validate` and `/api/agents/{chain}/{id}/spot-check` CALL the rung
+#     functions. Neither adds check logic — a second implementation, however
+#     faithful, would be free to drift, and the day it disagreed with the
+#     census the census is what people would stop trusting.
 checks = { path = "../checks" }
+
+# ── Added 2026-08-03 for the on-demand spot check (`routes::spot_check`) ─────
+#
+# The spot check is the only endpoint that reads a chain or sends a request to
+# a third party, and it does both through the crates the census already uses,
+# never through anything of its own.
+
+# Reading the Identity Registry (does this agent EXIST? what does it declare?)
+# and the Reputation Registry (rung 7). This is also the "no arbitrary-URL
+# probing" guard: the only URL this endpoint can ever fetch is one it read off
+# the chain for an id the registry confirmed.
+chain = { path = "../chain" }
+
+# The guarded HTTP client: the SSRF netguard (re-run on every redirect hop),
+# robots.txt, the per-host concurrency cap, the identifying User-Agent, the
+# redirect cap and the response-size cap. The spot check reuses this `Prober`
+# rather than building a client of its own — see `routes::spot_check`.
+probe = { path = "../probe" }
+
+# Extracting the host from a URL, for the per-target-host rate limit key. The
+# same crate `probe`'s netguard parses with, so "the host" means one thing.
+url = { workspace = true }
