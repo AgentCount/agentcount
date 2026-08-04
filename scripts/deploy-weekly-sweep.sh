@@ -54,13 +54,24 @@ echo "==> 1/4 build and push the sweep image"
 # Built from Dockerfile.sweep, which is separate from the API's image on
 # purpose: the public-facing container must not carry a binary that holds RPC
 # credentials and writes to every table.
-gcloud builds submit --project "$PROJECT" --region "$REGION" \
-    --config=- . <<EOF
+# The config goes to a real file, not stdin. `--config=-` is rejected by
+# current gcloud, which takes the dash literally and fails with
+# "Unable to read file [-]" — an error that reads like a missing file rather
+# than an unsupported form, and cost an afternoon the first time.
+# A directory, so the file can keep its .yaml suffix: gcloud infers the config
+# format from the extension and rejects a bare temp name.
+BUILD_TMP="$(mktemp -d)"
+BUILD_CONFIG="$BUILD_TMP/cloudbuild.yaml"
+trap 'rm -rf "$BUILD_TMP"' EXIT
+cat > "$BUILD_CONFIG" <<EOF
 steps:
   - name: gcr.io/cloud-builders/docker
     args: ['build', '-f', 'Dockerfile.sweep', '-t', '${IMAGE}', '.']
 images: ['${IMAGE}']
 EOF
+
+gcloud builds submit --project "$PROJECT" --region "$REGION" \
+    --config="$BUILD_CONFIG" .
 
 echo "==> 2/4 secrets"
 # Create these once, by hand, and never through this script — a secret written
