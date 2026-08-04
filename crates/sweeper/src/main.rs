@@ -112,6 +112,44 @@ fn stall_timeout_secs() -> u64 {
         .unwrap_or(DEFAULT_STALL_TIMEOUT_SECS)
 }
 
+/// How long minter capture may run before the sweep goes on without the rest
+/// of it.
+///
+/// **Why a budget exists at all.** Minter capture is a pre-pass: it resolves
+/// one sender per distinct registration transaction BEFORE the first agent is
+/// written. So however long it takes, the watchdog above sees a run that has
+/// written nothing — and on 2026-08-04 that is exactly what happened. Three
+/// chains spent the entire 900s window re-requesting transactions whose
+/// responses alloy could not decode (`chain::registry::is_undecodable`) and
+/// died at 0 agents. The classifier bug that made each of those reads cost ~76
+/// seconds is fixed where it belongs, in `crates/chain`; this is the structural
+/// half of the same lesson. Provenance must not be able to outrank the census,
+/// and "must not" is better expressed as a deadline than as a hope that every
+/// future RPC failure is fast.
+///
+/// Two thirds of the stall timeout, so the budget is always comfortably inside
+/// the window whatever `SWEEP_STALL_TIMEOUT_SECS` is set to, and a chain that
+/// exhausts it still has time to write agents before the watchdog looks again.
+/// Whatever resolved within the budget is kept: this shortens the pre-pass, it
+/// does not discard its work.
+fn minter_capture_budget() -> std::time::Duration {
+    match std::env::var("MINTER_CAPTURE_BUDGET_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+    {
+        Some(secs) => std::time::Duration::from_secs(secs),
+        None => minter_budget_within(stall_timeout_secs()),
+    }
+}
+
+/// The default budget for a given stall window, kept as a pure function so the
+/// one property that matters — it must be strictly less than the window it sits
+/// inside — is testable without touching the environment.
+fn minter_budget_within(stall_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs((stall_secs * 2 / 3).max(1))
+}
+
 /// Watch a run's row count and kill the process if it stops moving.
 ///
 /// **Why this is not just a log line.** The failure it exists for produced no
@@ -630,11 +668,16 @@ async fn sweep() -> Result<()> {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
+        let wanted = distinct_txs.len();
         tracing::info!(
-            "registration scan: {} agents across {} distinct transactions",
+            "registration scan: {} agents across {wanted} distinct transactions",
             registrations.len(),
-            distinct_txs.len()
         );
+        // Bounded by wall clock as well as by concurrency — see
+        // `minter_capture_budget`. `take_until` ends the stream when the
+        // deadline fires and keeps everything already resolved, so an
+        // over-running pre-pass costs some minters, never the run.
+        let budget = tokio::time::sleep(minter_capture_budget());
         let resolved: Vec<(String, Option<String>)> = stream::iter(distinct_txs)
             .map(|tx| {
                 let registry = &registry;
@@ -647,13 +690,22 @@ async fn sweep() -> Result<()> {
                 }
             })
             .buffer_unordered(rpc_concurrency())
+            .take_until(budget)
             .collect()
             .await;
         minters.extend(resolved);
+        if minters.len() < wanted {
+            tracing::warn!(
+                "minter capture ran out of its {}s budget after {}/{wanted} transactions; \
+                 the rest keep a null minter and the sweep continues — the ladder is \
+                 unaffected",
+                minter_capture_budget().as_secs(),
+                minters.len()
+            );
+        }
         tracing::info!(
-            "minters resolved for {}/{} transactions",
+            "minters resolved for {}/{wanted} transactions",
             minters.values().filter(|m| m.is_some()).count(),
-            minters.len()
         );
     }
     let registrations = &registrations;
@@ -1103,6 +1155,30 @@ mod tests {
 
     fn t() -> DateTime<Utc> {
         DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    }
+
+    /// **The 2026-08-04 stall, structurally.** Minter capture runs before the
+    /// first agent is written, so a pre-pass that outlives the stall window is
+    /// a run that dies at 0 agents — which is what base, celo and bsc did while
+    /// they re-requested transactions alloy could not decode. The budget must
+    /// therefore always land strictly inside the window, whatever the window is
+    /// set to, leaving time for agents to be written before the watchdog looks
+    /// again.
+    #[test]
+    fn minter_capture_can_never_outlive_the_stall_window() {
+        for stall in [30u64, 60, 300, DEFAULT_STALL_TIMEOUT_SECS, 3_600, 86_400] {
+            let budget = minter_budget_within(stall).as_secs();
+            assert!(
+                budget < stall,
+                "budget {budget}s must be inside a {stall}s stall window"
+            );
+            assert!(budget > 0, "a zero budget would disable minter capture");
+        }
+        // The shipped default, spelled out: 10 minutes inside a 15-minute window.
+        assert_eq!(
+            minter_budget_within(DEFAULT_STALL_TIMEOUT_SECS).as_secs(),
+            600
+        );
     }
 
     fn res(rung: u8, name: &'static str, status: checks::CheckStatus) -> checks::CheckResult {

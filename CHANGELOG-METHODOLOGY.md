@@ -20,6 +20,98 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — NOT A CHECK-SEMANTICS CHANGE: three chains produced no census at all, and minter capture now works where it never had
+
+**What changed.** Two things, neither of which touches a rung's rule, a status,
+an evidence shape or the schema version:
+
+1. **A response that cannot be decoded is now treated as permanent.** The RPC
+   retry wrapper in `crates/chain` retried anything whose error message
+   contained `429`, `rate limit`, `too many requests` or `compute units per
+   second`. A decode failure is now classified first, and never retried:
+   the bytes on the wire will not be different next time.
+2. **The minter — the sender of an agent's registration transaction — is read
+   out of a raw `eth_getTransactionByHash` response's `from` field**, instead of
+   by decoding the whole transaction into a typed value. It was never the
+   transaction the census wanted, only the sender.
+
+A third change is operational rather than methodological, and is recorded here
+because it is why the incident below was misread for as long as it was:
+`scripts/weekly-sweep.sh` reported `sweep exited 0` for runs that had exited 75.
+It read `$?` inside an `if ! sweeper …; then` branch, where `$?` is the status
+of the inverted test, not of the sweeper. The log now names the stall and the
+real exit code.
+
+**Why.** On 2026-08-04 a four-chain sweep produced **one** census. `mainnet`
+finished with 46,987 agents. `base`, `celo` and `bsc` were each killed by the
+stall watchdog after 900 seconds having written **zero** agents.
+
+The cause is that agent ids and their registration transactions are read
+through different code paths, and only the second one decodes a transaction.
+alloy's transaction-type enum accepts `0x0`–`0x4`. Celo's CIP-64 fee-currency
+transaction is type `0x7b` (123) and an OP-stack deposit is `0x7e` (126), so
+every attempt to read a registration transaction's sender on those chains
+failed with ``unknown variant `0x7b` ``. mainnet, which mints only standard
+types, was the one chain with nothing to trip over — the single-chain success
+was the clue, not the consolation.
+
+That alone would have cost the minter and nothing else, because minter capture
+is explicitly allowed to fail. What turned it into three lost censuses is that
+the failures were retried. alloy formats a decode failure as
+`deserialization error: {err}\n{text}` — with the ENTIRE raw response body
+inside the error message — and the throttle check was a substring search over
+that message. A transaction whose calldata, hashes or ECDSA signature happen to
+contain the characters `429` was therefore read as "the provider is rate
+limiting us" and re-requested eight times with exponential backoff, ~76 seconds
+per transaction, for bytes that could not change. Sampled against live Celo
+blocks the same day, **6 of 138 (4.3%)** non-standard-type transaction
+responses collide with `429` that way; the median response body is ~1,050
+characters, nearly all of it hex. At the shipped `RPC_CONCURRENCY` of 3, a few
+hundred colliding transactions is the whole 900-second window.
+
+Minter capture runs as a pre-pass, before the first agent is written, so all of
+that time was spent by a run that had produced nothing. It now also has a wall
+clock budget (two thirds of the stall timeout, `MINTER_CAPTURE_BUDGET_SECS`),
+keeping whatever it resolved and letting the sweep proceed. Provenance must not
+be able to outrank the census.
+
+**Measured effect — read this as two separate claims.**
+
+*On any published figure: none.* No rung's rule changed, no agent's status
+moves, no rate is recomputed, and no archived run is affected. All four
+published runs are `schema_version` 5, which predates minter capture entirely,
+so there is no published minter data for this to change. Re-judging an archived
+run was not applicable and was not done.
+
+*On what the next sweep records: real, and in one column.* The `minter` field
+of `agent_snapshots` (added in schema 6, migration 0013) would have been null
+for every agent on `celo`, `base` and `bsc` had those runs completed, because
+every sender read on those chains failed. Reading `from` directly restores the
+field on all three. The honest bound on the size of that is: **every** agent
+whose registration transaction is a non-standard type gets a minter it would
+not otherwise have had, and the incident's own logs show that population was
+100% of attempted reads on the affected chains. The exact per-chain coverage is
+not asserted here because it has not been measured against a completed run —
+the first sweep to finish under this fix will report it as
+`minters resolved for N/M transactions`, and that line is the number to quote.
+
+The schema version is deliberately NOT bumped. `minter: None` already means
+"this run did not capture it" and never "this agent has no minter", which is
+exactly what an unresolved sender still means; and since no run at schema ≥ 6
+has been published, there is no archived row whose reading this could make
+ambiguous.
+
+**What was verified, and what was not.** The transaction type, the exact serde
+error text, and the `429` collision rate were all measured against live Celo
+data on 2026-08-04, and the regression tests in `crates/chain/src/registry.rs`
+carry a real CIP-64 transaction — type `0x7b`, with `429` inside its signature
+— as their fixture. What has not been done is a full sweep of the three
+affected chains; until one finishes, "minter capture works on celo, base and
+bsc" is a claim resting on the RPC responses those chains actually return, not
+on a completed census.
+
+---
+
 ## 2026-08-03 — NOT A CHECK-SEMANTICS CHANGE: a continuous registration tail, kept outside the census
 
 **What changed.** No rung's rule, no evidence shape, no status, no schema

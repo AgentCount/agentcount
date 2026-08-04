@@ -48,13 +48,25 @@ for chain in $CHAINS; do
     fi
 
     echo "═══════════════════════════════════════════ $chain: sweep"
-    if ! sweeper "$chain"; then
+    # `$?` is read on the line straight after the command and NOWHERE else.
+    # This used to be `if ! sweeper "$chain"; then code=$?`, which always
+    # reported 0: inside the branch, `$?` is the status of the `if` condition
+    # — and `!` had already inverted the failure into a success. So on
+    # 2026-08-04, when three chains were killed by the stall watchdog, the log
+    # said `sweep exited 0` for every one of them and never once said STALLED.
+    # A misleading log during an incident is worse than no log.
+    sweeper "$chain"
+    code=$?
+    if [ "$code" -ne 0 ]; then
         # The sweeper exits 75 specifically when its own stall watchdog fires.
         # Distinguished in the log because the two failures want different
         # responses: a stall is usually the network or the machine, an
         # ordinary failure is usually the chain or the database.
-        code=$?
-        [ "$code" = 75 ] && echo "!!! $chain: STALLED (watchdog)" || echo "!!! $chain: sweep exited $code"
+        if [ "$code" -eq 75 ]; then
+            echo "!!! $chain: STALLED (watchdog, exit 75)"
+        else
+            echo "!!! $chain: sweep exited $code"
+        fi
         failed="$failed $chain(sweep)"
         # No rung 6 and no delta for a chain whose sweep did not finish —
         # `liveness` requires a finished run and `delta` would compare against
