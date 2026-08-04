@@ -50,6 +50,39 @@ sol! {
     event Registered(uint256 indexed agentId, string agentURI, address indexed owner);
 }
 
+/// Does this RPC error mean "we will never be able to read this response", as
+/// opposed to "ask again later"? A decode failure is PERMANENT: the bytes on
+/// the wire are what they are, and the tenth attempt gets the same ones as the
+/// first.
+///
+/// **This is the 2026-08-04 stall, and it is subtler than it looks.** alloy
+/// formats a decode failure as `deserialization error: {err}\n{text}` — where
+/// `text` is the ENTIRE raw JSON-RPC response body. So the error string for one
+/// unreadable Celo transaction carries a kilobyte of transaction hex along with
+/// it, and [`is_throttled`] below decides by substring search. A response body
+/// that happens to contain the three characters `429` anywhere in its calldata,
+/// signature or hashes was therefore read as "the provider is rate-limiting us"
+/// and retried eight times with exponential backoff — ~76 seconds spent
+/// re-asking for bytes that could not have changed. Measured against 138
+/// non-standard-type transactions sampled from live Celo blocks on 2026-08-04,
+/// 4.3% of them collide with `429` that way; the median response body is ~1,050
+/// characters, most of it hex.
+///
+/// Checking permanence FIRST is what makes the classification safe, because it
+/// does not depend on a body's hex never spelling a rate-limit token. The
+/// throttle signals a provider actually sends live in the error envelope, not
+/// in an echoed response body — so a message that is a decode failure is a
+/// decode failure regardless of what the payload underneath it happens to spell.
+fn is_undecodable(e: &impl std::fmt::Display) -> bool {
+    let s = e.to_string().to_lowercase();
+    // alloy's own wording first, then serde's, so a decode failure raised
+    // anywhere below alloy's RPC layer is classified the same way.
+    s.contains("deserialization error")
+        || s.contains("unknown variant")
+        || s.contains("invalid type:")
+        || s.contains("missing field")
+}
+
 /// Does this RPC error mean "the provider is throttling us right now", as
 /// opposed to a genuine, permanent problem with the request itself? Alchemy's
 /// free tier returns HTTP 429 with "exceeded its compute units per second
@@ -57,7 +90,13 @@ sol! {
 /// generates. Retrying THIS is correct because the request was fine and the
 /// provider will accept it again shortly; retrying a malformed call or a
 /// contract revert forever would not (those never match here).
+///
+/// A decode failure is excluded before any of the substring matches run — see
+/// [`is_undecodable`] for the 76-seconds-per-transaction reason why.
 fn is_throttled(e: &impl std::fmt::Display) -> bool {
+    if is_undecodable(e) {
+        return false;
+    }
     let s = e.to_string().to_lowercase();
     s.contains("429")
         || s.contains("compute units per second")
@@ -83,9 +122,17 @@ fn is_throttled(e: &impl std::fmt::Display) -> bool {
 /// this replaced: throttling messages happen not to contain "execution
 /// reverted" today, but the exclusion costs nothing and keeps the two checks
 /// from ever competing to explain the same message.
+///
+/// The same reasoning now excludes [`is_undecodable`], and there it is not
+/// merely defence in depth: a decode failure's message carries the whole
+/// response body, so a body that echoes the words "execution reverted" would
+/// otherwise be read as "this token does not exist" — and a wrongly-absent
+/// token at the top of [`Registry::highest_agent_id`]'s binary search truncates
+/// the population without any error being raised. "We could not read the
+/// answer" must never become "the answer is no".
 fn is_revert(e: &impl std::fmt::Display) -> bool {
     let s = e.to_string().to_lowercase();
-    s.contains("execution reverted") && !is_throttled(e)
+    s.contains("execution reverted") && !is_undecodable(e) && !is_throttled(e)
 }
 
 /// How many times to retry a throttled call before giving up and letting the
@@ -102,7 +149,8 @@ const THROTTLE_BACKOFF_BASE_MS: u64 = 300;
 /// ([`is_throttled`]), retry with exponential backoff up to
 /// `MAX_THROTTLE_RETRIES` times. Any other error — a genuine one — returns
 /// immediately on the first attempt: throttling is the only condition where
-/// "ask again" is the right response to "no".
+/// "ask again" is the right response to "no". A response we cannot decode
+/// ([`is_undecodable`]) is the clearest case of that, and fails on attempt one.
 async fn retry_throttled<T, E, F, Fut>(f: F) -> Result<T>
 where
     F: FnMut() -> Fut,
@@ -494,18 +542,72 @@ impl Registry {
 
     /// The `from` of a transaction — the minter.
     ///
-    /// `Ok(None)` means the node does not have the transaction, which is a
-    /// different thing from a failed read and is recorded as an absent minter
-    /// rather than an error.
+    /// `Ok(None)` means "there is no sender to record": the node does not have
+    /// the transaction, or its answer carried no usable `from`. That is a
+    /// different thing from a failed read, and is recorded as an absent minter
+    /// rather than an error. `Err` is reserved for "we could not ask" — a
+    /// transport failure, a provider that stayed throttled through the whole
+    /// retry budget, or a tx hash that is not a hash.
+    ///
+    /// ## Why this reads raw JSON instead of alloy's typed transaction
+    ///
+    /// Because the census wants one field, and typed decoding makes it depend
+    /// on all the others. `get_transaction_by_hash` decodes the whole
+    /// transaction into alloy's `Ethereum` network types, whose transaction-type
+    /// enum knows `0x0`–`0x4` and nothing else. Chains have their own types:
+    /// Celo's CIP-64 fee-currency transaction is `0x7b` (123), an OP-stack
+    /// deposit is `0x7e` (126). On 2026-08-04 a four-chain sweep met them for
+    /// the first time and every affected read failed with `unknown variant
+    /// 0x7b` — mainnet, which mints only standard types, was the one chain that
+    /// finished.
+    ///
+    /// The fix is not to teach alloy every chain's transaction format (a moving
+    /// target, and one that couples this census to consensus-layer changes it
+    /// does not care about) but to stop asking for the transaction. `from` is a
+    /// plain hex string in every `eth_getTransactionByHash` response ever
+    /// specified, present on all of these types, and reading it out of the JSON
+    /// costs one `get`. So minter capture WORKS on these chains rather than
+    /// merely failing politely — which is the better outcome, since a null
+    /// minter is indistinguishable in the archive from an agent whose sender
+    /// could not be established for any other reason.
+    ///
+    /// `scripts/derive-deploy-blocks.mjs` already talks to these nodes as raw
+    /// JSON-RPC for the same kind of reason; this matches it.
     pub async fn tx_sender(&self, tx_hash: &str) -> Result<Option<String>> {
         let hash: alloy::primitives::TxHash = tx_hash
             .parse()
             .with_context(|| format!("parsing tx hash {tx_hash}"))?;
-        let tx = retry_throttled(|| async { self.provider.get_transaction_by_hash(hash).await })
-            .await
-            .with_context(|| format!("get_transaction_by_hash({tx_hash})"))?;
-        Ok(tx.map(|t| format!("{:?}", t.inner.signer()).to_lowercase()))
+        let raw: serde_json::Value = retry_throttled(|| async {
+            self.provider
+                .raw_request::<_, serde_json::Value>("eth_getTransactionByHash".into(), (hash,))
+                .await
+        })
+        .await
+        .with_context(|| format!("eth_getTransactionByHash({tx_hash})"))?;
+        Ok(sender_from_tx_json(&raw))
     }
+}
+
+/// The sender of a transaction, out of a raw `eth_getTransactionByHash`
+/// result: `result.from`, normalised to lowercase hex the way every other
+/// address in this crate is.
+///
+/// `None` for all three ways there can be no answer — a `null` result (the node
+/// does not have the transaction), a result that is not an object, and an
+/// object whose `from` is missing or not a valid address. None of them is an
+/// error: the caller's question is "who minted this", and "the node did not
+/// say" is a legitimate answer to it. Expressing that as `Option` rather than
+/// as an `Err` the caller has to pattern-match on a message is the whole point
+/// — the sweeper records `minter: None` and moves on, and no string matching
+/// stands between the two.
+///
+/// Deliberately does no other validation. Whether `from` is an EOA, a
+/// contract, or an address that also appears as `owner` is a question about
+/// the population, not about the read, and is answered by analysis.
+fn sender_from_tx_json(result: &serde_json::Value) -> Option<String> {
+    let from = result.get("from")?.as_str()?;
+    let address: Address = from.parse().ok()?;
+    Some(format!("{address:?}").to_lowercase())
 }
 
 /// Where an agent came from: the transaction that registered it.
@@ -553,6 +655,206 @@ mod tests {
     fn a_timeout_is_not_treated_as_a_revert() {
         assert!(!is_revert(&"request timed out"));
         assert!(!is_revert(&"connection reset by peer"));
+    }
+
+    // ── The 2026-08-04 stall ────────────────────────────────────────────────
+    //
+    // A four-chain sweep in which base, celo and bsc each died at 0 agents
+    // written after 900s, while mainnet finished 46,987. See `is_undecodable`
+    // for the mechanism; these tests are the part of it that can be proven
+    // without a network.
+
+    /// A REAL `eth_getTransactionByHash` result, read from Celo on 2026-08-04
+    /// (tx `0x15968eae…`, block 0x468966d). Two properties matter and both are
+    /// verbatim, not constructed:
+    ///
+    ///   * `"type":"0x7b"` — CIP-64, the fee-currency transaction type. alloy's
+    ///     transaction-type enum knows `0x0`–`0x4`, so decoding this into a
+    ///     typed transaction fails with *unknown variant `0x7b`*.
+    ///   * its signature `r` ends `…aee42900f…`, so the response body contains
+    ///     the characters `429`. That is the coincidence that turned a
+    ///     permanent decode failure into eight retries with exponential
+    ///     backoff, because alloy prints the whole body inside the error
+    ///     message and the throttle check was a substring search over it.
+    ///
+    /// It is one transaction, not a rare one: 4.3% of the 138 non-standard-type
+    /// Celo transactions sampled that day collide with `429` the same way.
+    const CELO_CIP64_TX_RESULT: &str = "\
+        {\"accessList\":[],\"blockHash\":\"0x2203b89c415810776eded2c870d9a58780b\
+        ff0a90e4ee75b5d65d26a453ba1d3\",\"blockNumber\":\"0x468966d\",\"chainId\
+        \":\"0xa4ec\",\"feeCurrency\":\"0x0e2a3e05bc9a16f5292a6170456a710cb89c6f\
+        72\",\"from\":\"0x15033e99bcdec59720ea0ff055a20c1a3f5c6a96\",\"gas\":\"0\
+        x3ed5d\",\"gasPrice\":\"0x2cfb594ca\",\"hash\":\"0x15968eae89fb4485f8517\
+        98c24a60dfa6450a023f5a586a635febe1a2aac23c4\",\"input\":\"0xb5b27b7e0000\
+        0000000000000000000048065fbbe25f71c9282ddf5e1cd6d6a887483d5e000000000000\
+        000000000000fb4863fc2fe52a8131696e4a3a86676cff40a80600000000000000000000\
+        000015033e99bcdec59720ea0ff055a20c1a3f5c6a960000000000000000000000000000\
+        000000000000000000000000000000001770000000000000000000000000000000000000\
+        000000000000000000006a727cff00000000000000000000000000000000000000000000\
+        000000000000000000c00000000000000000000000000000000000000000000000000000\
+        0000000000414d7e9e308f4f3049c59912d274906578be9ee2a9570c90b57a67345f121c\
+        ffe60a08c18d6f72ed2eda65cbc81f46f273490f3593755750d9d6a95162195049a21b00\
+        000000000000000000000000000000000000000000000000000000000000\",\"maxFeeP\
+        erGas\":\"0x2d51edf78\",\"maxPriorityFeePerGas\":\"0x1036a\",\"nonce\":\
+        \"0x75\",\"r\":\"0x4d02b9cec878118212c820bff4ea778aee42900f655341e0f5655\
+        d660c6ee4be\",\"s\":\"0x6ed0f591166995c0805ca83904679965ef1ddec034002526\
+        c17ab1c07096d3a8\",\"to\":\"0xbedaccbd65230ea441e7955c0f5344acfc2a45e5\"\
+        ,\"transactionIndex\":\"0xb\",\"type\":\"0x7b\",\"v\":\"0x0\",\"value\":\
+        \"0x0\",\"yParity\":\"0x0\"}";
+
+    /// serde's exact wording for the fixture above, as produced by the alloy
+    /// version this workspace builds against. Reproduce with
+    /// `serde_json::from_str::<alloy::rpc::types::Transaction>(…)`.
+    const UNKNOWN_TX_TYPE: &str = "unknown variant `0x7b`, expected one of `0x0`, \
+        `0x00`, `0x01`, `0x1`, `0x02`, `0x2`, `0x03`, `0x3`, `0x04`, `0x4` \
+        at line 1 column 1384";
+
+    /// The error exactly as alloy formats it: `deserialization error: {err}\n{text}`
+    /// — the message, then the entire response body. Building it here rather
+    /// than hand-copying a log line keeps the test honest about the one detail
+    /// that caused the incident: the body travels inside the error string.
+    fn alloy_deser_error() -> String {
+        format!("deserialization error: {UNKNOWN_TX_TYPE}\n{CELO_CIP64_TX_RESULT}")
+    }
+
+    /// The fixture must actually contain the `429` that misled the classifier.
+    /// If a future edit shortens or sanitises it, this test says so rather than
+    /// letting the regression tests below pass for the wrong reason.
+    #[test]
+    fn the_fixture_still_contains_the_429_that_caused_the_misclassification() {
+        assert!(
+            CELO_CIP64_TX_RESULT.contains("429"),
+            "the fixture no longer reproduces the substring collision"
+        );
+        assert!(CELO_CIP64_TX_RESULT.contains("\"type\":\"0x7b\""));
+    }
+
+    /// **The regression.** A response we cannot decode is permanent, and must
+    /// be classified as permanent even though its body spells `429`.
+    #[test]
+    fn an_unknown_transaction_type_is_permanent_not_throttling() {
+        let e = alloy_deser_error();
+        assert!(is_undecodable(&e), "a decode failure must be permanent");
+        assert!(
+            !is_throttled(&e),
+            "a decode failure must never be read as rate limiting, however \
+             much hex in the body happens to spell 429"
+        );
+        assert!(
+            !is_revert(&e),
+            "a decode failure is not a nonexistent token"
+        );
+    }
+
+    /// **The stall itself, in one assertion.** Eight retries at 300ms doubling
+    /// is ~76 seconds spent re-requesting bytes that cannot change; enough of
+    /// those and the minter pre-pass never reaches the first agent write, which
+    /// is precisely how three chains hit a 900s stall timeout at 0 agents.
+    /// One attempt, no backoff.
+    #[tokio::test]
+    async fn an_undecodable_response_is_never_retried() {
+        let attempts = AtomicU32::new(0);
+        let result: Result<()> = retry_throttled(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err(alloy_deser_error()) }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a permanent error must fail on the first attempt"
+        );
+    }
+
+    /// The other half of the classification: genuine throttling is still
+    /// retried. Whatever the fix to the permanent case, this must not become
+    /// a sweep that gives up the moment a free-tier RPC gets busy.
+    #[test]
+    fn real_throttling_is_still_recognised() {
+        for body in [
+            "HTTP error 429 with body: {\"code\":429}",
+            "Your app has exceeded its compute units per second capacity",
+            "429 Too Many Requests",
+            "error: rate limit exceeded, retry in 1s",
+        ] {
+            assert!(is_throttled(&body), "should be throttling: {body}");
+            assert!(!is_undecodable(&body), "should not be permanent: {body}");
+        }
+    }
+
+    /// A decode failure must never be read as "this token does not exist".
+    /// `exists` maps a revert to `Ok(false)` and binary-searches on it, so
+    /// mistaking an unreadable response for an absent token would truncate the
+    /// population — a smaller census, reported as a successful one.
+    #[test]
+    fn an_undecodable_response_is_not_read_as_a_nonexistent_token() {
+        // A body that echoes the words back at us — the message says only that
+        // we could not read it, and that is not the same as an answer of "no".
+        let e = "deserialization error: unknown variant `0x7b`\n\
+                 {\"result\":\"execution reverted\"}";
+        assert!(!is_revert(&e));
+        assert!(is_undecodable(&e));
+    }
+
+    // ── Reading the sender out of raw JSON ──────────────────────────────────
+
+    /// The fix that restores minter capture rather than merely surviving
+    /// without it: the exotic type is right there in the response and is simply
+    /// not looked at, because `from` is all the census wants.
+    #[test]
+    fn the_sender_is_read_past_a_transaction_type_alloy_cannot_decode() {
+        let v: serde_json::Value = serde_json::from_str(CELO_CIP64_TX_RESULT).unwrap();
+        assert_eq!(v["type"], "0x7b", "the fixture is the exotic type");
+        assert_eq!(
+            sender_from_tx_json(&v).as_deref(),
+            Some("0x15033e99bcdec59720ea0ff055a20c1a3f5c6a96")
+        );
+    }
+
+    /// An OP-stack deposit (`0x7e`, 126) — the same class of failure on Base,
+    /// and on Celo since it became an L2. Real fields from a deposit read the
+    /// same day, with the calldata elided for length.
+    #[test]
+    fn the_sender_is_read_from_an_op_stack_deposit_too() {
+        let v: serde_json::Value = serde_json::json!({
+            "from": "0xDeaDDEaDDeAdDeAdDEAdDEaddeAddEAdDEAd0001",
+            "to": "0x4200000000000000000000000000000000000015",
+            "type": "0x7e",
+            "sourceHash": "0x7bc05edd46ae2e2d73df6a8ffbc296ab384fbbfb197a078df0d6cebd078f637d",
+            "depositReceiptVersion": "0x1",
+            "mint": "0x0",
+            "input": "0x3db6be2b",
+            "gas": "0xf4240",
+            "value": "0x0"
+        });
+        assert_eq!(
+            sender_from_tx_json(&v).as_deref(),
+            // Normalised to lowercase, like every other address this crate emits.
+            Some("0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001")
+        );
+    }
+
+    /// Every way there can be no sender is `None`, never an error: the sweeper
+    /// records an absent minter and keeps going. `Err` is reserved for "we
+    /// could not ask", which is a different sentence.
+    #[test]
+    fn no_sender_is_none_rather_than_a_failure() {
+        // The node does not have the transaction — a JSON-RPC `null` result.
+        assert_eq!(sender_from_tx_json(&serde_json::Value::Null), None);
+        // A result that is not an object at all.
+        assert_eq!(sender_from_tx_json(&serde_json::json!("0xdeadbeef")), None);
+        // An object with no `from`.
+        assert_eq!(
+            sender_from_tx_json(&serde_json::json!({"type": "0x7b"})),
+            None
+        );
+        // A `from` that is not an address.
+        assert_eq!(
+            sender_from_tx_json(&serde_json::json!({"from": "not-an-address"})),
+            None
+        );
+        assert_eq!(sender_from_tx_json(&serde_json::json!({"from": 42})), None);
     }
 
     /// `retry_throttled` must retry a throttled failure until it succeeds,
@@ -688,6 +990,40 @@ mod tests {
             result.is_err(),
             "a non-revert failure must not be treated as a boundary"
         );
+    }
+
+    /// Hits a real RPC endpoint, so it is `#[ignore]` by default:
+    ///   RPC_URL_CELO=https://forno.celo.org \
+    ///     cargo test -p chain -- --ignored --nocapture reads_the_sender
+    ///
+    /// The end-to-end version of the 2026-08-04 fix: a real CIP-64 (`0x7b`)
+    /// transaction, read from a real Celo node, through the real provider. This
+    /// is the call that returned `unknown variant 0x7b` for every registration
+    /// transaction on three chains; it must now return a sender.
+    #[tokio::test]
+    #[ignore]
+    async fn reads_the_sender_of_a_real_cip64_transaction() {
+        let rpc = std::env::var("RPC_URL_CELO").expect("RPC_URL_CELO");
+        // The registry address is irrelevant here — `tx_sender` is a node read,
+        // not a contract call — but `connect` wants one.
+        let reg = Registry::connect(&rpc, "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432")
+            .await
+            .unwrap();
+
+        let tx = "0x15968eae89fb4485f851798c24a60dfa6450a023f5a586a635febe1a2aac23c4";
+        let sender = reg.tx_sender(tx).await.unwrap();
+        println!("sender of {tx}: {sender:?}");
+        assert_eq!(
+            sender.as_deref(),
+            Some("0x15033e99bcdec59720ea0ff055a20c1a3f5c6a96")
+        );
+
+        // A hash the node does not have is an absent minter, not a failure.
+        let missing = reg
+            .tx_sender("0x0000000000000000000000000000000000000000000000000000000000000001")
+            .await
+            .unwrap();
+        assert_eq!(missing, None);
     }
 
     /// Hits a real RPC endpoint, so it is `#[ignore]` by default:
