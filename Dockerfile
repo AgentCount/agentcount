@@ -19,6 +19,16 @@ WORKDIR /src
 # and a stub for every member before it will resolve anything, so the manifests
 # are copied and the real sources are not — a change to a .rs file then reuses
 # this layer instead of rebuilding every dependency from scratch.
+# OpenSSL headers, because `reqwest` resolves to native-tls in this workspace
+# and `api` now links it: the spot-check route drives `crates/probe` (an HTTPS
+# prober) and `crates/chain` (an RPC client). Until that route existed the API
+# spoke only to Postgres and this layer was unnecessary. `Dockerfile.sweep`
+# has carried the same two packages for the same reason since it was written.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends pkg-config libssl-dev; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY Cargo.toml Cargo.lock ./
 COPY crates/api/Cargo.toml crates/api/
 COPY crates/chain/Cargo.toml crates/chain/
@@ -49,12 +59,14 @@ RUN set -eux; \
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
-# ca-certificates only. The API talks to Postgres and nothing else; on Cloud Run
-# that connection is a unix socket under /cloudsql, so this is really just so
-# TLS works if the deployment is ever changed to a networked database.
+# ca-certificates AND libssl3. The API used to talk to Postgres and nothing
+# else, which is what the previous comment here said; the spot-check route
+# changed that. It now makes outbound HTTPS requests to agent-declared hosts
+# and JSON-RPC calls to chain endpoints, so it needs both the trust store and
+# the OpenSSL runtime the binary is dynamically linked against.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates; \
+    apt-get install -y --no-install-recommends ca-certificates libssl3; \
     rm -rf /var/lib/apt/lists/*
 
 # Run as a non-root user. Cloud Run does not require it, but a process that
