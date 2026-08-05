@@ -50,6 +50,21 @@ INSTANCE="${INSTANCE:?set INSTANCE, e.g. project:region:agentcount-db}"
 REPO="${REPO:-agentcount}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/sweep:latest"
 
+# The commit being deployed, stamped into every run this image produces.
+# A dirty tree is marked as such rather than claiming to be the commit: a sweep
+# from uncommitted code is not reproducible and the stamp should say so.
+COMMIT="$(git rev-parse HEAD)"
+git diff --quiet && git diff --cached --quiet || COMMIT="$COMMIT-dirty"
+echo "==> 0/4 stamping checker_commit=$COMMIT"
+case "$COMMIT" in
+    *-dirty)
+        echo "!!! deploying from a DIRTY tree — every run will be stamped -dirty."
+        echo "    Commit first unless this is deliberate."
+        read -r -p "    Continue? [y/N] " reply
+        [ "$reply" = "y" ] || exit 1
+        ;;
+esac
+
 echo "==> 1/4 build and push the sweep image"
 # Built from Dockerfile.sweep, which is separate from the API's image on
 # purpose: the public-facing container must not carry a binary that holds RPC

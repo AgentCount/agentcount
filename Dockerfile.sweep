@@ -31,6 +31,19 @@
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 
+# The git SHA this image is built from.
+#
+# `.dockerignore` excludes `.git` and Cloud Build uploads a tarball anyway, so
+# `crates/sweeper/build.rs` cannot ask git and falls back to "unknown" — which
+# is what every run of the 2026-08 census recorded. A result that cannot name
+# the code that produced it is not reproducible, so the value is passed in.
+#
+# Empty by default rather than defaulted to something plausible: an unset arg
+# leaves the build script's own fallback in charge, which says "unknown"
+# honestly instead of naming a commit nobody verified.
+ARG CHECKER_COMMIT=""
+ENV CHECKER_COMMIT_OVERRIDE=$CHECKER_COMMIT
+
 # Dependencies first, in their own layer — same technique and same reason as
 # the API image. Cargo needs every workspace member's manifest and a stub
 # source before it will resolve anything.

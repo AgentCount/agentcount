@@ -4,6 +4,31 @@
 //! and asking a human to type the SHA is asking for a wrong one.
 
 fn main() {
+    // An explicit stamp wins, and exists because the ONLY place this build
+    // runs unattended has no git at all.
+    //
+    // `.dockerignore` excludes `.git` — correctly, since a repository in an
+    // image layer is bulk nobody needs — and Cloud Build uploads the source as
+    // a tarball regardless. So `git rev-parse` below fails there and falls back
+    // to "unknown", which is exactly what happened: every scheduled run of the
+    // 2026-08 census recorded `checker_commit: unknown`, and a result that
+    // cannot name the code that produced it is not reproducible. That is the
+    // one property this project sells.
+    //
+    // The value comes from `--build-arg CHECKER_COMMIT=$(git rev-parse HEAD)`,
+    // which `scripts/deploy-weekly-sweep.sh` supplies from the tree it is
+    // deploying. Trusted without verification on purpose: nothing inside the
+    // container CAN verify it, and a stamp that lies is a problem with whoever
+    // passed it, not something this build script can defend against.
+    if let Ok(explicit) = std::env::var("CHECKER_COMMIT_OVERRIDE")
+        && !explicit.trim().is_empty()
+    {
+        println!("cargo:rustc-env=CHECKER_COMMIT={}", explicit.trim());
+        println!("cargo:rerun-if-env-changed=CHECKER_COMMIT_OVERRIDE");
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=CHECKER_COMMIT_OVERRIDE");
+
     let commit = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
