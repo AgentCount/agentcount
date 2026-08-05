@@ -115,8 +115,8 @@
     "pinned_block": 112874357,
     "started_at": "2026-07-29T19:31:31.986385+00:00",
     "finished_at": "2026-07-30T06:50:51.109117+00:00",
-    "schema_version": 7,
-    "checker_version": "0.6.0",
+    "schema_version": 5,
+    "checker_version": "0.5.0",
     "checker_commit": "987ce24581f221a1d54a84b47a72d69100214e88-dirty",
     "spec_commit": "68fc6765761a10fb26f0692df21c8a6f9d12b1be",
     "rerun_command": "cargo run -p sweeper -- bsc   # at block 112874357",
@@ -126,7 +126,8 @@
     "unwritable": null,
     "archive": "f78c7891-e787-43f1-9748-61d5a361e9ff.tar.zst",
     "archive_bytes": 23850639,
-    "archive_sha256": "3fecf328345fc824f1818da49bf87fd6139efb23e64be2e12a55af172b55e318"
+    "archive_sha256": "3fecf328345fc824f1818da49bf87fd6139efb23e64be2e12a55af172b55e318",
+    "rebuilt_at": "2026-08-01T14:06:17.932063+00:00"
   },
   {
     "run_id": "18a25593-9098-40fd-a0d2-75553c6ee31d",
@@ -134,8 +135,8 @@
     "pinned_block": 25640407,
     "started_at": "2026-07-29T18:52:29.451983+00:00",
     "finished_at": "2026-07-29T19:31:31.563707+00:00",
-    "schema_version": 7,
-    "checker_version": "0.6.0",
+    "schema_version": 5,
+    "checker_version": "0.5.0",
     "checker_commit": "987ce24581f221a1d54a84b47a72d69100214e88-dirty",
     "spec_commit": "68fc6765761a10fb26f0692df21c8a6f9d12b1be",
     "rerun_command": "cargo run -p sweeper -- mainnet   # at block 25640407",
@@ -145,7 +146,8 @@
     "unwritable": null,
     "archive": "18a25593-9098-40fd-a0d2-75553c6ee31d.tar.zst",
     "archive_bytes": 3468008,
-    "archive_sha256": "5f3b38733f58783fecb60c9b9586a31b1e7988237d150fe9d56decbe576d1758"
+    "archive_sha256": "5f3b38733f58783fecb60c9b9586a31b1e7988237d150fe9d56decbe576d1758",
+    "rebuilt_at": "2026-08-01T14:03:26.840491+00:00"
   },
   {
     "run_id": "7833fc49-a5b7-477b-99ce-946f650f0064",
@@ -153,8 +155,8 @@
     "pinned_block": 73448013,
     "started_at": "2026-07-29T18:12:51.816459+00:00",
     "finished_at": "2026-07-29T18:44:19.719309+00:00",
-    "schema_version": 7,
-    "checker_version": "0.6.0",
+    "schema_version": 5,
+    "checker_version": "0.5.0",
     "checker_commit": "6b98ef4054bb0ad8ce1a51829753a15b7e4a3da8-dirty",
     "spec_commit": "68fc6765761a10fb26f0692df21c8a6f9d12b1be",
     "rerun_command": "cargo run -p sweeper -- celo   # at block 73448013",
@@ -164,7 +166,8 @@
     "unwritable": null,
     "archive": "7833fc49-a5b7-477b-99ce-946f650f0064.tar.zst",
     "archive_bytes": 4116231,
-    "archive_sha256": "5fa063541e190fb3be65cc890f1a9673e304c31edc63629d3d48eb7634741f96"
+    "archive_sha256": "5fa063541e190fb3be65cc890f1a9673e304c31edc63629d3d48eb7634741f96",
+    "rebuilt_at": "2026-08-01T13:59:36.248112+00:00"
   },
   {
     "run_id": "cfbfcc01-fdaf-409f-9bed-abf706d865c7",
@@ -172,8 +175,8 @@
     "pinned_block": 49262617,
     "started_at": "2026-07-29T08:43:02.803336+00:00",
     "finished_at": "2026-07-29T11:51:12.024787+00:00",
-    "schema_version": 7,
-    "checker_version": "0.6.0",
+    "schema_version": 5,
+    "checker_version": "0.5.0",
     "checker_commit": "72dc9b9c1183d2899dcb92f64b0fb46ed34bb29f",
     "spec_commit": "68fc6765761a10fb26f0692df21c8a6f9d12b1be",
     "rerun_command": "cargo run -p sweeper -- base   # at block 49262617",
@@ -183,6 +186,7 @@
     "unwritable": null,
     "archive": "cfbfcc01-fdaf-409f-9bed-abf706d865c7.tar.zst",
     "archive_bytes": 8825575,
-    "archive_sha256": "4169eb71903e5c8330d1c6031bafe5411085ee4bf587c97b64663ddb634e2e3c"
+    "archive_sha256": "4169eb71903e5c8330d1c6031bafe5411085ee4bf587c97b64663ddb634e2e3c",
+    "rebuilt_at": "2026-08-01T14:04:27.064775+00:00"
   }
 ]
