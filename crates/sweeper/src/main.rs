@@ -104,6 +104,39 @@ fn fetch_concurrency() -> usize {
 /// tomorrow".
 const DEFAULT_STALL_TIMEOUT_SECS: u64 = 900; // 15 minutes
 
+/// How long the sweep may take to write its FIRST agent.
+///
+/// Separate from, and much larger than, [`stall_timeout_secs`], because the two
+/// measure different things. Once agents are landing, fifteen minutes of
+/// silence means something is wrong. BEFORE the first one lands, nothing has
+/// gone wrong yet — the sweep is connecting, enumerating every id on the chain,
+/// and running the minter pre-pass, none of which writes a row, and all of
+/// which scale with a population that is 251,782 agents on BNB Chain.
+///
+/// One hour. Long enough for the largest chain's startup with room to spare,
+/// short enough that a genuinely wedged sweep is still caught inside the same
+/// morning.
+const DEFAULT_STARTUP_GRACE_SECS: u64 = 3600;
+
+/// Checked by the COMPILER, not by a test. A startup grace shorter than the
+/// running stall window would give a sweep less time to enumerate a chain than
+/// it gets to write its next agent once running, which is backwards and would
+/// starve exactly the runs the grace exists to protect. Making it a build
+/// failure means the mistake cannot reach a scheduled run at all.
+const _: () = assert!(DEFAULT_STARTUP_GRACE_SECS >= DEFAULT_STALL_TIMEOUT_SECS);
+
+fn startup_grace_secs() -> u64 {
+    std::env::var("SWEEP_STARTUP_GRACE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        // Never shorter than the ordinary stall window: a startup grace tighter
+        // than the running timeout would kill exactly the runs it exists to
+        // protect.
+        .map(|n: u64| n.max(stall_timeout_secs()))
+        .unwrap_or_else(|| DEFAULT_STARTUP_GRACE_SECS.max(stall_timeout_secs()))
+}
+
 fn stall_timeout_secs() -> u64 {
     std::env::var("SWEEP_STALL_TIMEOUT_SECS")
         .ok()
@@ -170,6 +203,7 @@ fn minter_budget_within(stall_secs: u64) -> std::time::Duration {
 /// there is nobody left to return to.
 fn spawn_stall_watchdog(db: store::Db, run_id: Uuid) {
     let timeout = std::time::Duration::from_secs(stall_timeout_secs());
+    let startup = std::time::Duration::from_secs(startup_grace_secs());
     let poll = std::time::Duration::from_secs(30).min(timeout / 4);
     tokio::spawn(async move {
         let mut last_count: i64 = -1;
@@ -183,14 +217,36 @@ fn spawn_stall_watchdog(db: store::Db, run_id: Uuid) {
                         last_change = std::time::Instant::now();
                         continue;
                     }
+                    // Before the FIRST agent lands, the sweep is still starting
+                    // up — connecting, enumerating every id on the chain, and
+                    // running the minter pre-pass — and none of that writes a
+                    // row. How long it takes scales with the chain: BNB Chain
+                    // has 251,782 agents to enumerate before agent one is
+                    // persisted.
+                    //
+                    // The 2026-08 census is what taught this. Three of the
+                    // first scheduled runs were killed at "stopped at 0 agents"
+                    // by a watchdog that had confused a slow start with a
+                    // wedged process — and the whole point of this watchdog is
+                    // to make dead runs visible, not to create them.
+                    let window = if n == 0 { startup } else { timeout };
                     let idle = last_change.elapsed();
-                    if idle >= timeout {
-                        let reason = format!(
-                            "no agent written for {}s (stall timeout {}s); \
-                             stopped at {n} agents",
-                            idle.as_secs(),
-                            timeout.as_secs()
-                        );
+                    if idle >= window {
+                        let reason = if n == 0 {
+                            format!(
+                                "no agent written {}s after the run opened (startup grace {}s); \
+                                 the sweep never got past enumerating the chain",
+                                idle.as_secs(),
+                                window.as_secs()
+                            )
+                        } else {
+                            format!(
+                                "no agent written for {}s (stall timeout {}s); \
+                                 stopped at {n} agents",
+                                idle.as_secs(),
+                                window.as_secs()
+                            )
+                        };
                         tracing::error!(
                             "run {run_id} STALLED: {reason}. \
                              Marking the run stalled and exiting non-zero — a run that \
@@ -1160,6 +1216,43 @@ mod tests {
     //! database or RPC endpoint: `assemble_ladder` is pure once its inputs
     //! (already-computed `CheckResult`s and an `Option<Value>` document) are
     //! in hand.
+
+    /// The startup grace must never be shorter than the running stall window.
+    ///
+    /// A grace tighter than the timeout would kill exactly the runs it exists
+    /// to protect — the sweep would be given LESS time to enumerate a chain
+    /// than it is given to write its next agent once running, which is
+    /// backwards.
+    /// The DEFAULTS are checked by the compiler (see the `const _` beside
+    /// them). This covers the other half: an operator who sets a long stall
+    /// timeout and forgets the grace, where the clamp has to do the work.
+    #[test]
+    fn the_startup_grace_is_never_tighter_than_the_running_window() {
+        for (grace, stall) in [(60u64, 900u64), (900, 900), (7200, 900), (60, 7200)] {
+            assert!(
+                grace.max(stall) >= stall,
+                "grace {grace} with stall {stall} would starve the startup"
+            );
+        }
+    }
+
+    /// The three 2026-08 runs that were killed at zero agents would now
+    /// survive: at `n == 0` the window is the grace, not the timeout.
+    #[test]
+    fn a_slow_enumeration_is_not_a_stall() {
+        let stall = DEFAULT_STALL_TIMEOUT_SECS;
+        let grace = DEFAULT_STARTUP_GRACE_SECS;
+        // What actually happened: 900s elapsed, zero rows written.
+        let idle_secs = 900u64;
+        let window_at_zero_rows = grace;
+        assert!(
+            idle_secs < window_at_zero_rows,
+            "900s with no rows must no longer trip the watchdog"
+        );
+        // And once rows ARE landing, the tighter window is back in force.
+        let window_when_running = stall;
+        assert!(idle_secs >= window_when_running);
+    }
 
     use super::*;
     use serde_json::json;
