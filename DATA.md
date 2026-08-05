@@ -191,6 +191,29 @@ seen that no census has checked. Adding that count to a run's population
 produces a number that describes no moment in time and is not a figure this
 project publishes.
 
+## A known defect in the 2026-08 archives
+
+Every run in the 2026-08 census records **`checker_commit: unknown`**.
+
+The stamp is produced at build time by `git rev-parse HEAD`. The weekly job's
+image is built by Cloud Build from an uploaded tarball with no `.git` in it, so
+that command failed and the build script fell back to its honest placeholder —
+honest, but useless: `checker_commit` is what lets you fetch the exact code
+that produced a result, and "unknown" means you cannot.
+
+Fixed for every run after 2026-08-05: the commit is passed into the image build
+explicitly, and a build from a dirty tree is stamped `-dirty` rather than
+claiming to be a commit.
+
+**The affected archives are not being reissued.** They are immutable, which is
+the whole point of publishing them at a permanent URL, and quietly replacing
+bytes to correct a metadata field would break the only guarantee that makes a
+hash worth committing. What can be recovered is recovered here instead: those
+runs were produced by the code at
+[`3235667`](https://github.com/AgentCount/agentcount/commit/3235667527c2e4e11a672f64d3358133d024a808)
+or an immediate ancestor — checker `0.6.0`, schema `7` — and their
+`checker_version` and `spec_commit` fields are correct and unaffected.
+
 ## Schema versions
 
 `schema_version` in the manifest says which evidence contract a run was

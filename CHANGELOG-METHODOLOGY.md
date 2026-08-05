@@ -309,6 +309,45 @@ the published checksums during this correction.
 
 ---
 
+## 2026-08-05 — `checker_commit` was `unknown` for the whole 2026-08 census
+
+**What changed.** The git SHA is now passed into the weekly job's image build
+explicitly, instead of being read by `git rev-parse` at build time.
+
+**Why.** `crates/sweeper/build.rs` stamps the commit by shelling out to git.
+That works on a workstation and cannot work in the deployed job: `.dockerignore`
+excludes `.git` (correctly — a repository in an image layer is bulk nobody
+needs) and Cloud Build uploads the source as a tarball regardless. The command
+failed, the script fell back to its `"unknown"` placeholder, and every run of
+the first scheduled census recorded a provenance field that names nothing.
+
+The fallback did its job — it did not invent a plausible SHA — but "unknown" is
+not usable provenance, and `checker_commit` is specifically the field that lets
+a reader fetch the code that produced a number. This project's central claim is
+that its results can be recomputed; a run that cannot say what produced it is
+the one case where that claim is not checkable.
+
+**Measured effect.** No agent's status moves and no rung's rule changes. Five
+published runs carry `checker_commit: unknown` permanently:
+
+| chain | run | agents |
+|---|---|---:|
+| bsc | `e6f87cdb` | 251,782 |
+| base | `24959257` | 60,589 |
+| mainnet | `acea7d5d` | 47,001 |
+| mainnet | `4514e591` | 46,987 |
+| celo | `974f0c12` | 9,758 |
+
+They are **not being reissued**. The archives are immutable, which is what
+makes a committed hash worth anything, and replacing bytes to correct a
+metadata field would break that guarantee to fix something a sentence can fix.
+The code that produced them is commit `3235667` or an immediate ancestor,
+checker `0.6.0`, schema `7`; `checker_version` and `spec_commit` are correct on
+those runs and unaffected. `DATA.md` says the same where a reader of the data
+will meet it.
+
+---
+
 ## 2026-08-01 — Rung 6 (`live`) ships, with a sixth status and a disclosed sample
 
 **What changed.** The service track stops being absent from every result. A
