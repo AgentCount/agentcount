@@ -5,13 +5,19 @@ Free, no account, no key, no rate limit, no email gate. One URL per run,
 immutable once written.
 
 ```
-https://data.agentcount.ai/runs/<run_id>.tar.zst
-https://data.agentcount.ai/runs/<run_id>.tar.zst.sha256
+https://storage.googleapis.com/agentcount-data/runs/<run_id>.tar.zst
+https://storage.googleapis.com/agentcount-data/runs/<run_id>.tar.zst.sha256
 ```
 
 The full list, with each run's chain, pinned block, provenance and size, is at
 [agentcount.ai/data](https://agentcount.ai/data) and in
 [`published-runs.json`](published-runs.json) in this repository.
+
+That is the storage bucket's own address rather than a hostname of ours, and
+deliberately so. A vanity domain in front of these files would be one more
+thing that can expire, misroute or lose a certificate between you and an
+archive whose whole purpose is to still be there during an argument. The
+bucket URL has no such layer.
 
 ## Why this is free
 
@@ -108,8 +114,8 @@ publishes a fixed set of files rather than whatever it finds.
 
 ```sh
 run=cfbfcc01-fdaf-409f-9bed-abf706d865c7
-curl -LO https://data.agentcount.ai/runs/$run.tar.zst
-curl -LO https://data.agentcount.ai/runs/$run.tar.zst.sha256
+curl -LO https://storage.googleapis.com/agentcount-data/runs/$run.tar.zst
+curl -LO https://storage.googleapis.com/agentcount-data/runs/$run.tar.zst.sha256
 shasum -a 256 -c $run.tar.zst.sha256
 tar --zstd -xf $run.tar.zst
 ```
@@ -246,7 +252,7 @@ new word is derived from the `http_status` and `reason` each row already
 carried, and no row moves into or out of `pass` in either direction.
 
 The database has been re-judged so the published series says one thing. **The
-archives already at `data.agentcount.ai` have not been reissued**, for the same
+archives already published have not been reissued**, for the same
 reason as the `checker_commit` defect above: immutable bytes at a permanent URL
 are the guarantee. So an archive stamped schema 7 or earlier carries the old
 words, and the mapping to schema 8 is mechanical and total:

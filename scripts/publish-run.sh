@@ -221,7 +221,7 @@ gsutil -h "Content-Type:application/json" \
 
 echo "==> done"
 echo
-echo "    https://data.agentcount.ai/runs/$ARCHIVE"
+echo "    https://storage.googleapis.com/agentcount-data/runs/$ARCHIVE"
 echo
 echo "$BUCKET/runs/index.json updated."
 echo
