@@ -1159,9 +1159,25 @@ impl Db {
     /// is false for the rows whose reason already says something the new
     /// checker would also have written — `payment_required`, and every
     /// `robots_*` reason, which are carried through untouched.
+    /// `chain` is redundant — a run has exactly one — and leaving it out made
+    /// this unusably slow. `check_results_unique` is `(run_id, chain,
+    /// agent_id, rung)`, so a predicate naming `run_id` and `agent_id` but not
+    /// `chain` can seek on the first column only, then scans every row the run
+    /// wrote to test the rest. Measured on the 2026-08 BNB Chain run, one
+    /// 5,000-id chunk:
+    ///
+    ///   without chain   > 120 s — hit the statement timeout, never completed
+    ///   with chain        74 ms — Index Scan using check_results_unique
+    ///
+    /// At least three orders of magnitude, for a column the caller is already
+    /// holding. The same gap is why the homepage's findings had to be
+    /// materialised in migration 0021: `chain` sits between `run_id` and
+    /// `agent_id` in that key, so every per-agent lookup that does not spell
+    /// the chain out falls off the index entirely.
     pub async fn mark_rung2_refused(
         &self,
         run_id: Uuid,
+        chain: &str,
         agent_ids: &[i64],
         set_declined_reason: bool,
     ) -> Result<u64> {
@@ -1172,14 +1188,15 @@ impl Db {
             "UPDATE check_results \
                 SET status = 'refused', \
                     evidence = jsonb_set(evidence, '{reason}', '\"declined\"') \
-              WHERE run_id = $1 AND rung = 2 AND agent_id = ANY($2)"
+              WHERE run_id = $1 AND chain = $3 AND rung = 2 AND agent_id = ANY($2)"
         } else {
             "UPDATE check_results SET status = 'refused' \
-              WHERE run_id = $1 AND rung = 2 AND agent_id = ANY($2)"
+              WHERE run_id = $1 AND chain = $3 AND rung = 2 AND agent_id = ANY($2)"
         };
         let done = sqlx::query(sql)
             .bind(run_id)
             .bind(agent_ids)
+            .bind(chain)
             .execute(&self.pool)
             .await
             .context("reclassifying rung-2 rows as refused")?;
