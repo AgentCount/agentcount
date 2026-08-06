@@ -78,10 +78,31 @@ echo "==> 1/4 build and push the sweep image"
 BUILD_TMP="$(mktemp -d)"
 BUILD_CONFIG="$BUILD_TMP/cloudbuild.yaml"
 trap 'rm -rf "$BUILD_TMP"' EXIT
+# `--build-arg CHECKER_COMMIT` is the whole reason `$COMMIT` is computed above.
+# It was computed, printed and prompted on — and then never passed, so
+# `CHECKER_COMMIT_OVERRIDE` was empty in the image, `crates/sweeper/build.rs`
+# fell through to `git rev-parse` inside a tarball with no `.git`, and every
+# scheduled run of the 2026-08 census stamped `checker_commit: unknown`.
+#
+# The second step is why that went unnoticed: nothing ever asked the image what
+# it was. It asks now, and a build that cannot answer never becomes an image
+# anybody can schedule.
 cat > "$BUILD_CONFIG" <<EOF
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-f', 'Dockerfile.sweep', '-t', '${IMAGE}', '.']
+    args: ['build', '--build-arg', 'CHECKER_COMMIT=${COMMIT}',
+           '-f', 'Dockerfile.sweep', '-t', '${IMAGE}', '.']
+  - name: '${IMAGE}'
+    entrypoint: /bin/sh
+    args:
+      - -c
+      - |
+        stamp="\$(sweeper --version)"
+        echo "image reports: \$stamp"
+        case "\$stamp" in
+          *"checker_commit=${COMMIT}") echo "stamp verified" ;;
+          *) echo "FATAL: expected checker_commit=${COMMIT}"; exit 1 ;;
+        esac
 images: ['${IMAGE}']
 EOF
 
