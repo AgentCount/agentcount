@@ -263,9 +263,7 @@ mod tests {
         let counted = verdicts.iter().filter(|v| v.is_counted()).count();
         let uncorrected = verdicts
             .iter()
-            .filter(|v| {
-                v.is_counted() || v.exclusion() == Some(Exclusion::PreMint)
-            })
+            .filter(|v| v.is_counted() || v.exclusion() == Some(Exclusion::PreMint))
             .count();
         assert_eq!((counted, uncorrected), (2, 3));
     }
@@ -296,7 +294,10 @@ mod tests {
         // collected 313,255 of mainnet's 314,735 transfers (99.5%).
         let mut to_burn = incoming(STRANGER, MINT_BLOCK + 1);
         to_burn.credited_address = ZERO_ADDRESS;
-        assert_eq!(classify(&to_burn), Verdict::Excluded(Exclusion::BurnAddress));
+        assert_eq!(
+            classify(&to_burn),
+            Verdict::Excluded(Exclusion::BurnAddress)
+        );
 
         let mut dead = incoming(STRANGER, MINT_BLOCK + 1);
         dead.credited_address = DEAD_ADDRESS;

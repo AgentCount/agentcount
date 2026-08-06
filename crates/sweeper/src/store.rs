@@ -1351,12 +1351,14 @@ impl Db {
         .context("loading payment candidates")?;
         Ok(rows
             .into_iter()
-            .map(|(agent_id, owner, registration_block, body)| PaymentCandidate {
-                agent_id: agent_id as u64,
-                owner,
-                registration_block: registration_block.map(|b| b as u64),
-                body,
-            })
+            .map(
+                |(agent_id, owner, registration_block, body)| PaymentCandidate {
+                    agent_id: agent_id as u64,
+                    owner,
+                    registration_block: registration_block.map(|b| b as u64),
+                    body,
+                },
+            )
             .collect())
     }
 

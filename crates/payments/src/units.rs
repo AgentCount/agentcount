@@ -86,7 +86,10 @@ mod tests {
         // 6. One BSC "dollar" is 10^18 raw units. Carrying Base's 6 across all
         // four chains would have overstated BSC by 10^12.
         assert_eq!(format_units("1000000000000000000", 18).unwrap(), "1");
-        assert_eq!(format_units("1000000000000000000", 6).unwrap(), "1000000000000");
+        assert_eq!(
+            format_units("1000000000000000000", 6).unwrap(),
+            "1000000000000"
+        );
     }
 
     #[test]
@@ -99,7 +102,10 @@ mod tests {
             symbol: "USDm".into(),
             decimals: 18,
         };
-        assert_eq!(format_units("2813000000000000000000", t.decimals).unwrap(), "2813");
+        assert_eq!(
+            format_units("2813000000000000000000", t.decimals).unwrap(),
+            "2813"
+        );
     }
 
     #[test]

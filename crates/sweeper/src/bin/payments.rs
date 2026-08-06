@@ -163,7 +163,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let chain_name = std::env::args().nth(1).unwrap_or_else(|| "base".to_string());
+    let chain_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "base".to_string());
     let explicit_run = std::env::args()
         .nth(2)
         .map(|s| Uuid::parse_str(&s))
@@ -444,15 +446,15 @@ async fn run_basis(
 
                 // PAY-3: read the sender's code once per address, and store
                 // NULL — never `false` — when the read fails.
-                let sender_has_code = *is_contract
-                    .entry(counterparty.clone())
-                    .or_insert(match erc20.is_contract(counterparty, pinned_block).await {
+                let sender_has_code = *is_contract.entry(counterparty.clone()).or_insert(
+                    match erc20.is_contract(counterparty, pinned_block).await {
                         Ok(v) => Some(v),
                         Err(e) => {
                             tracing::warn!("eth_getCode({counterparty}) failed: {e:#}");
                             None
                         }
-                    });
+                    },
+                );
 
                 // x402: an EIP-3009 authorization from THIS token in the same
                 // transaction. A failed receipt read leaves the row's

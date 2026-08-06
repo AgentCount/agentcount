@@ -216,7 +216,8 @@ fn verified_targets(identity: &AgentIdentity) -> Vec<TargetDecision> {
     if is_burn_address(&address) {
         return vec![mk(Some(Ineligible::WalletUnset))];
     }
-    if address == normalise_address(&identity.owner).unwrap_or_else(|| identity.owner.to_lowercase())
+    if address
+        == normalise_address(&identity.owner).unwrap_or_else(|| identity.owner.to_lowercase())
     {
         return vec![mk(Some(Ineligible::WalletEqualsOwner))];
     }
@@ -394,7 +395,11 @@ mod tests {
         // Mainnet agent 28283 declares the zero address. The uncorrected scan
         // collected every USDC and USDT burn on Ethereum as its income:
         // 313,255 of mainnet's 314,735 transfers, 99.5%.
-        for burn in [ZERO_ADDRESS, DEAD_ADDRESS, "0x000000000000000000000000000000000000DEAD"] {
+        for burn in [
+            ZERO_ADDRESS,
+            DEAD_ADDRESS,
+            "0x000000000000000000000000000000000000DEAD",
+        ] {
             let mut a = agent(OWNER, None);
             a.declared_wallets = vec![burn.to_string()];
             let d = targets_for(&a, Basis::DeclaredWallet);
@@ -445,8 +450,10 @@ mod tests {
 
     #[test]
     fn normalise_refuses_anything_that_is_not_a_twenty_byte_address() {
-        assert_eq!(normalise_address("  0xABCdef0000000000000000000000000000000001 ").as_deref(),
-                   Some("0xabcdef0000000000000000000000000000000001"));
+        assert_eq!(
+            normalise_address("  0xABCdef0000000000000000000000000000000001 ").as_deref(),
+            Some("0xabcdef0000000000000000000000000000000001")
+        );
         for bad in [
             "0x",
             "not an address",
@@ -490,7 +497,12 @@ mod tests {
 
     #[test]
     fn unparseable_documents_never_panic_and_declare_nothing() {
-        for bytes in [b"not json".as_slice(), b"", &[0xff, 0xfe], b"{\"services\":{}}"] {
+        for bytes in [
+            b"not json".as_slice(),
+            b"",
+            &[0xff, 0xfe],
+            b"{\"services\":{}}",
+        ] {
             assert!(declared_wallets(bytes).is_empty());
         }
     }
