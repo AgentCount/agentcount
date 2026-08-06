@@ -2,19 +2,23 @@
 -- Migration 0021 — the homepage's findings, computed once per run and stored.
 -- ─────────────────────────────────────────────────────────────────────────────
 --
--- `GET /api/runs/{id}/findings` answered in seconds for seven of the eight
--- published runs and, for the 2026-08 BNB Chain run (251,782 agents), did not
--- answer at all: HTTP 408 after roughly 550 seconds, every time. The homepage
--- sums one findings document per chain, so the largest chain took the
--- all-chains figure down with it. The headline number of the census was
--- unavailable for the largest population it measures.
+-- `GET /api/runs/{id}/findings` answered for seven of the eight published runs
+-- and, for the 2026-08 BNB Chain run (251,782 agents), did not answer at all:
+-- HTTP 408, every time. The homepage sums one findings document per chain, so
+-- the largest chain took the all-chains figure down with it. The headline
+-- number of the census was unavailable for the largest population it measures.
 --
--- ## What was actually slow, measured rather than guessed
+-- ## What was actually slow, measured on production rather than guessed
+--
+-- The 408 is ours, not Cloud Run's: `main.rs` wraps the read routes in a
+-- `TimeoutLayer` of 10 seconds. So the question is not "why does it take
+-- minutes" — it is "why do six queries not finish in ten seconds", and the
+-- answer is that two of them alone take fourteen.
 --
 -- Not a missing index. `idx_check_results_rates (run_id, rung, status)` has
--- existed since migration 0008 and three of the endpoint's six queries use it
--- as an index-ONLY scan, costing about 150 buffers each on the 1.68-million-row
--- BNB Chain run. Those three are fine and were never the problem.
+-- existed since migration 0008 and four of the endpoint's six queries use it as
+-- an index-ONLY scan, costing about 150 buffers each. Those four are fine and
+-- were never the problem.
 --
 -- The other two cannot be index-only, and that is the whole story:
 --
@@ -25,23 +29,30 @@
 --     `idx_check_results_rates` has (run_id, rung, status),
 --     `check_results_unique` has (run_id, chain, agent_id, rung).
 --
--- Both therefore end in a Bitmap Heap Scan, and here is the part that makes it
--- pathological rather than merely slow: the sweeper writes all seven of an
--- agent's rungs together, so one run's rung-4 rows are spread evenly across
--- EVERY heap page that run occupies. Fetching 244,208 rung-4 rows visits 66,510
--- pages — 3.7 rows per 8 KB page — and rung 6's evidence (one object per
--- declared endpoint) is what makes those pages fat. `EXPLAIN (ANALYZE, BUFFERS)`
--- on the 2026-07 BNB Chain run, 1,683,676 rows:
+-- `EXPLAIN (ANALYZE, BUFFERS)` against the production instance (db-g1-small,
+-- 1.7 GB RAM) on run e6f87cdb, 251,782 agents in a `check_results` table of
+-- 7.05 million rows, with the cache warm:
 --
---   rung-4 + jsonb filter   Buffers: shared read=66245   Heap Blocks: exact=11187 lossy=11033
---   attested × resolvable   Buffers: shared read=66794   Heap Blocks: exact=33292 lossy=33034
+--   rung-4 + jsonb filter   Bitmap Heap Scan   60,005 buffers   5.0 s
+--   attested × resolvable   Parallel Seq Scan  267,052 buffers  9.2 s
 --
--- Roughly 133,000 buffers — about 1.04 GB of heap — read for ONE request, and
--- both bitmaps overflow `work_mem` into lossy mode, at which point Postgres
--- rechecks every tuple on every page it flagged rather than the rows it wanted.
--- On a workstation with the table in page cache that is 0.9 s. On a Cloud SQL
--- instance whose `check_results` does not fit in shared buffers, 133,000
--- largely random page reads at a few hundred IOPS is the observed ~550 s.
+-- The first is bitmap-bound for the reason the sweeper's write pattern
+-- guarantees: all seven of an agent's rungs are written together, so one run's
+-- rung-4 rows are spread across every heap page the run occupies — 59,275 rows
+-- over 19,410 pages, three rows per 8 KB page, and rung 6's evidence (one
+-- object per declared endpoint) is what makes those pages fat.
+--
+-- The second is worse than the bitmap case, not better: the planner declines
+-- the index entirely and reads the whole table. One run is 3.6% of
+-- `check_results`, and the columns needed — chain, agent_id, status, filtered
+-- on rung — are not covered by any one index, so a sequential scan discarding
+-- 6.5 million rows wins on cost. It then sorts 503,564 rows through an external
+-- merge, spilling ~5.6 MB per worker to disk.
+--
+-- Fourteen seconds of database work, warm, against a ten-second request
+-- budget. Cold, it is worse, and the margin on the other runs is thinner than
+-- it looks: mainnet's 47,001 agents answer in 8.3 s. One more sweep and the
+-- second-largest chain fails the same way.
 --
 -- ## Why storing the answer, and not another index
 --
@@ -194,10 +205,12 @@ CREATE TABLE IF NOT EXISTS run_findings (
 -- Every run that has results, through the same function the sweep will use.
 --
 -- THIS IS SLOW, ON PURPOSE, ONCE. It performs exactly the work the endpoint
--- used to do per request — roughly 1 GB of heap reads per BNB Chain run — for
--- every run in the database. On the production instance expect minutes per
--- large run and something on the order of half an hour in total, in one
--- transaction. Migrations here are applied by hand rather than at container
+-- used to do per request — about 2.5 GB of reads for a BNB Chain run — for
+-- every run in the database, and there are runs here that were never published.
+-- On the production instance the two heavy queries measured 14 s for the
+-- largest run with the cache warm; budget minutes per large run and something
+-- on the order of half an hour in total, in one transaction, cold.
+-- Migrations here are applied by hand rather than at container
 -- start (nothing in `Dockerfile` or `scripts/` runs `sqlx migrate run`), so
 -- that is a supervised wait and not a failed deploy. Run it when a sweep is
 -- not.
