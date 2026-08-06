@@ -291,8 +291,8 @@ DATABASE_URL=… cargo run -p sweeper --bin liveness <chain> <run-id> # per run
 The first prints the table above for every run in the database, 2026-08's
 included, without writing anything.
 
-**Published archives are not reissued.** `data.agentcount.ai` holds immutable
-bytes, which is the whole point of publishing at a permanent URL. An archive
+**Published archives are not reissued.** A published archive is immutable bytes
+at a permanent URL, which is the whole point of publishing one. An archive
 stamped schema ≤ 7 carries the old words, and `DATA.md` gives the mechanical
 mapping to schema 8.
 

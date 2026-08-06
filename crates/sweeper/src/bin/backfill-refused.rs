@@ -43,8 +43,8 @@
 //!   resumable). Running it here would mean a second implementation of rung 6's
 //!   aggregation, which is exactly the kind of duplicate that eventually
 //!   disagrees. **Run `liveness` for each run after this binary.**
-//! * **It does not reissue published archives.** `data.agentcount.ai` holds the
-//!   bytes each run exported at the time, and those keep the old words. The
+//! * **It does not reissue published archives.** Each published archive holds
+//!   the bytes that run exported at the time, and those keep the old words. The
 //!   mapping is mechanical and total — see `DATA.md` and the 2026-08-06
 //!   changelog entry — and an archive that verifies against a hash in a commit
 //!   predating this change is more useful than one quietly rewritten.
