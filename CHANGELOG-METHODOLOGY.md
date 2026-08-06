@@ -146,6 +146,155 @@ predicts what the new number will be, and nothing should.
 The deliverable is the rule and the rows; the figure comes from a run a
 maintainer schedules, and inventing one in advance would be the same error as
 publishing an analysis document's number as a census.
+## 2026-08-06 — `refused`: a rate limit of ours was being published as 19,983 agents going dark
+
+**This entry changes published numbers.** Every archived run is re-judged. If
+you have quoted a rung-2 `fail` or `error` rate, or a `stopped_resolving`
+figure, from any run before today, read the tables at the bottom: the numbers
+moved, nothing was re-probed, and no agent gained or lost a `pass`.
+
+**What changed.**
+
+1. **A seventh status, `refused`, on rungs 2 (`resolvable`) and 6 (`live`):
+   the origin is demonstrably there and declined this request.** Five HTTP
+   statuses qualify, in the two groups the HTTP specification itself separates —
+   **429 and 503**, the statuses defined to carry `Retry-After` and to mean "not
+   now" (RFC 6585 §4, RFC 9110 §15.6.4), and **401, 402 and 407**, the statuses
+   that answer with a challenge rather than an absence. They were rung 2's
+   `fail`, whose published meaning is "their document is unreachable".
+2. **A `robots.txt` we could not get permission from is `refused`, not
+   `error`.** `robots_disallowed` and `robots_unavailable: …` were recorded as
+   this checker having malfunctioned. It had not: we asked for permission, did
+   not get it, and — deliberately, per RFC 9309 §2.3.1.4 — sent no request. The
+   behaviour on the wire is unchanged. Only the word is.
+3. **Rung 6 gets the same rule, with one deliberate exception.** 402 remains
+   `pass` there ("a dead host does not bill you", the 2026-08-01 ruling); a 429
+   does not, because a 429 is a statement about *our* request rate, and reading
+   it as liveness would mean the harder we probe a host, the more live its
+   agents appear. Precedence for a multi-endpoint agent is pass > fail >
+   refused > error.
+4. **Transitions into or out of `refused` are excluded from
+   `stopped_resolving` and `newly_resolving`,** by rule, in
+   `crates/sweeper/src/delta.rs`. They remain in `flips` — deleting the
+   evidence would make the rate limit invisible, which is the same failure in
+   the other direction.
+5. **Politeness, so this recurs less:** a host now sees at most **one request
+   started every 250ms** (on top of the existing cap of 2 in flight), and
+   `Retry-After` on a 429/503 pushes that host's next request forward, capped
+   at 120 seconds. See `METHODOLOGY.md` §6.
+6. **Schema version 8**, checker `0.7.0`. Rung 2's evidence gains
+   `retry_after`; rung 6's gains `endpoints_refused`.
+
+**Why.** The 2026-08 census delta reported that **19,983 BSC agents had stopped
+resolving**. That is the number this project exists to produce — registrations
+are published by everyone, decay by nobody — and it was wrong.
+
+19,962 of those 19,983 were HTTP **429**. 19,658 of them came from a single
+host, `metadata.evoevo.ai`. Excluding 429 and 503, BSC lost **10** agents.
+
+We generated those 429s. The prober capped concurrency per host at 2 but never
+capped the *rate*, so a host answering in 20ms was being asked about 100 times a
+second — and the four hosts that carry 59.2% of every declared endpoint in the
+census are exactly the hosts asked most. The checker then booked each 429 as
+rung 2's `fail`, the agent's word, so an infrastructure problem of ours became
+19,983 separate accusations; and no error rate could see it, because `error` is
+the word for our failures.
+
+The same defect had a second face. `robots_unavailable: connection failed
+fetching robots.txt` was `error`, and on the 2026-08 mainnet run **6,133 agents
+sat behind one host** (`agents.exquisite.land`) whose `/robots.txt` refused
+connections. That single host took mainnet's published error rate from ~10% to
+**22.1%** — a number about that host's robots endpoint, presented as a number
+about this checker.
+
+Three words were available for both cases and all three were wrong. `fail`
+blames the agent for something the agent did not do. `error` claims a
+malfunction that did not happen. `pass` claims a document we never received.
+`refused` is the fourth thing that actually occurred, and it is the same claim
+in both cases: **the origin declined us, and we learned nothing about the
+document.**
+
+**The robots.txt policy, chosen explicitly rather than inherited.** Three
+options existed for an unavailable `robots.txt`: treat it as permission granted
+(the common crawler convention, and the one that would make our error rate look
+best), treat it as denied (RFC 9309 §2.3.1.4's conservative reading), or make it
+its own non-error observation. We took the conservative behaviour and the
+honest record: **we still do not fetch**, and the outcome is now `refused`. A
+robots.txt is the only channel a site operator has for saying no without knowing
+we exist, and reading its failure as a yes takes the benefit of the doubt in our
+own favour, on hosts that are by definition having trouble serving requests. The
+cost — those agents' documents go unread — is now stated per row instead of
+being absorbed into a number about ourselves.
+
+**What did NOT change.** No rung's `pass` rule. No agent gained or lost a
+`pass`, in either direction. Skip-propagation is untouched: `refused` is not
+`pass`, so it stops a dependent rung exactly as the `fail` or `error` it
+replaced did. 403, 500, 502 and 504 are still `fail` — a 403 refuses without
+offering a way in, and a broken upstream means the document really is not being
+served. The 2026-07-28 ruling that HTTP 402 must not be read as "alive" at rung
+2 stands; a 402 still does not pass, it is simply now described as the challenge
+it is, and its evidence keeps the distinct reason `payment_required`.
+
+**Measured effect — rung 2, by re-judging the four archived 2026-07-29 runs.**
+No chain was read and no request was sent: every row was re-judged from the
+`http_status` and `reason` it already carried.
+
+| run (2026-07-29) | pass | fail | error | refused | of which from `fail` | from `error` |
+|---|---|---|---|---|---|---|
+| bsc `f78c7891` (244,208) | 180,825 → 180,825 | 62,515 → 13,873 | 868 → 131 | 0 → 49,379 | 48,642 | 737 |
+| base `cfbfcc01` (60,097) | 31,707 → 31,707 | 25,364 → 22,836 | 3,026 → 695 | 0 → 4,859 | 2,528 | 2,331 |
+| mainnet `18a25593` (40,806) | 17,622 → 17,622 | 19,012 → 18,076 | 4,172 → 197 | 0 → 4,911 | 936 | 3,975 |
+| celo `7833fc49` (9,747) | 9,494 → 9,494 | 143 → 141 | 110 → 61 | 0 → 51 | 2 | 49 |
+
+Rung 2's **error rate** falls accordingly: mainnet 10.22% → 0.48%, base 5.04% →
+1.16%, celo 1.13% → 0.63%, bsc 0.36% → 0.05%. The **fail** rate falls furthest
+on BSC, 25.6% → 5.7%, which is the 48,635 agents that were only ever rate
+limited. What is left in `error` is what the word always claimed: our timeouts,
+our TLS failures, our IPFS gateways.
+
+The largest single contributors, so the concentration is on the record rather
+than implied: `metadata.evoevo.ai` (47,863 rung-2 429s on BSC),
+`gateway.pinata.cloud` (2,413 on Base), `api.normies.art` (934 on mainnet),
+`agents.exquisite.land` (3,859 robots-unavailable on mainnet — 6,133 by the
+2026-08 run), `wild-west-bots.vercel.app` (1,582 robots-disallowed on Base).
+
+**Measured effect — rung 6, same four runs.** Re-judged by re-running the
+`liveness` pass, which reads the archived `endpoint_probes` rows and sends no
+new requests:
+
+| run | fail | error | refused |
+|---|---|---|---|
+| bsc | 4,233 → 4,233 | 33 → 1 | 0 → 32 |
+| base | 2,385 → 2,348 | 332 → 3 | 0 → 366 |
+| mainnet | 268 → 137 | 144 → 9 | 0 → 266 |
+| celo | 17 → 17 | 113 → 1 | 0 → 112 |
+
+`pass`, `skipped` and `unprobeable` are unchanged on every chain, at every rung.
+
+**Measured effect — the delta that started this.** The 2026-08 BSC delta
+reported `stopped_resolving: 19,983`. With both runs re-judged, the 19,962
+rate-limited agents are `refused` on the newer side and excluded by rule, and
+the same delta reports **10** — the agents that actually stopped answering. The
+19,962 stay visible in `flips` as `pass → refused`, which is where the finding
+came from in the first place.
+
+**The 2026-08 runs' own before/after table is produced by the backfill, not
+typed here.** Those archives are not local to this change, and a count written
+into this file from memory is the exact failure mode it exists to prevent. Run
+
+```
+DATABASE_URL=… cargo run -p sweeper --bin backfill-refused          # dry run
+DATABASE_URL=… cargo run -p sweeper --bin backfill-refused -- --apply
+DATABASE_URL=… cargo run -p sweeper --bin liveness <chain> <run-id> # per run
+```
+
+The first prints the table above for every run in the database, 2026-08's
+included, without writing anything.
+
+**Published archives are not reissued.** `data.agentcount.ai` holds immutable
+bytes, which is the whole point of publishing at a permanent URL. An archive
+stamped schema ≤ 7 carries the old words, and `DATA.md` gives the mechanical
+mapping to schema 8.
 
 ---
 

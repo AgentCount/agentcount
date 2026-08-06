@@ -18,21 +18,18 @@
 //!
 //! ## What is deliberately not counted as a change
 //!
-//! An agent present in one run and not the other is a population change, never
-//! a status transition. Folding arrivals into "changed status" would make the
-//! largest flip in every sweep be new registrations, which says nothing.
+//! Three things, all of them in `sweeper::delta` with the reasoning attached:
+//! an agent that is only in one of the two runs, a rung that has a row on only
+//! one side, and — since 2026-08-06 — any transition into or out of `refused`.
+//! That last one is the rule that keeps a rate limit of our own making from
+//! being published as 19,983 agents going dark; see that module's doc.
 //!
-//! A rung that is absent for an agent in one run and present in the other is
-//! also not a transition. That is how rung 6 shipping would otherwise appear:
-//! 27,956 agents "flipping" from nothing to a status, which is a fact about
-//! this project rather than about them. Both sides must have a row for the
-//! same rung before a flip is recorded.
-
-use std::collections::HashMap;
+//! This binary is the database half only. Every number it writes comes from
+//! [`sweeper::delta::compute`], which `backfill-refused` also calls, so a
+//! recomputed delta and a freshly computed one cannot disagree.
 
 use anyhow::{Context, Result};
-use serde_json::json;
-use sweeper::store;
+use sweeper::{delta, store};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -69,55 +66,7 @@ async fn main() -> Result<()> {
 
     let after = db.rung_statuses(new_run).await?;
     let before = db.rung_statuses(old_run).await?;
-
-    let agents_after: std::collections::HashSet<u64> = after.keys().map(|(a, _)| *a).collect();
-    let agents_before: std::collections::HashSet<u64> = before.keys().map(|(a, _)| *a).collect();
-
-    let newly_registered = agents_after.difference(&agents_before).count();
-    let disappeared = agents_before.difference(&agents_after).count();
-
-    // Per-rung transitions, counted only where BOTH runs have a row for that
-    // (agent, rung). See the module doc for why absence is never a flip.
-    let mut flips: HashMap<(i16, String, String), i64> = HashMap::new();
-    for ((agent, rung), new_status) in &after {
-        let Some(old_status) = before.get(&(*agent, *rung)) else {
-            continue;
-        };
-        if old_status == new_status {
-            continue;
-        }
-        *flips
-            .entry((*rung, old_status.clone(), new_status.clone()))
-            .or_insert(0) += 1;
-    }
-
-    // Rung 2 called out on its own, because it carries a published series.
-    // Derived from the same `flips` data rather than counted separately, so
-    // the headline number and the table underneath it cannot disagree.
-    let newly_resolving: i64 = flips
-        .iter()
-        .filter(|((rung, from, to), _)| *rung == 2 && from != "pass" && to == "pass")
-        .map(|(_, n)| *n)
-        .sum();
-    let stopped_resolving: i64 = flips
-        .iter()
-        .filter(|((rung, from, to), _)| *rung == 2 && from == "pass" && to != "pass")
-        .map(|(_, n)| *n)
-        .sum();
-
-    let mut flip_rows: Vec<_> = flips
-        .into_iter()
-        .map(|((rung, from, to), agents)| json!({"rung": rung, "from": from, "to": to, "agents": agents}))
-        .collect();
-    // Deterministic order, so two runs of this binary produce byte-identical
-    // JSON and a diff of the stored row means something changed in the data.
-    flip_rows.sort_by_key(|v| {
-        (
-            v["rung"].as_i64().unwrap_or(0),
-            v["from"].as_str().unwrap_or("").to_string(),
-            v["to"].as_str().unwrap_or("").to_string(),
-        )
-    });
+    let counts = delta::compute(&before, &after);
 
     // The confound. A delta is only a statement about the world if both runs
     // asked the same questions, and when the checker changed between them some
@@ -138,13 +87,13 @@ async fn main() -> Result<()> {
         run_id: new_run,
         previous_run_id: old_run,
         chain: &chain,
-        agents_before: agents_before.len() as i32,
-        agents_after: agents_after.len() as i32,
-        newly_registered: newly_registered as i32,
-        disappeared: disappeared as i32,
-        newly_resolving: newly_resolving as i32,
-        stopped_resolving: stopped_resolving as i32,
-        flips: &serde_json::Value::Array(flip_rows),
+        agents_before: counts.agents_before as i32,
+        agents_after: counts.agents_after as i32,
+        newly_registered: counts.newly_registered as i32,
+        disappeared: counts.disappeared as i32,
+        newly_resolving: counts.newly_resolving as i32,
+        stopped_resolving: counts.stopped_resolving as i32,
+        flips: &counts.flips_json(),
         checker_before: &checker_before,
         checker_after: &checker_after,
         schema_before,
@@ -152,15 +101,27 @@ async fn main() -> Result<()> {
     })
     .await?;
 
+    // The excluded transitions are logged rather than dropped in silence: a
+    // sweep where they are large is a sweep whose politeness settings want
+    // looking at, and that is invisible if the only thing printed is the
+    // (correctly) small churn number.
+    let declined: i64 = counts
+        .flips
+        .iter()
+        .filter(|f| f.rung == 2 && (f.to == delta::NOT_CHURN || f.from == delta::NOT_CHURN))
+        .map(|f| f.agents)
+        .sum();
     tracing::info!(
         "delta written: {} agents (was {}), +{} registered, -{} disappeared, \
-         +{} resolving, -{} STOPPED resolving",
-        agents_after.len(),
-        agents_before.len(),
-        newly_registered,
-        disappeared,
-        newly_resolving,
-        stopped_resolving,
+         +{} resolving, -{} STOPPED resolving \
+         ({declined} rung-2 transitions in or out of `{}` excluded from both)",
+        counts.agents_after,
+        counts.agents_before,
+        counts.newly_registered,
+        counts.disappeared,
+        counts.newly_resolving,
+        counts.stopped_resolving,
+        delta::NOT_CHURN,
     );
     Ok(())
 }

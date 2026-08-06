@@ -3,13 +3,13 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-/// The six outcomes a rung can have, and nothing else.
+/// The seven outcomes a rung can have, and nothing else.
 ///
 /// There is deliberately no `Unknown` and no `Partial`: a rung either answered,
-/// answered negatively, was not reached, broke on our side, or — the two
-/// rung-specific additions below — found nothing to judge because the agent
-/// made no claim for it to check. Anything fuzzier would be a judgment in
-/// disguise.
+/// answered negatively, was not reached, broke on our side, was declined by the
+/// origin, or — the two rung-specific additions below — found nothing to judge
+/// because the agent made no claim for it to check. Anything fuzzier would be a
+/// judgment in disguise.
 ///
 /// A seventh case exists and is deliberately NOT a variant here: a rung that
 /// was never asked has no row at all. "We did not ask" and "we asked and got
@@ -24,6 +24,43 @@ pub enum CheckStatus {
     Skipped,
     /// OUR failure — a timeout in our prober, an RPC error. Never the agent's.
     Error,
+    /// **Rungs 2 and 6**, added 2026-08-06. The origin is demonstrably there
+    /// and declined to serve us. Neither the agent's failure nor ours.
+    ///
+    /// Three shapes of decline, one claim:
+    ///
+    /// * **"Come back later"** — HTTP 429 and 503, the two statuses RFC 9110
+    ///   §10.2.3 / RFC 6585 §4 define as carrying `Retry-After`. Both name a
+    ///   condition about *this request at this moment*, not about the document.
+    /// * **A challenge** — HTTP 401, 402 and 407, the three statuses that
+    ///   answer with a way in rather than an absence (`WWW-Authenticate`, a
+    ///   payment challenge, `Proxy-Authenticate`). Something is there and it
+    ///   wants credentials or money first.
+    /// * **We were not given permission to ask** — `robots.txt` disallowed us,
+    ///   or we could not establish permission from it at all. We honour that by
+    ///   not sending the request, which means we never learned anything about
+    ///   the document — see `rung2_resolvable`'s module doc for the full ruling
+    ///   and `METHODOLOGY.md` §6.
+    ///
+    /// **Why it is not `fail`.** A 429 we caused by our own request rate,
+    /// recorded as `fail`, publishes an infrastructure problem of ours as the
+    /// agent's failure — which is exactly what happened: the 2026-08 census
+    /// booked 19,983 BSC agents as having "stopped resolving", of which 19,962
+    /// were 429s and 19,658 came from one host. Nothing about those documents
+    /// changed.
+    ///
+    /// **Why it is not `error`.** `Error` means this checker malfunctioned, and
+    /// none of these did. A robots.txt we honoured is a decision we made and
+    /// can name; a 429 is an answer we received. Calling either a malfunction
+    /// makes the error rate a measure of one host's mood — mainnet's read
+    /// 22.1% when 6,133 agents on a single host had an unreadable robots.txt.
+    ///
+    /// It is not `pass` either, at any rung: we did not get the document, and
+    /// (rung 6 excepted, see below) we did not establish that anything is live.
+    /// Everything above it on the ladder is `skipped`, exactly as a `fail`
+    /// would have skipped it — no agent's downstream rung moves because of this
+    /// status.
+    Refused,
     /// **Rung 5 (`bound`) only**, added by the rung-5 status fix (2026-07-29).
     /// Since P0 FIX 3 made `registrations` a SHOULD rather than a MUST, a
     /// document can pass rung 4 while carrying no `registrations` array at
@@ -69,6 +106,7 @@ impl CheckStatus {
             CheckStatus::Fail => "fail",
             CheckStatus::Skipped => "skipped",
             CheckStatus::Error => "error",
+            CheckStatus::Refused => "refused",
             CheckStatus::Unclaimed => "unclaimed",
             CheckStatus::Unprobeable => "unprobeable",
         }

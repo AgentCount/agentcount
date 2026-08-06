@@ -8,8 +8,19 @@
 //! * 4xx (including 404) → no robots.txt means no restriction; proceed.
 //! * 5xx, timeout, or connection failure → we could not establish
 //!   permission, so we act as if disallowed for this run — but tagged
-//!   [`RobotsDecision::Unavailable`] so the caller records it as OUR error,
-//!   never the agent's failure.
+//!   [`RobotsDecision::Unavailable`], with its reason, so the caller can say
+//!   which of the two it was.
+//!
+//! **What the caller does with those two (2026-08-06).** Both
+//! [`RobotsDecision::Disallowed`] and [`RobotsDecision::Unavailable`] become
+//! `crates/checks`' `refused` — the origin declined, through the one channel
+//! the web has for declining. They used to become `error`, which said this
+//! checker malfunctioned; it did not, and on the 2026-08 mainnet run that made
+//! the published error rate 22.1% because 6,133 agents sat behind one host
+//! whose `/robots.txt` refused connections. **Nothing in this module changed**:
+//! the conservative reading of an unavailable robots.txt (RFC 9309 §2.3.1.4 —
+//! assume disallow) is the same reading it always had, and we still send no
+//! request we have no permission for. Only the word the caller records changed.
 //!
 //! **Redirects.** A redirect on `/robots.txt` is completely ordinary —
 //! `http`→`https`, `www`→apex — and RFC 9309 §2.3.1.2 requires following at

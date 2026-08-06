@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "checks"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3538,6 +3538,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
+ "chrono",
  "flate2",
  "futures",
  "reqwest 0.12.28",

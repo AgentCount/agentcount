@@ -874,6 +874,7 @@ async fn sweep() -> Result<()> {
                 http_status: outcome.http_status,
                 elapsed_ms: outcome.elapsed_ms,
                 error: outcome.error.clone(),
+                retry_after_secs: outcome.retry_after_secs,
                 inline_bytes,
                 via_gateway: outcome.via_gateway.clone(),
                 inline_decode_variant: outcome

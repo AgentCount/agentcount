@@ -44,9 +44,32 @@
 //! service endpoint; a 402 proves it is. Same status code, two questions, two
 //! correct answers. Anyone reconciling the two counts needs that sentence.
 //!
-//! Every other status is `fail`, with the code recorded verbatim in evidence
-//! rather than bucketed — a reader wanting to separate 404s from 503s can, and
-//! this rung does not decide for them which of those is the agent's fault.
+//! Every other status is `fail` — except the five that mean the origin
+//! declined this request, which are `refused` (see below). The code is recorded
+//! verbatim in evidence rather than bucketed either way, so a reader wanting to
+//! separate 404s from 503s can.
+//!
+//! ### 1a. And `refused` means the origin declined us (2026-08-06)
+//!
+//! 429, 503, 401, 402/407 and a `robots.txt` we were not given permission by
+//! are not the agent's failure. The same predicate rung 2 uses decides it here
+//! ([`crate::refusal`]), because the two rungs probe the same servers and must
+//! never disagree about the same response.
+//!
+//! **402 stays `pass` here**, and that is not an inconsistency with the
+//! paragraph above: rung 6 asks whether anything is alive, a payment challenge
+//! proves it is, and that ruling is older than this status. The four others are
+//! `refused` rather than `pass` for the reason a 402 is not: a 429 is a
+//! statement about our request rate, so counting it as liveness would let our
+//! own traffic manufacture the finding, and counting it as `fail` would blame
+//! the agent for our traffic. Neither. The origin declined; we do not know if
+//! it is live.
+//!
+//! When an agent declares several endpoints the precedence is **pass > fail >
+//! refused > error**: one live endpoint answers the rung's question outright; a
+//! definite non-live answer is the agent's fact and stands on its own; a
+//! decline is only the verdict when nothing else was learned; and `error` is
+//! last because it is the only one that says nothing about the world.
 //!
 //! ## 2. Only `http(s)` is probeable, and having nothing probeable is its own status
 //!
@@ -86,14 +109,15 @@
 //! along with the counts, so a reader who wants "all endpoints live" can
 //! compute it without this rung having to pick that definition for them.
 //!
-//! When nothing is live, the tie-break between `fail` and `error` follows rung
-//! 2's line exactly, so the two rungs can never disagree about who is at
-//! fault: a definite non-live ANSWER from the server (any status that is not
-//! 2xx or 402), or an `ssrf_blocked` rejection — which means no third party
-//! could have reached it either — is the agent's fact, so `fail`. A timeout, a
-//! TLS failure, a robots.txt we could not read or that disallowed us: those
-//! are OUR limitations, so `error`, never `fail`. Getting this backwards
-//! publishes a false accusation about a real project.
+//! When nothing is live, the tie-break follows rung 2's line exactly, so the
+//! two rungs can never disagree about who is at fault: a definite non-live
+//! ANSWER from the server (any status that is not 2xx, 402, or one of the four
+//! declines), or an `ssrf_blocked` rejection — which means no third party could
+//! have reached it either — is the agent's fact, so `fail`. A 429, a 503, an
+//! auth challenge, or a `robots.txt` that did not give us permission is the
+//! origin declining, so `refused`. A timeout, a TLS failure, a connection that
+//! never opened: those are OUR limitations, so `error`, never `fail`. Getting
+//! this backwards publishes a false accusation about a real project.
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
@@ -267,6 +291,9 @@ pub fn live(input: &LiveInput, now: DateTime<Utc>) -> Option<CheckResult> {
     let mut payment_gated = 0usize;
     // "The server answered, and the answer was not live" — the agent's fact.
     let mut answered_not_live = 0usize;
+    // "Something is there and it declined this request" — neither party's
+    // failure, and never counted as liveness. See ruling 1a.
+    let mut refused_count = 0usize;
     // "We could not complete the request" — ours.
     let mut our_failures = 0usize;
 
@@ -318,7 +345,12 @@ pub fn live(input: &LiveInput, now: DateTime<Utc>) -> Option<CheckResult> {
         // rule, with 2xx widened to include 402 — see the module doc.
         let outcome = if let Some(err) = &obs.error {
             row.insert("error".into(), json!(err));
-            if err.starts_with("ssrf_blocked: ") {
+            if crate::refusal::could_not_ask(err) {
+                // We were not given permission to send this request, so we
+                // sent none. Nothing was learned about the endpoint.
+                refused_count += 1;
+                "refused"
+            } else if err.starts_with("ssrf_blocked: ") {
                 // No third party could have reached this either, so it is a
                 // fact about what the agent published — not a limit of ours.
                 answered_not_live += 1;
@@ -332,10 +364,19 @@ pub fn live(input: &LiveInput, now: DateTime<Utc>) -> Option<CheckResult> {
                 live_count += 1;
                 "live"
             } else if code == 402 {
+                // Ruling 1: a dead host does not bill you. Checked before the
+                // decline predicate on purpose — 402 is in both sets, and this
+                // rung's older ruling wins here exactly as rung 2's wins there.
                 live_count += 1;
                 payment_gated += 1;
                 row.insert("payment_gated".into(), json!(true));
                 "live"
+            } else if crate::refusal::declined_us(code) {
+                // 429, 503, 401, 407. Something is there, and it declined this
+                // request rather than answering it — see ruling 1a for why
+                // that is neither liveness nor the agent's failure.
+                refused_count += 1;
+                "refused"
             } else {
                 answered_not_live += 1;
                 "not_live"
@@ -358,12 +399,17 @@ pub fn live(input: &LiveInput, now: DateTime<Utc>) -> Option<CheckResult> {
         return None;
     }
 
+    // pass > fail > refused > error. See the module doc's aggregation section
+    // for why a decline ranks below a definite answer and above our own
+    // failure.
     let status = if probeable == 0 {
         CheckStatus::Unprobeable
     } else if live_count > 0 {
         CheckStatus::Pass
     } else if answered_not_live > 0 {
         CheckStatus::Fail
+    } else if refused_count > 0 {
+        CheckStatus::Refused
     } else {
         // Everything we tried failed on our side.
         CheckStatus::Error
@@ -379,6 +425,7 @@ pub fn live(input: &LiveInput, now: DateTime<Utc>) -> Option<CheckResult> {
         "endpoints_answered_not_live".into(),
         json!(answered_not_live),
     );
+    evidence.insert("endpoints_refused".into(), json!(refused_count));
     evidence.insert("endpoints_our_error".into(), json!(our_failures));
     // A `pass` from one endpoint must never hide that others went unasked.
     if input.host_budget_reached {
@@ -527,7 +574,7 @@ mod tests {
 
     #[test]
     fn every_other_status_fails_with_the_code_recorded_verbatim() {
-        for code in [301u16, 400, 401, 403, 404, 429, 500, 503] {
+        for code in [301u16, 400, 403, 404, 500, 502, 504] {
             let r = live(&one(ep("https://example.com/", ok(code))), t()).unwrap();
             assert_eq!(r.status, CheckStatus::Fail, "{code} should not be live");
             assert_eq!(
@@ -535,6 +582,89 @@ mod tests {
                 "the code itself must survive into evidence, not a bucket"
             );
             assert_eq!(r.evidence["endpoints"][0]["outcome"], "not_live");
+        }
+    }
+
+    // ── ruling 1a: the origin declined us (2026-08-06) ───────────────────
+
+    #[test]
+    fn a_decline_is_refused_here_exactly_as_in_rung_2() {
+        // 402 is deliberately absent: it is `live` at this rung (ruling 1) and
+        // `refused` at rung 2, and both are correct — see the module doc.
+        for code in [401u16, 407, 429, 503] {
+            let r = live(&one(ep("https://example.com/", ok(code))), t()).unwrap();
+            assert_eq!(r.status, CheckStatus::Refused, "{code} should be Refused");
+            assert_ne!(r.status, CheckStatus::Fail);
+            assert_ne!(r.status, CheckStatus::Pass);
+            assert_eq!(r.evidence["endpoints"][0]["outcome"], "refused");
+            assert_eq!(r.evidence["endpoints"][0]["http_status"], code);
+            assert_eq!(r.evidence["endpoints_refused"], 1);
+            assert_eq!(r.evidence["endpoints_live"], 0);
+            assert_eq!(r.evidence["endpoints_answered_not_live"], 0);
+        }
+    }
+
+    #[test]
+    fn a_429_is_never_counted_as_liveness_even_though_something_answered() {
+        // The temptation ruling 1 creates: "a dead host does not rate-limit
+        // you" is true, and still not usable — a 429 is a statement about OUR
+        // request rate, so passing on it would let our own traffic manufacture
+        // the finding.
+        let r = live(&one(ep("https://example.com/", ok(429))), t()).unwrap();
+        assert_eq!(r.status, CheckStatus::Refused);
+        assert_eq!(r.evidence["endpoints_live"], 0);
+        assert_eq!(r.evidence["endpoints_payment_gated"], 0);
+    }
+
+    #[test]
+    fn a_robots_outcome_is_refused_not_our_error() {
+        for reason in [
+            "robots_disallowed",
+            "robots_unavailable: robots.txt returned HTTP 503",
+            "robots_unavailable: connection failed fetching robots.txt: os error 54",
+        ] {
+            let r = live(&one(ep("https://example.com/", err(reason))), t()).unwrap();
+            assert_eq!(r.status, CheckStatus::Refused, "{reason} should be Refused");
+            assert_eq!(r.evidence["endpoints_our_error"], 0);
+            assert_eq!(r.evidence["endpoints_refused"], 1);
+        }
+    }
+
+    #[test]
+    fn precedence_is_pass_then_fail_then_refused_then_error() {
+        // Four endpoints, one of each kind, added one at a time — the verdict
+        // must only ever move up the order, never sideways.
+        let live_ep = |i, obs| ServiceEndpoint {
+            index: i,
+            name: None,
+            declared: Some(format!("https://e{i}.example/")),
+            probed_url: Some(format!("https://e{i}.example/")),
+            observed: obs,
+        };
+        let cases: [(Vec<Option<EndpointObservation>>, CheckStatus); 4] = [
+            (vec![err("timeout")], CheckStatus::Error),
+            (vec![err("timeout"), ok(429)], CheckStatus::Refused),
+            (vec![err("timeout"), ok(429), ok(404)], CheckStatus::Fail),
+            (
+                vec![err("timeout"), ok(429), ok(404), ok(200)],
+                CheckStatus::Pass,
+            ),
+        ];
+        for (observations, want) in cases {
+            let endpoints = observations
+                .into_iter()
+                .enumerate()
+                .map(|(i, o)| live_ep(i, o))
+                .collect();
+            let r = live(
+                &LiveInput {
+                    endpoints,
+                    host_budget_reached: false,
+                },
+                t(),
+            )
+            .unwrap();
+            assert_eq!(r.status, want);
         }
     }
 
@@ -550,13 +680,15 @@ mod tests {
     // ── our failures are never the agent's fail ──────────────────────────
 
     #[test]
-    fn a_timeout_or_tls_or_robots_failure_is_our_error_never_a_fail() {
+    fn a_timeout_or_tls_failure_is_our_error_never_a_fail() {
+        // The robots cases used to be in this list and are `refused` since
+        // 2026-08-06 — see `a_robots_outcome_is_refused_not_our_error`.
         for reason in [
             "timeout",
             "tls",
             "dns",
-            "robots_disallowed",
-            "robots_unavailable: robots.txt returned HTTP 503",
+            "connection_failed: error trying to connect",
+            "too_many_redirects",
         ] {
             let r = live(&one(ep("https://example.com/", err(reason))), t()).unwrap();
             assert_eq!(r.status, CheckStatus::Error, "{reason} should be Error");

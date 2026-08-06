@@ -21,6 +21,27 @@
 //! global cap alone would happily put all 8 of its permits on one small
 //! server at once.
 //!
+//! **Rate, not just concurrency (2026-08-06).** A concurrency cap bounds how
+//! many of our requests a host handles at once; it does not bound how many it
+//! handles per second. Two permits against a host answering in 20ms is 100
+//! requests a second, indefinitely, and that is how the 2026-08 census
+//! collected 19,658 HTTP 429s from `metadata.evoevo.ai` alone — then published
+//! them as agents that had stopped resolving. So each host also has a
+//! **cadence**: at most one request STARTS per [`DEFAULT_HOST_DELAY`]
+//! (overridable via `PROBE_HOST_DELAY_MS`), enforced by a per-host next-start
+//! instant that every task claims a slot in before it dials. Four hosts carry
+//! 59.2% of every declared endpoint in the census, so this is the limit that
+//! decides what those four experience.
+//!
+//! **`Retry-After` is honoured** on the two statuses it is defined for (429 and
+//! 503). The value moves that host's next-start instant forward, so the rest of
+//! the sweep backs off the host that asked — it does not retry this request
+//! (the sweep is one fetch per agent per run, and a retry would double the
+//! traffic of the exact host that just asked us to stop). A backoff longer than
+//! [`MAX_HONOURED_RETRY_AFTER`] is clamped to it, because a host asking for an
+//! hour would otherwise stall the run's global concurrency behind one lane; the
+//! value the origin asked for is still recorded verbatim on the outcome.
+//!
 //! **Testing against a local mock.** wiremock binds `127.0.0.1`, which the
 //! netguard correctly refuses (loopback is never public). So the mechanics
 //! tests in this file (200/402/404/redirect/oversized/timeout/per-host-cap)
@@ -51,8 +72,34 @@ use crate::robots::{RobotsCache, RobotsDecision};
 /// so a later rung must report `error`, never judge the JSON invalid.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// Per-host concurrency cap. The requirement a global cap does not satisfy.
+/// Per-host concurrency cap: how many of our requests one host may be
+/// answering at the same moment. The requirement a global cap does not satisfy.
+///
+/// Note what this does NOT bound, and what [`DEFAULT_HOST_DELAY`] exists for: a
+/// host that answers quickly can be asked again immediately, so two permits are
+/// two requests at once but an unbounded number per second.
 pub const PER_HOST_CAP: usize = 2;
+
+/// Minimum interval between the START of two requests to the same host, absent
+/// `PROBE_HOST_DELAY_MS`. With [`PER_HOST_CAP`] above it, one host sees at most
+/// four requests a second from us and at most two in flight.
+///
+/// 250ms is the number that makes the census's own arithmetic tolerable at both
+/// ends. The largest host in the four-chain census is declared by 47,863 agents
+/// on BSC; at this cadence that host's share of a sweep takes ~3.3 hours, well
+/// inside the 11 hours that sweep already ran, while the 3,391 hosts under the
+/// rung-6 sampling budget (which are most of them, and small) see a handful of
+/// requests spaced further apart than any human browsing them.
+pub const DEFAULT_HOST_DELAY: Duration = Duration::from_millis(250);
+
+/// The longest `Retry-After` we will actually wait out on a host lane.
+///
+/// Honouring an arbitrary value is not an option: a host asking for an hour
+/// would hold one lane — and, through the global semaphore, a share of the
+/// whole sweep — for that hour. Clamping is stated rather than silent: the
+/// value the origin asked for is recorded on the outcome regardless, so a
+/// reader can see we were asked for more than we gave.
+pub const MAX_HONOURED_RETRY_AFTER: Duration = Duration::from_secs(120);
 
 /// Global concurrency cap, absent `PROBE_CONCURRENCY`.
 pub const DEFAULT_GLOBAL_CONCURRENCY: usize = 8;
@@ -82,6 +129,13 @@ pub struct FetchOutcome {
     /// from `request_url` only when a redirect was followed.
     pub final_url: Option<String>,
     pub http_status: Option<u16>,
+    /// The backoff the origin asked for, in seconds, when a 429 or a 503
+    /// carried a parseable `Retry-After`. Already applied to that host's lane
+    /// for the rest of the run — this is the record of what was asked, which is
+    /// not the same as what was waited (see [`MAX_HONOURED_RETRY_AFTER`]).
+    /// `None` means no header; `Some(0)` means the origin named a moment that
+    /// had already passed.
+    pub retry_after_secs: Option<u32>,
     pub content_type: Option<String>,
     /// Response headers, name → joined value. `Value::Null` when no HTTP
     /// response was received.
@@ -140,6 +194,7 @@ impl FetchOutcome {
             request_url: None,
             final_url: None,
             http_status: None,
+            retry_after_secs: None,
             content_type: None,
             headers: serde_json::Value::Null,
             body: None,
@@ -208,6 +263,28 @@ pub(crate) struct RawResponse {
     pub(crate) body: Vec<u8>,
     pub(crate) truncated: bool,
     pub(crate) location: Option<String>,
+    /// The `Retry-After` this response asked for, in seconds, when it was a
+    /// 429 or a 503 that carried a parseable one. Already applied to the host's
+    /// lane by the time this is returned — this copy is for the record.
+    pub(crate) retry_after_secs: Option<u32>,
+}
+
+/// One host's share of our politeness: how many of our requests it may be
+/// answering at once, and when the next one may start.
+///
+/// The two are separate limits on purpose (see the module doc): the semaphore
+/// bounds simultaneity, the instant bounds rate, and a host that answers in
+/// 20ms is only bounded by the second.
+struct HostLane {
+    permits: Semaphore,
+    /// Earliest instant at which a request to this host may be sent. Every
+    /// task claims its slot by reading this, taking `max(now, next_start)` for
+    /// itself and writing `+ delay` back — so the claims queue up without any
+    /// task having to hold a lock across a sleep.
+    ///
+    /// A `std::sync::Mutex` and not tokio's: it is never held across an await,
+    /// and the whole critical section is three instant comparisons.
+    next_start: Mutex<Instant>,
 }
 
 /// Why a request never produced a `RawResponse`.
@@ -225,8 +302,9 @@ pub struct Prober {
     /// use is the three-gateway fallback chain — see `fetch_ipfs_chain`.
     ipfs_gateways: Vec<String>,
     total_timeout: Duration,
+    host_delay: Duration,
     global: Arc<Semaphore>,
-    per_host: Mutex<HashMap<String, Arc<Semaphore>>>,
+    per_host: Mutex<HashMap<String, Arc<HostLane>>>,
     pub(crate) robots: RobotsCache,
 }
 
@@ -236,6 +314,22 @@ fn global_concurrency() -> usize {
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_GLOBAL_CONCURRENCY)
+}
+
+/// The per-host cadence, absent `PROBE_HOST_DELAY_MS`.
+///
+/// `0` is accepted and means "no cadence limit" — the pre-2026-08-06
+/// behaviour. It exists for the tests that measure the delay's own effect,
+/// which cannot afford to wait it out, and is a deliberate foot-gun for
+/// anything else: the census never sets it.
+fn host_delay() -> Duration {
+    match std::env::var("PROBE_HOST_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        Some(ms) => Duration::from_millis(ms),
+        None => DEFAULT_HOST_DELAY,
+    }
 }
 
 impl Prober {
@@ -253,6 +347,7 @@ impl Prober {
             ipfs_gateways,
             Duration::from_secs(5),
             Duration::from_secs(10),
+            host_delay(),
         )
     }
 
@@ -261,6 +356,7 @@ impl Prober {
         ipfs_gateways: &[String],
         connect_timeout: Duration,
         total_timeout: Duration,
+        host_delay: Duration,
     ) -> anyhow::Result<Self> {
         let user_agent = format!("{PRODUCT_TOKEN}/{PRODUCT_VERSION} (+{contact_url})");
         let client = reqwest::Client::builder()
@@ -274,6 +370,7 @@ impl Prober {
             client,
             ipfs_gateways: ipfs_gateways.to_vec(),
             total_timeout,
+            host_delay,
             global: Arc::new(Semaphore::new(global_concurrency())),
             per_host: Mutex::new(HashMap::new()),
             robots: RobotsCache::new(),
@@ -286,6 +383,11 @@ impl Prober {
     /// gateways are unused by every test that calls this (they exercise
     /// `fetch_http` directly, never `fetch`/`fetch_ipfs_chain`); tests that
     /// DO need to control gateways use [`Self::new_for_test_with_gateways`].
+    ///
+    /// The per-host cadence is ZERO here: every mechanics test would otherwise
+    /// pay [`DEFAULT_HOST_DELAY`] per request for no reason, and the cadence has
+    /// its own test ([`Self::new_for_test_with_host_delay`]) that sets a value
+    /// it can actually measure.
     #[cfg(test)]
     pub(crate) fn new_for_test(connect_timeout: Duration, total_timeout: Duration) -> Self {
         Self::build(
@@ -297,6 +399,22 @@ impl Prober {
             ],
             connect_timeout,
             total_timeout,
+            Duration::ZERO,
+        )
+        .expect("test client must build")
+    }
+
+    /// Test-only constructor for the per-host cadence and `Retry-After` tests,
+    /// which are the only ones that need a non-zero delay — and need it small
+    /// enough to measure without the test taking seconds.
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_host_delay(host_delay: Duration) -> Self {
+        Self::build(
+            "https://agentcount.ai/methodology; contact: probes@agentcount.ai",
+            &["https://ipfs.io/ipfs/".to_string()],
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            host_delay,
         )
         .expect("test client must build")
     }
@@ -315,14 +433,20 @@ impl Prober {
             &ipfs_gateways,
             connect_timeout,
             total_timeout,
+            Duration::ZERO,
         )
         .expect("test client must build")
     }
 
-    fn host_semaphore(&self, host: &str) -> Arc<Semaphore> {
+    fn host_lane(&self, host: &str) -> Arc<HostLane> {
         let mut map = self.per_host.lock().expect("per_host mutex poisoned");
         map.entry(host.to_string())
-            .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CAP)))
+            .or_insert_with(|| {
+                Arc::new(HostLane {
+                    permits: Semaphore::new(PER_HOST_CAP),
+                    next_start: Mutex::new(Instant::now()),
+                })
+            })
             .clone()
     }
 
@@ -522,6 +646,7 @@ impl Prober {
 
             out.final_url = Some(current.to_string());
             out.http_status = Some(resp.status);
+            out.retry_after_secs = resp.retry_after_secs;
             out.content_type = resp
                 .headers
                 .get(reqwest::header::CONTENT_TYPE)
@@ -565,16 +690,31 @@ impl Prober {
 
     /// Send one GET, gated by the per-host and global semaphores (held for
     /// the whole exchange, body read included — the connection is still
-    /// occupying the host's attention while we stream a capped body), and
-    /// bounded by `total_timeout` regardless of how `reqwest` internally
-    /// scopes its own timeout.
+    /// occupying the host's attention while we stream a capped body) and by
+    /// the host's cadence, and bounded by `total_timeout` regardless of how
+    /// `reqwest` internally scopes its own timeout.
+    ///
+    /// Order matters: the host permit, then the host's next-start slot, then
+    /// the global permit. Claiming the cadence slot before the global permit
+    /// would hold a global permit while sleeping, which would let one
+    /// rate-limited host throttle the whole sweep instead of only itself.
     pub(crate) async fn guarded_send(&self, url: &url::Url) -> Result<RawResponse, SendError> {
         let host = url.host_str().unwrap_or_default().to_string();
-        let _host_permit = self
-            .host_semaphore(&host)
-            .acquire_owned()
+        let lane = self.host_lane(&host);
+        let _host_permit = lane
+            .permits
+            .acquire()
             .await
             .expect("semaphore never closes");
+
+        // Claim this request's place in the host's cadence, then wait for it.
+        // The lock is released before the sleep — every waiting task takes a
+        // distinct, already-reserved slot rather than racing for the same one.
+        let wait = lane.claim_next_start(self.host_delay);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+
         let _global_permit = self
             .global
             .clone()
@@ -596,6 +736,17 @@ impl Prober {
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
+            // Only 429 and 503 define this header's meaning; reading it off
+            // anything else would be inventing a request the origin did not
+            // make. See `parse_retry_after`.
+            let retry_after_secs = if matches!(status, 429 | 503) {
+                headers
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| parse_retry_after(v, chrono::Utc::now()))
+            } else {
+                None
+            };
             let (body, truncated) = read_body_capped(resp)
                 .await
                 .map_err(|e| SendError::Connection(e.to_string()))?;
@@ -605,14 +756,70 @@ impl Prober {
                 body,
                 truncated,
                 location,
+                retry_after_secs,
             })
         };
 
-        match tokio::time::timeout(self.total_timeout, attempt).await {
+        let result = match tokio::time::timeout(self.total_timeout, attempt).await {
             Ok(result) => result,
             Err(_) => Err(SendError::Timeout),
+        };
+
+        // Honour the backoff before returning, so it is in force for every
+        // request still queued behind this one on the same host — including
+        // the ones already waiting on the semaphore above.
+        if let Ok(resp) = &result
+            && let Some(secs) = resp.retry_after_secs
+        {
+            lane.back_off(Duration::from_secs(u64::from(secs)).min(MAX_HONOURED_RETRY_AFTER));
+        }
+        result
+    }
+}
+
+impl HostLane {
+    /// Reserve the next moment a request may start on this host, and return
+    /// how long the caller must wait for it.
+    ///
+    /// `delay` of zero means no cadence: the slot is always now.
+    fn claim_next_start(&self, delay: Duration) -> Duration {
+        let now = Instant::now();
+        let mut next = self.next_start.lock().expect("host lane mutex poisoned");
+        let start_at = (*next).max(now);
+        *next = start_at + delay;
+        start_at.saturating_duration_since(now)
+    }
+
+    /// Push this host's next start at least `backoff` into the future.
+    ///
+    /// `max`, not `=`: a longer wait already claimed by the cadence (or by an
+    /// earlier, larger `Retry-After`) must not be shortened by this one.
+    fn back_off(&self, backoff: Duration) {
+        let until = Instant::now() + backoff;
+        let mut next = self.next_start.lock().expect("host lane mutex poisoned");
+        if until > *next {
+            *next = until;
         }
     }
+}
+
+/// Parse a `Retry-After` value into whole seconds from `now`.
+///
+/// RFC 9110 §10.2.3 allows either delta-seconds or an HTTP-date, and real rate
+/// limiters send both. A date in the past is `Some(0)` — the origin named a
+/// moment that has already arrived, which is a different fact from having sent
+/// no header at all, and the caller records the difference.
+///
+/// Anything unparseable is `None`: guessing at a malformed backoff would be
+/// worse than falling back to the ordinary cadence.
+fn parse_retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u32> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u32>() {
+        return Some(secs);
+    }
+    let when = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let secs = (when.with_timezone(&chrono::Utc) - now).num_seconds();
+    Some(secs.clamp(0, i64::from(u32::MAX)) as u32)
 }
 
 fn elapsed_ms(start: Instant) -> u32 {
@@ -929,6 +1136,220 @@ mod tests {
             "observed {} requests concurrently in flight against one host; cap is {PER_HOST_CAP}",
             max_seen.load(Ordering::SeqCst)
         );
+    }
+
+    // --- politeness: rate, not just concurrency (2026-08-06) --------------
+
+    /// The cap the test above measures bounds SIMULTANEITY. This one measures
+    /// the thing that actually generated 19,658 HTTP 429s from one host: a
+    /// fast-answering server can be asked again the instant we let go, so six
+    /// requests to one host must take at least five cadence intervals however
+    /// quickly it answers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn requests_to_one_host_are_spaced_out_however_fast_it_answers() {
+        let server = MockServer::start().await;
+        allow_robots(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/card.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let delay = Duration::from_millis(80);
+        let prober = Arc::new(Prober::new_for_test_with_host_delay(delay));
+        let url = target_url(&server, "/card.json");
+
+        let started = Instant::now();
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let prober = prober.clone();
+            let url = url.clone();
+            handles.push(tokio::spawn(async move {
+                prober.fetch_http(url, None, false).await
+            }));
+        }
+        for h in handles {
+            assert_eq!(h.await.unwrap().http_status, Some(200));
+        }
+        let elapsed = started.elapsed();
+
+        // Six document fetches plus the one robots.txt fetch share the lane,
+        // so there are at least six intervals between the first start and the
+        // last. Asserting five is the same claim with room for the scheduler.
+        assert!(
+            elapsed >= delay * 5,
+            "six requests to one host finished in {elapsed:?}, which is less \
+             than five {delay:?} intervals — the cadence is not being applied"
+        );
+    }
+
+    /// The cadence is per host. If it were global it would be a sweep-wide
+    /// rate limit — a different, far more expensive promise — and a busy host
+    /// would slow down every stranger it has nothing to do with.
+    ///
+    /// Exercised against the lane map directly rather than through two mock
+    /// servers, because `wiremock` binds every server on `127.0.0.1` and the
+    /// lane is keyed by HOST: two mock servers are two ports on one host, and
+    /// they correctly share a lane. That is also the production behaviour worth
+    /// stating — `example.com:8443` and `example.com` are one machine's
+    /// attention, and one lane.
+    #[test]
+    fn each_host_has_its_own_lane_and_a_busy_one_never_delays_another() {
+        let prober = fast_prober();
+        let delay = Duration::from_millis(200);
+
+        let busy = prober.host_lane("busy.example");
+        let quiet = prober.host_lane("quiet.example");
+        assert!(
+            !Arc::ptr_eq(&busy, &quiet),
+            "two hosts must not share one lane"
+        );
+
+        // Spend four of the busy host's slots: the fourth waits three
+        // intervals, and the cadence is measured from the claim, not the send.
+        let waits: Vec<Duration> = (0..4).map(|_| busy.claim_next_start(delay)).collect();
+        assert_eq!(waits[0], Duration::ZERO);
+        // Each claim reads the clock again, so the returned wait is a hair
+        // under the nominal interval — the slack is for that, not for slop.
+        assert!(
+            waits[3] + Duration::from_millis(5) >= delay * 3,
+            "the fourth claim waits {:?}, not three {delay:?} intervals",
+            waits[3]
+        );
+
+        // The quiet host is untouched by any of it.
+        assert_eq!(quiet.claim_next_start(delay), Duration::ZERO);
+
+        // And the same host asked for twice is the same lane, so a second
+        // fetch cannot escape the first one's cadence by re-looking it up.
+        assert!(Arc::ptr_eq(&busy, &prober.host_lane("busy.example")));
+    }
+
+    #[test]
+    fn a_backoff_never_shortens_a_wait_already_claimed() {
+        // `back_off` takes the later of the two instants. A one-second
+        // Retry-After arriving while the lane is already reserved five seconds
+        // out must not pull the lane forward — that would turn honouring a
+        // backoff into ignoring the cadence.
+        let prober = fast_prober();
+        let lane = prober.host_lane("h.example");
+        let claimed = lane.claim_next_start(Duration::from_secs(5));
+        assert_eq!(claimed, Duration::ZERO);
+        // The lane is now reserved 5s out.
+        lane.back_off(Duration::from_millis(1));
+        let next = lane.claim_next_start(Duration::ZERO);
+        assert!(
+            next >= Duration::from_secs(4),
+            "a shorter backoff pulled the lane forward to {next:?}"
+        );
+
+        // A longer one does move it.
+        lane.back_off(Duration::from_secs(30));
+        assert!(lane.claim_next_start(Duration::ZERO) >= Duration::from_secs(29));
+    }
+
+    #[tokio::test]
+    async fn a_429_with_retry_after_is_recorded_and_backs_the_host_off() {
+        let server = MockServer::start().await;
+        allow_robots(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/rate-limited"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .mount(&server)
+            .await;
+
+        // A cadence of zero, so the ONLY thing that can delay the second
+        // request is the Retry-After the first one received.
+        let prober = Prober::new_for_test_with_host_delay(Duration::ZERO);
+        let url = target_url(&server, "/rate-limited");
+
+        let first = prober.fetch_http(url.clone(), None, false).await;
+        assert_eq!(first.http_status, Some(429));
+        assert_eq!(
+            first.retry_after_secs,
+            Some(1),
+            "the backoff the origin asked for must be recorded, not just obeyed"
+        );
+        assert!(
+            first.error.is_none(),
+            "a 429 is an answer; `crates/checks` decides what it means"
+        );
+
+        let started = Instant::now();
+        let second = prober.fetch_http(url, None, false).await;
+        assert_eq!(second.http_status, Some(429));
+        assert!(
+            started.elapsed() >= Duration::from_millis(900),
+            "the second request went out after {:?}, ignoring the one-second \
+             backoff the host asked for",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_on_a_status_it_is_not_defined_for_is_ignored() {
+        // Reading it off a 404 would invent a request the origin never made.
+        let server = MockServer::start().await;
+        allow_robots(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/gone"))
+            .respond_with(ResponseTemplate::new(404).insert_header("Retry-After", "600"))
+            .mount(&server)
+            .await;
+
+        let prober = fast_prober();
+        let out = prober
+            .fetch_http(target_url(&server, "/gone"), None, false)
+            .await;
+        assert_eq!(out.http_status, Some(404));
+        assert!(out.retry_after_secs.is_none());
+    }
+
+    #[test]
+    fn retry_after_parses_both_forms_and_refuses_to_guess() {
+        let now = chrono::DateTime::parse_from_rfc2822("Thu, 06 Aug 2026 08:00:00 GMT")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        assert_eq!(parse_retry_after("120", now), Some(120));
+        assert_eq!(parse_retry_after("  30  ", now), Some(30));
+        assert_eq!(parse_retry_after("0", now), Some(0));
+
+        // The HTTP-date form, which Cloudflare and friends send.
+        assert_eq!(
+            parse_retry_after("Thu, 06 Aug 2026 08:02:00 GMT", now),
+            Some(120)
+        );
+        // A date already past is zero, not a negative wait and not "no header".
+        assert_eq!(
+            parse_retry_after("Thu, 06 Aug 2026 07:59:00 GMT", now),
+            Some(0)
+        );
+
+        for junk in ["", "soon", "-5", "1.5", "next tuesday"] {
+            assert_eq!(parse_retry_after(junk, now), None, "{junk:?}");
+        }
+    }
+
+    #[test]
+    fn an_absurd_retry_after_is_clamped_to_what_we_will_actually_wait() {
+        // The clamp is what keeps one host from holding a share of the sweep,
+        // and it must not silently become "ignore the header".
+        let asked = Duration::from_secs(3600);
+        assert_eq!(
+            asked.min(MAX_HONOURED_RETRY_AFTER),
+            MAX_HONOURED_RETRY_AFTER
+        );
+        assert!(MAX_HONOURED_RETRY_AFTER > DEFAULT_HOST_DELAY);
+    }
+
+    #[test]
+    fn the_published_politeness_numbers_are_what_this_module_enforces() {
+        // METHODOLOGY.md §6 states these; a test is the only thing that keeps
+        // the document and the code from drifting apart.
+        assert_eq!(PER_HOST_CAP, 2);
+        assert_eq!(DEFAULT_HOST_DELAY, Duration::from_millis(250));
+        assert_eq!(MAX_HONOURED_RETRY_AFTER, Duration::from_secs(120));
     }
 
     #[test]

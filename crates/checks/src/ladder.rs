@@ -163,6 +163,33 @@ mod tests {
         assert_eq!(out[2].status, CheckStatus::Skipped);
     }
 
+    /// `refused` (2026-08-06) is not `pass`, so it must stop the document
+    /// track exactly as the `fail` it replaced did — no agent's downstream
+    /// rung moves because a 429 changed word. The evidence names the real
+    /// stopper, so a reader three rungs up sees `refused`, not a chain of
+    /// skips pointing at each other.
+    #[test]
+    fn a_refused_rung_2_skips_the_document_track_exactly_as_a_fail_would() {
+        let out = run_ladder(vec![
+            res(1, "registered", CheckStatus::Pass),
+            res(2, "resolvable", CheckStatus::Refused),
+            res(3, "parseable", CheckStatus::Pass),
+            res(4, "conformant", CheckStatus::Pass),
+            res(5, "bound", CheckStatus::Pass),
+            res(7, "attested", CheckStatus::Pass),
+        ]);
+        assert_eq!(out[1].status, CheckStatus::Refused);
+        for rung in [3, 4, 5] {
+            let r = out.iter().find(|r| r.rung == rung).unwrap();
+            assert_eq!(r.status, CheckStatus::Skipped, "rung {rung}");
+            assert_eq!(r.evidence["skipped_because_rung"], 2);
+            assert_eq!(r.evidence["skipped_because_status"], "refused");
+        }
+        // And the reputation track is untouched, as it is for any rung-2 word.
+        let rung7 = out.iter().find(|r| r.rung == 7).unwrap();
+        assert_eq!(rung7.status, CheckStatus::Pass);
+    }
+
     #[test]
     fn a_skipped_rung_records_which_rung_stopped_it() {
         let out = run_ladder(vec![

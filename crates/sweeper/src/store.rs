@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Postgres, Transaction};
@@ -1090,6 +1091,103 @@ impl Db {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Re-judging an existing run — the `backfill-refused` binary's half.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every method here writes to rows a run already published, which nothing else
+// in this file is allowed to do. They exist for one reason and are worth
+// keeping expensive to reach: a status whose DEFINITION changed leaves every
+// earlier run saying something the vocabulary no longer means, and a series
+// where 2026-07 says `fail` and 2026-08 says `refused` for the same 429 is not
+// a series. See `bin/backfill-refused.rs` for the whole argument.
+
+impl Db {
+    /// Every run that has results, oldest first.
+    pub async fn runs_with_results(&self) -> Result<Vec<(Uuid, String)>> {
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT r.run_id, r.chain FROM runs r \
+             WHERE EXISTS (SELECT 1 FROM check_results c WHERE c.run_id = r.run_id) \
+             ORDER BY r.started_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing runs with results")?;
+        Ok(rows)
+    }
+
+    /// One rung's status breakdown for one run — the before/after picture a
+    /// reclassification has to report, read the same way `/api/runs/{id}/rates`
+    /// reads it.
+    pub async fn rung_status_counts(&self, run_id: Uuid, rung: i16) -> Result<Vec<(String, i64)>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT status, count(*) FROM check_results \
+             WHERE run_id = $1 AND rung = $2 GROUP BY status ORDER BY status",
+        )
+        .bind(run_id)
+        .bind(rung)
+        .fetch_all(&self.pool)
+        .await
+        .context("counting rung statuses")?;
+        Ok(rows)
+    }
+
+    /// Every rung-2 row of a run that could possibly move under the `refused`
+    /// rules, with its evidence.
+    ///
+    /// Deliberately fetched and judged in Rust rather than matched in SQL: the
+    /// predicate is `checks::refusal`, and a WHERE clause listing the status
+    /// codes would be a second copy of it that no test compares against the
+    /// first. `pass`, `skipped` and existing `refused` rows cannot move and are
+    /// not read.
+    pub async fn rung2_candidates(&self, run_id: Uuid) -> Result<Vec<(i64, String, JsonValue)>> {
+        let rows: Vec<(i64, String, JsonValue)> = sqlx::query_as(
+            "SELECT agent_id, status, evidence FROM check_results \
+             WHERE run_id = $1 AND rung = 2 AND status IN ('fail', 'error')",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("reading rung-2 rows to re-judge")?;
+        Ok(rows)
+    }
+
+    /// Move a batch of rung-2 rows to `refused`.
+    ///
+    /// `set_declined_reason` rewrites `evidence.reason` to `declined` for the
+    /// rows whose old reason was the generic `http_status`, so a backfilled row
+    /// and a freshly swept one are identical rather than merely equivalent. It
+    /// is false for the rows whose reason already says something the new
+    /// checker would also have written — `payment_required`, and every
+    /// `robots_*` reason, which are carried through untouched.
+    pub async fn mark_rung2_refused(
+        &self,
+        run_id: Uuid,
+        agent_ids: &[i64],
+        set_declined_reason: bool,
+    ) -> Result<u64> {
+        if agent_ids.is_empty() {
+            return Ok(0);
+        }
+        let sql = if set_declined_reason {
+            "UPDATE check_results \
+                SET status = 'refused', \
+                    evidence = jsonb_set(evidence, '{reason}', '\"declined\"') \
+              WHERE run_id = $1 AND rung = 2 AND agent_id = ANY($2)"
+        } else {
+            "UPDATE check_results SET status = 'refused' \
+              WHERE run_id = $1 AND rung = 2 AND agent_id = ANY($2)"
+        };
+        let done = sqlx::query(sql)
+            .bind(run_id)
+            .bind(agent_ids)
+            .execute(&self.pool)
+            .await
+            .context("reclassifying rung-2 rows as refused")?;
+        Ok(done.rows_affected())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Week-over-week deltas — the `delta` binary's half of this store.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1195,6 +1293,23 @@ impl Db {
         .await
         .context("writing the run delta")?;
         Ok(())
+    }
+
+    /// Every delta row that exists, newest first.
+    ///
+    /// Only `backfill-refused` needs this: re-judging a run's results changes
+    /// what its delta means, and a delta nobody recomputed would keep reporting
+    /// churn that the reclassification just removed. Every delta is recomputed
+    /// rather than only the ones whose `run_id` moved, because a delta reads
+    /// BOTH runs and the older one may be the reclassified side.
+    pub async fn all_deltas(&self) -> Result<Vec<(Uuid, Uuid, String)>> {
+        let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+            "SELECT run_id, previous_run_id, chain FROM run_deltas ORDER BY computed_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing deltas to recompute")?;
+        Ok(rows)
     }
 
     /// A run's checker build and schema version, for the delta's confound

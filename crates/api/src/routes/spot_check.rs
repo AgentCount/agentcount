@@ -925,6 +925,7 @@ pub async fn post(
             request_url: None,
             final_url: None,
             http_status: None,
+            retry_after_secs: None,
             content_type: None,
             headers: serde_json::Value::Null,
             body: None,
@@ -1042,6 +1043,7 @@ fn ladder(
             http_status: outcome.http_status,
             elapsed_ms: outcome.elapsed_ms,
             error: outcome.error.clone(),
+            retry_after_secs: outcome.retry_after_secs,
             inline_bytes,
             via_gateway: outcome.via_gateway.clone(),
             inline_decode_variant: outcome

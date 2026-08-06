@@ -1,6 +1,9 @@
 [package]
 name = "checks"
-version = "0.6.0"
+# The RUNG SEMANTICS' own version — stamped onto every run as
+# `checker_version`. 0.7.0 (2026-08-06): rungs 2 and 6 gained `refused`, which
+# moves existing agents out of `fail` and `error`. See `version.rs`.
+version = "0.7.0"
 edition = "2024"
 
 # PURE. If a network, database, or clock dependency ever appears in this list,

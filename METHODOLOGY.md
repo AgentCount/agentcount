@@ -76,8 +76,9 @@ successful HTTP response within the timeout?
 - **Pass:** the URI dereferences (`https://`, `data:`, or `ipfs://` via a
   gateway) and, for a network fetch, the origin responds with HTTP **2xx**
   inside the configured timeout.
-- **Fail:** the URI is empty or malformed, or returns any non-2xx status.
-  Also **fail**, not error: a hostname that fails DNS resolution, or that
+- **Fail:** the URI is empty or malformed, or returns a non-2xx status meaning
+  the document is not being served — 400, 403, 404, 410, 500, 502, 504 and the
+  like. Also **fail**, not error: a hostname that fails DNS resolution, or that
   resolves only to a private, loopback, or link-local address (the classic
   SSRF targets, `169.254.169.254` and similar). An agent-published URI that
   no third party can retrieve — because it does not resolve, or resolves
@@ -87,26 +88,48 @@ successful HTTP response within the timeout?
   belongs to the agent, not to us; the evidence carries the one-line reason
   (`ssrf_blocked: dns resolution failed`, `ssrf_blocked: resolves to a
   non-public address`) so this is checkable, not asserted.
-- **`robots.txt` is honored, redirects included.** Before fetching the
-  document itself, we fetch and honor `/robots.txt` for that origin. A
-  redirect on `robots.txt` (`http`→`https`, `www`→apex, and the like) is
-  completely ordinary, so we follow up to **5** redirect hops — per RFC 9309
-  §2.3.1.2, which asks clients to follow at least five — re-validating the
-  SSRF guard on every hop the same way a redirect on the document itself is
-  validated. A 2xx `robots.txt` is parsed and applied; a 4xx means no
-  restriction and we proceed; a 5xx, a timeout, a connection failure, or a
-  redirect chain that loops or runs past 5 hops means we could not establish
-  permission — that is **our** limitation, so it is recorded as this rung's
-  `error`, never as the agent's `fail`.
-- **HTTP 402 fails this rung.** This is a deliberate ruling, not an
-  oversight, and reverses an earlier design of this project that treated 402
-  as "alive." A 402 response is a payment challenge, not the agent
-  registration document — we have not received the document, so we cannot
-  judge whether it resolves, and marking that a pass would silently promote
-  "asked me to pay" into "gave me the file." The HTTP status and whatever
-  body accompanied it are archived verbatim regardless of the verdict; x402
-  support may return later as its own labelled signal, but it is never a
-  substitute for this rung passing.
+- **`refused` (added 2026-08-06): the origin is there and declined us.** Five
+  HTTP statuses, in the two groups the HTTP specification itself separates:
+  **429 and 503**, the statuses defined to carry `Retry-After` and to mean "not
+  now", and **401, 402 and 407**, the statuses that answer with a challenge
+  rather than an absence. Plus the two `robots.txt` outcomes below. None of
+  these tells us anything about the document, so none of them can honestly be
+  the agent's `fail` — and none of them is a malfunction of ours, so none can
+  be `error`. It is **not a pass**: we did not receive the document, and every
+  rung above this one is `skipped` exactly as it would have been before.
+  Read the 2026-08-06 changelog entry before quoting any pre-2026-08-06 fail
+  or error rate against a later one.
+  - **403 is not `refused`, and neither are 500/502/504.** A 403 refuses
+    without offering a way in, which is indistinguishable from "this file is
+    not available to third parties"; a broken upstream means the document
+    really is not being served. Both are `fail`.
+  - **HTTP 402 is `refused` and still does not pass.** The 2026-07-28 ruling —
+    that a payment challenge is not the registration document, and that marking
+    it a pass would promote "asked me to pay" into "gave me the file" — is
+    unchanged and unaffected. Only the word moved, from the agent's `fail` to
+    the more precise "something answered and asked for money", which is the
+    same shape as a 401. Its evidence keeps the distinct reason
+    `payment_required`, so paywalled documents stay countable on their own.
+    x402 support may still return as its own labelled signal; it is never a
+    substitute for this rung passing.
+- **`robots.txt` is honored, redirects included — and honoring it is
+  `refused`, not `error` (2026-08-06).** Before fetching the document itself,
+  we fetch and honor `/robots.txt` for that origin. A redirect on `robots.txt`
+  (`http`→`https`, `www`→apex, and the like) is completely ordinary, so we
+  follow up to **5** redirect hops — per RFC 9309 §2.3.1.2, which asks clients
+  to follow at least five — re-validating the SSRF guard on every hop the same
+  way a redirect on the document itself is validated. A 2xx `robots.txt` is
+  parsed and applied; a 4xx means no restriction and we proceed; a 5xx, a
+  timeout, a connection failure, a body that is not UTF-8, or a redirect chain
+  that loops or runs past 5 hops means we could not establish permission, and
+  **we send no request** (RFC 9309 §2.3.1.4's conservative reading — see §6 for
+  the full policy and why it was not loosened). Both outcomes — an explicit
+  `Disallow` and an unavailable `robots.txt` — are recorded as this rung's
+  `refused`, with the reason verbatim, never as the agent's `fail` and no
+  longer as our `error`. They were `error` until 2026-08-06, which made the
+  published error rate a measure of one host's `/robots.txt`: on the 2026-08
+  mainnet run it read **22.1%**, of which 6,133 agents were a single host
+  refusing connections on that one path.
 - **`data:` URIs are decoded through five fallback paths, in order (P0 FIX
   7, 2026-07-29).** The ecosystem's convention is
   `data:application/json;enc=<algorithm>[;level=<n>];base64,<payload>` with
@@ -155,8 +178,11 @@ successful HTTP response within the timeout?
   the others' budget or bypass the cap.
 - **Evidence:** `uri` (from `tokenURI()`), `final_url` actually fetched,
   `http_status`, `elapsed_ms`, `fetched_at`, and, where applicable,
-  `data_uri_variant`/`data_uri_algorithm` (inline `data:` documents) or
-  `gateway_attempts`/`via_gateway` (`ipfs://` documents).
+  `data_uri_variant`/`data_uri_algorithm` (inline `data:` documents),
+  `gateway_attempts`/`via_gateway` (`ipfs://` documents), or `retry_after`
+  (seconds, only when a 429 or 503 sent the header). A `refused` row's `reason`
+  is `declined`, `payment_required`, or the verbatim `robots_disallowed` /
+  `robots_unavailable: …` text, so the sub-cases stay countable apart.
 - **Does not mean:** that the response body is the agent document, is JSON,
   or contains anything meaningful — only that something answered. That is
   rung 3's question.
@@ -313,9 +339,23 @@ declares?
   answer that was not live — any other HTTP status, or a URL that could not be
   reached by anyone (`ssrf_blocked`: it does not resolve, or resolves only to
   a private, loopback or link-local address).
+- **`refused` (added 2026-08-06):** nothing was live, nothing gave a definite
+  non-live answer, and at least one endpoint **declined us** — a 429, a 503, a
+  401/407 challenge, or a `robots.txt` that did not give us permission. Rung
+  2's rule, applied to the same servers by the same predicate so the two rungs
+  cannot disagree about one response. A 429 is a statement about our request
+  rate, so counting it as liveness would let our own traffic manufacture the
+  finding, and counting it as `fail` would blame the agent for our traffic.
+  **402 is the one status that differs between the two rungs and it is
+  deliberate** — see the paragraph below.
 - **Error:** every probeable endpoint failed on **our** side — a timeout, a
-  TLS failure, a `robots.txt` we could not read or that disallowed us. Never
-  the agent's fault, so never a `fail`.
+  TLS failure, a connection that never opened. Never the agent's fault, so
+  never a `fail`.
+- **Precedence, for an agent declaring several endpoints:** pass > fail >
+  refused > error. One live endpoint answers the question outright; a definite
+  non-live answer is the agent's fact and stands on its own; a decline is the
+  verdict only when nothing else was learned; `error` is last because it is the
+  only one that says nothing about the world.
 - **`unprobeable`:** the document declared no service endpoint that a prober
   can dial. Its entries are CAIP-10 chain addresses, email addresses, empty
   strings, `ipfs://` URIs, or carry no `endpoint` field at all — or it
@@ -329,7 +369,8 @@ declares?
   rung — we did not ask — and it is the only honest answer available.
 - **Evidence:** `endpoints_declared`, `endpoints_probeable`,
   `endpoints_probed`, `endpoints_live`, `endpoints_payment_gated`,
-  `endpoints_answered_not_live`, `endpoints_our_error`, plus an `endpoints[]`
+  `endpoints_answered_not_live`, `endpoints_refused`, `endpoints_our_error`,
+  plus an `endpoints[]`
   array carrying, per declared entry: its index, its `name`, the **raw
   declared string**, its classified kind, whether it was probed, and its own
   URL, final URL, status, elapsed time and outcome.
@@ -341,13 +382,19 @@ declares?
   answering is the agent, speaks any particular protocol, or would do
   anything if asked. This rung does not read the response body at all.
 
-**HTTP 402 is live here, and fails rung 2.** Both are correct, because the
-two rungs ask different questions. Rung 2 asks whether the registration
-document could be *retrieved*; a 402 means it could not. Rung 6 asks whether
-anything is *alive* at a service endpoint; a 402 is a payment challenge, and
-a dead host does not bill you. It is counted separately as
+**HTTP 402 is live here, and is `refused` at rung 2.** Both are correct,
+because the two rungs ask different questions. Rung 2 asks whether the
+registration document could be *retrieved*; a 402 means it could not. Rung 6
+asks whether anything is *alive* at a service endpoint; a 402 is a payment
+challenge, and a dead host does not bill you. It is counted separately as
 `endpoints_payment_gated` so no reader has to take "live" on trust. Anyone
 reconciling a 402 count between the two rungs needs this paragraph.
+
+**And why 429 does not get the same treatment**, when "a dead host does not
+rate-limit you" is equally true: a 402 is the origin's considered answer to
+anyone who asks, while a 429 is a statement about *us* — about how many
+requests we sent and how fast. Reading it as liveness would mean the harder we
+probe a host, the more live its agents appear. It is `refused` at both rungs.
 
 **Sampling.** 125,705 declared HTTP(S) endpoints across the census resolve to
 3,399 distinct hosts, and four hosts carry 59.2% of them. Probing every
@@ -555,6 +602,23 @@ they are not interchangeable:
   verdict (no `COALESCE(x, false)` anywhere in this pipeline). If you do not
   see a rung for an agent, the honest reading is "not yet checked," full
   stop — not "presumed to fail."
+- **`refused`** *(rungs 2 and 6, added 2026-08-06)* — not one of the three
+  kinds above either: the rung was asked, the request was made or deliberately
+  withheld, and **the origin declined us**. HTTP 429 or 503 ("not now", the two
+  statuses `Retry-After` is defined for), a 401/402/407 challenge, or a
+  `robots.txt` that disallowed us or that we could not establish permission
+  from. It is not `fail`, because nothing here says the document or endpoint is
+  unavailable to anyone but us. It is not `error`, because nothing
+  malfunctioned — a 429 is an answer we received, and honoring a `robots.txt`
+  is a decision we made. It is not `pass`: we did not get what we asked for,
+  and everything above it on the ladder is `skipped` exactly as before.
+
+  **This is the one status addition that moved existing agents.** `unclaimed`
+  and `unprobeable` named cases nothing had ever been written for; `refused`
+  took rows out of `fail` and `error`. Every archived run has been re-judged
+  from its own recorded evidence so the series says one thing — see
+  `CHANGELOG-METHODOLOGY.md`'s 2026-08-06 entry for the per-run before/after
+  counts, and `DATA.md` for what the already-published archives contain.
 - **`unclaimed`** *(rung 5 only, added 2026-07-29)* — not one of the three
   kinds above, and deliberately its own word: the rung was asked, it ran to
   completion, and it found nothing to check, because the agent made no
@@ -792,6 +856,25 @@ differently, that's called out rather than glossed over.
   the probe layer's implementation, not to this document, so they can change
   without this policy going stale — check the probe layer's own
   configuration for the current values in force.
+- **A per-host cadence, not only a per-host cap (added 2026-08-06).** A
+  concurrency cap bounds how many requests a host is answering at once; it does
+  not bound how many it answers per second, and a host that replies in 20ms was
+  therefore seeing about 100 requests a second from us. That is how the 2026-08
+  census collected **19,658 HTTP 429s from one host** — and then published them
+  as agents that had stopped resolving. So a host now sees **at most one
+  request started every 250ms**, on top of the existing cap of 2 in flight:
+  four requests a second, per host, whatever the rest of the sweep is doing.
+  Four hosts carry 59.2% of every declared endpoint in the census, so this is
+  the limit that decides what those four experience.
+- **`Retry-After` is honored** on the two statuses it is defined for (429 and
+  503). The value pushes that host's next request forward, so the rest of the
+  sweep backs off the host that asked. We do **not** retry the request that
+  received it: a sweep is one fetch per agent per run, and retrying would
+  double the traffic aimed at the host that had just asked us to stop. A
+  backoff longer than **120 seconds** is capped at that, because one host must
+  not be able to hold a share of a sweep for an hour — the value the origin
+  asked for is recorded in the rung's evidence (`retry_after`) either way, so a
+  reader can see we were asked for more than we gave.
 - **Rung 6 is stricter than one-per-agent, deliberately.** It is one request
   per *distinct URL*, not per agent, and above that a **per-host budget of
   500 distinct URLs per run**. Without it the largest operator in the census
@@ -818,6 +901,32 @@ differently, that's called out rather than glossed over.
   (Section 2, Rung 2, P0 FIX 8) counts as three separate hosts, each
   under its own cap — not one host budget shared, or bypassed, across all
   three.
+- **An unavailable `robots.txt` means we do not fetch, and the result is
+  `refused` (policy fixed 2026-08-06).** When `/robots.txt` answers 5xx, times
+  out, refuses the connection, returns something that is not UTF-8, or
+  redirects in a loop, we cannot establish permission. Three policies were
+  available and the choice matters, so it is stated rather than left to the
+  code:
+
+  1. *Treat unavailable as permission granted* — the common crawler
+     convention, and what would make our error rate look best.
+  2. *Treat it as denied* — RFC 9309 §2.3.1.4's conservative reading.
+  3. *Treat it as its own non-error observation.*
+
+  **We do 2 for behaviour and 3 for the record**, and we did not take 1. A
+  robots.txt is the only channel a site operator has for saying no without
+  knowing we exist, and reading its failure as a yes takes the benefit of the
+  doubt in the direction that suits us — on hosts that are, by definition,
+  having trouble serving requests. The conservative behaviour is unchanged from
+  the day this project started; what changed is that the outcome is now
+  recorded as `refused` rather than `error`. Calling it `error` claimed this
+  checker had malfunctioned, which it had not, and made the published error
+  rate a measure of one host's `/robots.txt`: **22.1% on the 2026-08 mainnet
+  run, 6,133 agents of it a single host refusing connections on that one
+  path**. The cost of the conservative policy is stated plainly: those agents'
+  documents go unread, and we say so per row rather than absorbing it into a
+  number about ourselves. An operator whose robots.txt is unreachable and who
+  wants to be crawled can fix it, or mail the contact address above.
 - **Safety guard carried forward from the retiring enricher:** requests are
   only ever made to public IP addresses. An `agentURI` pointing at a private,
   loopback, link-local, or cloud-metadata address (`169.254.169.254` and
