@@ -1312,6 +1312,55 @@ impl Db {
         Ok(rows)
     }
 
+    /// Compute one run's findings and store them, replacing any earlier
+    /// computation.
+    ///
+    /// The arithmetic is `ls_run_findings()` (migration 0021) and is NOT
+    /// repeated here — the API's `/findings` endpoint calls the same function
+    /// when a run has no stored row, and two implementations of a published
+    /// figure is exactly the drift this project exists to refuse. This method
+    /// is the database plumbing around it and nothing else.
+    ///
+    /// Recomputing is legitimate: a finding is derived from `check_results`,
+    /// which this never writes. `computed_at` moves so a reader can tell a
+    /// fresh derivation from the one published with the run.
+    ///
+    /// Returns how many findings were written. Zero means the run has no
+    /// results — nothing is stored for it, because a row of zeroes reads as
+    /// "we asked and found none".
+    pub async fn write_findings(&self, run_id: Uuid) -> Result<u64> {
+        let n = sqlx::query(
+            "INSERT INTO run_findings (run_id, finding_key, numerator, denominator) \
+             SELECT $1, f.finding_key, f.numerator, f.denominator \
+             FROM ls_run_findings($1) f \
+             WHERE EXISTS (SELECT 1 FROM check_results c WHERE c.run_id = $1) \
+             ON CONFLICT (run_id, finding_key) DO UPDATE SET \
+               numerator = EXCLUDED.numerator, \
+               denominator = EXCLUDED.denominator, \
+               computed_at = now()",
+        )
+        .bind(run_id)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("writing findings for run {run_id}"))?
+        .rows_affected();
+        Ok(n)
+    }
+
+    /// A run's stored findings, by key. Only the `findings` binary needs this,
+    /// to print what it just wrote.
+    pub async fn run_findings(&self, run_id: Uuid) -> Result<Vec<(String, i64, i64)>> {
+        let rows = sqlx::query_as(
+            "SELECT finding_key, numerator, denominator FROM run_findings \
+             WHERE run_id = $1 ORDER BY finding_key",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("reading findings for run {run_id}"))?;
+        Ok(rows)
+    }
+
     /// A run's checker build and schema version, for the delta's confound
     /// columns.
     pub async fn run_provenance(&self, run_id: Uuid) -> Result<(String, i32)> {

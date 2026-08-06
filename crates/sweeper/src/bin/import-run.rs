@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
     if already.is_some() {
         tracing::info!("--replace: deleting existing rows for run {run_id}");
         // Children without ON DELETE CASCADE first, then the run row —
-        // endpoint_probes and run_deltas cascade from it.
+        // endpoint_probes, run_deltas and run_findings cascade from it.
         for table in [
             "check_results",
             "http_archive",
@@ -293,6 +293,14 @@ async fn main() -> Result<()> {
         let _ = std::fs::remove_dir_all(scratch);
     }
 
+    // The homepage's figures, derived from the rows just written — the same
+    // `ls_run_findings()` the sweep and the API use, so an imported run and a
+    // swept one publish identical numbers. Done here rather than left to the
+    // API's fallback because that fallback is the full count: on the BNB Chain
+    // export (244,208 agents) it is the request that used to time out, and a
+    // local API should not inherit the bug this import exists to help debug.
+    let findings = db.write_findings(run_id).await?;
+
     println!(
         "imported run {run_id} ({chain}, schema {})",
         manifest.schema_version
@@ -303,6 +311,7 @@ async fn main() -> Result<()> {
     println!(
         "  http_archive     {archives}   (summary columns only — bodies are never in archives)"
     );
+    println!("  run_findings     {findings}   (counted once here, so /findings need not count)");
     println!();
     println!("next: DATABASE_URL=… cargo run -p api   # then GET /api/runs");
     Ok(())

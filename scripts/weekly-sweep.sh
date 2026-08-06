@@ -2,13 +2,15 @@
 # One week's census: every chain, the full ladder, and the delta.
 #
 # The entrypoint of `Dockerfile.sweep`, and equally runnable from a
-# workstation. Four binaries per chain, in this order and for these reasons:
+# workstation. Five binaries per chain, in this order and for these reasons:
 #
 #   sweeper   pins a block and answers rungs 1-5 and 7
 #   liveness  rung 6 — probes the endpoints those documents declared, so it
 #             must run after the documents are archived
 #   delta     compares the finished run against the previous one, so it must
 #             run after the run is closed
+#   findings  counts the homepage's five figures once, so that rendering them
+#             does not mean counting 1.7 million rows per page load
 #   payments  reads token transfer logs at the run's pinned block — NOT a rung
 #
 # `payments` is OFF by default. It is the longest step, it costs one
@@ -91,6 +93,15 @@ for chain in $CHAINS; do
 
     echo "═══════════════════════════════════════════ $chain: delta"
     delta "$chain" || { echo "!!! $chain: delta exited $?"; failed="$failed $chain(delta)"; }
+
+    echo "═══════════════════════════════════════════ $chain: findings"
+    # After rung 6, so the stored figures describe the run as it will be
+    # published. Tolerated like rung 6 and the delta: a chain that fails here
+    # keeps its census, and `/api/runs/{id}/findings` falls back to counting
+    # the run live — which is the behaviour that timed out on BNB Chain, so a
+    # failure here IS the launch blocker returning for that chain and the
+    # non-zero exit below is how the scheduler says so.
+    findings "$chain" || { echo "!!! $chain: findings exited $?"; failed="$failed $chain(findings)"; }
 
     # Payments, opt-in. Tolerated exactly like rung 6: a failure here does not
     # invalidate the sweep, because no rung and no published rate reads these
