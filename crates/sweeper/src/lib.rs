@@ -22,7 +22,18 @@
 //! without re-sweeping the chain — the probe is the slow, rate-limited,
 //! interruptible half, and it should not be able to cost a chain read.
 //!
-//! A third binary runs on a different clock and answers a different question:
+//! A third binary is a second pass of the same shape, answering a question
+//! that is not a rung at all:
+//!
+//! * **`payments`** (`src/bin/payments.rs`) — who has ever been paid, pinned to
+//!   the run's block. It reads `getAgentWallet` and the archived documents,
+//!   builds the attribution map, scans two stablecoins' `Transfer` logs, and
+//!   writes `payment_targets` / `payment_scans` / `payments`. It never touches
+//!   `check_results`: "was this agent paid" is judged against no clause of
+//!   ERC-8004, and a row in the rungs' table would make it the eighth rung by
+//!   placement. The rule it enforces is `crates/payments`' and nothing else's.
+//!
+//! A fourth binary runs on a different clock and answers a different question:
 //!
 //! * **`tail`** (`src/bin/tail.rs`) — the continuous registration tail. NOT a
 //!   census pass. It discovers ids minted since the last sweep, so an agent

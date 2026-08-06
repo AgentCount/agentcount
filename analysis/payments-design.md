@@ -8,6 +8,14 @@
 > none of them the registrant). The method in §5 stands; the counts in §6 do
 > not. Corrected figures live in the audit.
 
+> **SUPERSEDED AGAIN, 2026-08-06.** §6's counts are unpublishable for a second
+> reason on top of the attribution one: they are not pinned to a run and not
+> reproducible by a sweep. The method in §5 survives and is now
+> `crates/payments` + migration 0019 + `crates/sweeper/src/bin/payments.rs`,
+> with one deliberate change — basis **A** (`getAgentWallet`, non-zero and
+> distinct from the owner) is the only publishable one, where §5 reported all
+> three. See `METHODOLOGY.md` §8.
+
 **Analysis and design. No check logic, crate code, or schema was touched.**
 Every count below comes from archived bodies and stored `check_results` for the
 reference run `cfbfcc01-fdaf-409f-9bed-abf706d865c7` (Base, pinned block

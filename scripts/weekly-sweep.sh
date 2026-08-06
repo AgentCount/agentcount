@@ -2,13 +2,21 @@
 # One week's census: every chain, the full ladder, and the delta.
 #
 # The entrypoint of `Dockerfile.sweep`, and equally runnable from a
-# workstation. Three binaries per chain, in this order and for these reasons:
+# workstation. Four binaries per chain, in this order and for these reasons:
 #
 #   sweeper   pins a block and answers rungs 1-5 and 7
 #   liveness  rung 6 — probes the endpoints those documents declared, so it
 #             must run after the documents are archived
 #   delta     compares the finished run against the previous one, so it must
 #             run after the run is closed
+#   payments  reads token transfer logs at the run's pinned block — NOT a rung
+#
+# `payments` is OFF by default. It is the longest step, it costs one
+# `getAgentWallet` call per agent (244,208 of them on BNB Chain), and no
+# published figure depends on it yet — see METHODOLOGY.md §8. Set
+# `SWEEP_PAYMENTS=1` to include it. When it is off, a chain simply has no
+# payment rows for the week, and `payment_scans` having no row is how a reader
+# tells "not scanned" from "scanned and found nothing".
 #
 # ## Failure is per chain, not per run
 #
@@ -26,6 +34,7 @@
 #   DATABASE_URL            required
 #   RPC_URL_BASE, _BSC, _MAINNET, _CELO   required per chain swept
 #   SWEEP_CHAINS            optional, space-separated; defaults to all four
+#   SWEEP_PAYMENTS          optional; 1 runs the payments pass, default off
 #
 # RPC URLs carry API keys. Nothing here echoes one, and nothing should be
 # added that does — `set -x` in particular would put every key in the job log.
@@ -82,6 +91,15 @@ for chain in $CHAINS; do
 
     echo "═══════════════════════════════════════════ $chain: delta"
     delta "$chain" || { echo "!!! $chain: delta exited $?"; failed="$failed $chain(delta)"; }
+
+    # Payments, opt-in. Tolerated exactly like rung 6: a failure here does not
+    # invalidate the sweep, because no rung and no published rate reads these
+    # rows. The chain keeps its census and simply has no payment rows this
+    # week — which the schema states rather than implies.
+    if [ "${SWEEP_PAYMENTS:-0}" = "1" ]; then
+        echo "═══════════════════════════════════════════ $chain: payments"
+        payments "$chain" || { echo "!!! $chain: payments exited $?"; failed="$failed $chain(payments)"; }
+    fi
 
     echo "═══════════════════════════════════════════ $chain: publish"
     # The run id this pass just finished, asked of the database rather than

@@ -899,3 +899,173 @@ If you believe a specific result is wrong under the rules stated above —
 not "unfair" in the abstract, but factually incorrect given the evidence
 attached to it — email `probes@agentcount.ai` with the run id and agent id
 and we will look at it.
+
+## 8. Payments — the attribution rule
+
+Added 2026-08-06. This section describes a measurement that is **not a rung**
+and has produced **no published figure**. It is here before any number exists,
+for the same reason the rest of this document was: so the method can be checked
+before the result, not after.
+
+### What is being measured, and what it is not
+
+One question: **has an agent's payment address ever received a stablecoin
+transfer, up to the run's pinned block?** Not "has this agent earned money".
+Direction is not purpose — an incoming stablecoin transfer is indistinguishable
+on-chain from an airdrop, a refund, a mistake, or an operator moving its own
+funds — and nothing in this pipeline claims otherwise.
+
+It is a separate table (`payments`, migration 0019), a separate binary
+(`payments <chain> [run_id]`) and a separate section because it is a question
+about token transfers, judged against no clause of ERC-8004. Putting it in
+`check_results` would make it the eighth rung by placement whatever the words
+around it said.
+
+Everything else about it is the same as a rung: it is scoped to a `run_id`,
+every read is at that run's `pinned_block`, excluded rows are stored with the
+reason they were excluded, and re-running the binary against the same chain
+state reproduces the same rows.
+
+### THE RULE
+
+> **An incoming token transfer may be attributed to agent *A* only if it was
+> credited to the address `getAgentWallet(A)` returned by the Identity Registry
+> at the run's pinned block, that address is non-zero, and that address is not
+> equal to `ownerOf(A)` at the same block.**
+
+Two addresses could have been chosen, and they are not equivalent:
+
+| | `getAgentWallet(agentId)` | a `services[]` entry named `agentWallet` |
+|---|---|---|
+| where it lives | on-chain, reserved registry metadata | the off-chain JSON document |
+| in the pinned spec? | **yes** — `spec/ERC8004SPEC.md` line 141 | **no** — appears nowhere |
+| who can set it | the owner, **only by proving control of the new address** with an EIP-712 signature (EOA) or ERC-1271 (contract wallet) | anyone who can write the document |
+| on NFT transfer | **cleared automatically**; must be re-verified | survives indefinitely |
+| can it name an address nobody controls | no | **yes**, and one does |
+
+The registry's address is used, for four reasons:
+
+1. **Only one of them is a payment address at all.** The spec reserves
+   `agentWallet` and defines it as the address where the agent receives
+   payments. `services[]` is a list of service descriptors; nothing in the spec
+   reserves that name inside it or gives it payment semantics. The convention
+   is real and widely used — it is measured, below — but measuring it measures
+   adoption of a convention, which is a different finding.
+2. **Only one of them carries a proof.** A declared address has no proof of
+   control, no link to the on-chain identity, and is served over mutable HTTP.
+   On Base, **409 of 919** declared addresses disagree with the address the
+   registry has verified, and a further **50** are addresses the registry has
+   never verified at all. Every one of those has an innocent explanation. **A
+   payer cannot tell which.**
+3. **Only one of them can be checked against the population it describes.** A
+   `services[]` entry can name any string. Mainnet agent 28283 declares the
+   zero address; a scan that trusted it collected **313,255 of mainnet's
+   314,735 transfers (99.5%)** — every USDC and USDT burn on Ethereum — as that
+   agent's income. Nothing can sign for the zero address, so
+   `setAgentWallet` cannot produce that row.
+4. **Only one of them self-invalidates.** `agentWallet` is cleared when the NFT
+   is transferred, so a stale address cannot outlive a change of owner. A
+   document can, and does: an attempt to derive the wallet set from
+   `MetadataSet` events produced 19,570 Base agents, of which a sampled **~99%
+   were stale**, because clearing emits no event.
+
+### Why "distinct from the owner" is part of the rule
+
+`getAgentWallet` defaults to the owner's address. On Base at block 49,262,617,
+**40,473** agents have it set — and **40,126 of them (99.1%) to the owner's own
+address**. Only **347** verified a distinct one.
+
+A default is not a claim. Those 40,126 required no `setAgentWallet` call and so
+no signature from anybody. They are also not per-agent: one Base owner holds
+**2,293** agents, so a transfer to that address is evidence about an operator
+and cannot be assigned to any one of its agents without inventing the
+assignment.
+
+So an agent whose verified wallet equals its owner is recorded as
+`wallet_equals_owner` — **not** as an agent that received nothing. Those are
+different facts and the table keeps them apart. That cohort is reportable at
+operator level and this pipeline does not report it at all.
+
+### The looser basis is measured too, and never published
+
+Every run also computes the `services[].agentWallet` convention, stored in the
+same tables under `basis = 'declared_wallet'`. It is computed because **the gap
+between the two is the most honest thing this measurement produces**, because
+the prior study is only comparable on it, and because declining to compute it
+would be a decision about what readers get to see. It is never the headline,
+never blended with the verified basis into one count, and carries its own
+column so no query can union the two by accident.
+
+### The four exclusions
+
+Each is a named rule, stored on the row that it excluded, so the uncorrected
+figure stays recomputable and each correction is visible rather than asserted.
+They are applied in this order and the order is fixed by a test.
+
+| rule | what it removes | why it exists |
+|---|---|---|
+| `outgoing` | the address sent, rather than received | never a payment to anyone |
+| `burn_address` | the credited address or the sender is `0x0…0` or `0x…dead` | a transfer *to* the zero address is a burn, the opposite of revenue; a transfer *from* it is a mint |
+| `self_transfer` | the credited address paid itself | an address must not be able to manufacture its own payment history |
+| `owner_funding` | the sender is the agent's NFT owner at the pinned block | an owner funding its own agent's wallet is not income |
+| `mint_block_unknown` | the agent's registration block is not recorded | whether it predates the mint is unknowable, and the unknown is excluded rather than assumed favourable |
+| `pre_mint` | the transfer arrived before the agent was minted | a wallet's history before the agent existed is not the agent's history |
+
+`pre_mint` is the largest of them. On Base it removes **6,748 of 18,328**
+transfers by count and **82.5% of all value** — the difference between the
+retracted "$8.8M received" and the corrected figure.
+
+### What is recorded per transfer, and why
+
+Beyond the transfer itself, four facts that the retractions showed were
+load-bearing:
+
+- **Which address was credited, and on which basis.** Plus how many agents in
+  the run reach that address: the map is many-to-many (one Base address is
+  declared by **62** agents), so "addresses paid" and "agents whose address was
+  paid" are different numbers and both are reported. For a shared address the
+  census can say the address was paid; it **cannot** say which agent the
+  payment was for, and it says so.
+- **Which token, as the contract described itself.** `symbol()` and
+  `decimals()` are read from each contract at the pinned block and stored on
+  the row, never assumed. BSC's USDC and USDT are **18** decimals, not 6, and
+  Celo's `0x765DE816…` — documented for years as cUSD — now answers **`USDm`**
+  at 18. Carrying Base's 6 across four chains would have overstated BSC by a
+  factor of 10¹².
+- **Whether the sender has code.** 94% of Base's corrected value arrived from
+  contracts, and for the largest holder it was provably DeFi vault yield —
+  an operator's own capital returning, read as revenue. A sender whose code was
+  **not read** is stored as `NULL`, never as `false`, and no contract-vs-EOA
+  share is computed while any sender is unread.
+- **Whether an EIP-3009 authorization co-occurred.** `transferWithAuthorization`
+  emits `AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)`
+  from the token contract in the same transaction as the `Transfer`. That is the
+  x402 settlement signature and the only protocol-level evidence of payment
+  anywhere in this pipeline. The authorizer is stored alongside the flag, and
+  whether it equals the transfer's sender, so a reader can check the one
+  hypothesis that would over-count it — a batching contract paying many
+  recipients under one authorization — from the rows rather than by sampling.
+
+### The scope, and therefore the direction of every error
+
+Two stablecoins per chain, ERC-20 `Transfer` logs only, one chain at a time.
+Native gas tokens, every other ERC-20, every other chain and every off-chain
+settlement are invisible. So a count here is a **lower bound on agents paid**.
+
+At the same time, `owner_funding` is one hop rather than a funding graph — an
+owner routing through a fresh intermediary is not caught, and a *previous*
+owner is not caught either — so the same count is an **upper bound on agents
+that earned**. Both bounds are stated whenever a figure is.
+
+### No figure is published under this section yet
+
+The three most quotable payment numbers this project has produced —
+**358 agents paid**, **313**, and **190** — came from a one-off log study that
+is not in the database, not pinned to a block, and not reproducible by a sweep.
+All three are **superseded and unpublishable**. They are not restated here,
+because this is a new measurement rather than a correction of an old one, and
+the first number it produces will be the first number it has ever published.
+
+That number comes from a run a maintainer schedules. Until one exists, the
+absence of a payment figure on this site means exactly what an absent rung
+means: **not measured**.

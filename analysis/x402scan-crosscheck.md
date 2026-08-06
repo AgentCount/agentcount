@@ -1,5 +1,14 @@
 # Cross-check: our x402 findings against x402scan
 
+> **The 34 is superseded, 2026-08-06.** This cross-check stands as a check of
+> the *method* — the sampling test that would have overturned our detection was
+> run and failed — but the number it corroborates came from an unpinned study
+> and is not quotable. The x402 test it validates (a `Transfer` whose
+> transaction carries an `AuthorizationUsed` from the *same* token) is now
+> `crates/chain/src/token.rs`, and the pipeline additionally stores the
+> authorizer and whether it equals the transfer's sender, so §4a's hypothesis is
+> checkable from the rows instead of by sampling. See `METHODOLOGY.md` §8.
+
 Our hardest-won number — **34 agents have ever received an x402 settlement** —
 checked against a second, independent index that has no concept of ERC-8004.
 

@@ -1,0 +1,17 @@
+[package]
+name = "payments"
+version = "0.1.0"
+edition = "2024"
+
+# PURE, for the same reason `crates/checks` is pure: the attribution rule is
+# the crux of this measurement, and the four retractions in
+# `analysis/payments-corrections-ledger.md` were all rule mistakes, not RPC
+# mistakes. A rule that can only be exercised against a database and an archive
+# node is a rule nobody re-checks.
+#
+# No network, no database, no clock. Every function here takes facts and
+# returns a verdict, so `cargo test -p payments` runs in CI with nothing
+# configured and covers every exclusion and every retraction.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

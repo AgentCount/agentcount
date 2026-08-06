@@ -20,6 +20,135 @@ Format per entry:
 
 ---
 
+## 2026-08-06 — NEW MEASUREMENT: payments become a pinned, run-scoped pipeline, and the old 358 / 313 / 190 are superseded
+
+**Read the last paragraph of this entry first if you are checking whether a
+number moved. None did. This entry restates no previously published figure,
+because there is no previously published figure to restate.**
+
+**What changed.** A new measurement ships — not a rung, not a status, not an
+evidence shape, and not a change to anything the seven rungs answer:
+
+1. **A `payments` table** (migration 0019), plus `payment_targets` and
+   `payment_scans`, all keyed by `run_id` exactly like `check_results`. Every
+   read is at the run's `pinned_block`.
+2. **An attribution rule, stated once and enforced in one place.** An incoming
+   token transfer may be attributed to agent *A* only if it was credited to
+   `getAgentWallet(A)` at the run's pinned block, that address is non-zero, and
+   it is **not equal to** `ownerOf(A)` at the same block. The rule and the
+   argument for it live in `crates/payments/src/lib.rs` and in
+   `METHODOLOGY.md` §8.
+3. **A binary**, `crates/sweeper/src/bin/payments.rs`, that runs after a sweep
+   for a finished run, reads token transfer logs at that run's pinned block,
+   and writes the rows. It is scheduled where `liveness` is scheduled, after
+   the delta, and its failure is tolerated per chain in the same way.
+4. **Four exclusions, each a named rule with a regression test** — `pre_mint`,
+   `owner_funding`, `burn_address` and the three structural ones (`outgoing`,
+   `self_transfer`, `mint_block_unknown`). Excluded rows are **stored** with
+   the rule that excluded them, so the uncorrected figure stays recomputable
+   and each correction is visible rather than asserted.
+5. **A pure crate**, `crates/payments`, holding all of the above as functions
+   with no database and no network, so `cargo test -p payments` exercises the
+   attribution rule and every exclusion in CI with nothing configured.
+
+**Why.** Because the numbers this project already had were produced by a
+one-off log study and could not be recomputed by anybody, including us.
+
+`analysis/payments-design.md`, `analysis/payments-per-chain.md`,
+`analysis/payments-corrections-ledger.md` and
+`analysis/x402scan-crosscheck.md` are a genuine piece of work: they established
+the method, cross-checked it against an independent index, and caught four of
+their own errors before publication. What they are not is a measurement of
+record. Their figures are not in the database, not pinned to a block, and not
+reproducible by a sweep — which is the exact property this census claims for
+everything it publishes. §5 of `METHODOLOGY.md` says a result that cannot name
+what generated it is an assertion rather than a fact. That standard has to
+apply to this project's own most quotable numbers or it applies to nothing.
+
+The rule in point 2 is the crux, and it is inherited from the corrections
+ledger rather than re-derived. All four retractions there are **one mistake
+wearing four costumes: an address was treated as an identity.**
+
+- **PAY-1** — a payment to a shared address was credited to *every* agent
+  declaring it. 298 addresses received an external transfer against 313
+  declaring agents.
+- **PAY-2** — transfers were counted over a wallet's entire history, including
+  before the agent existed. 6,748 of 18,328 Base transfers, and **82.5% of all
+  value**, predate the mint of the agent they were credited to.
+- **PAY-3** — `owner()` of the receiving contract was never read and the
+  contracts were never inspected, so Morpho vault flow was read as revenue.
+  The "one operator" turned out to be 148 per-agent contracts controlled by
+  **126 distinct addresses, none of them the registrant**.
+- **PAY-4** — mainnet agent 28283 declares the zero address as its wallet, and
+  the scan collected **313,255 of mainnet's 314,735 transfers (99.5%)** — every
+  USDC and USDT burn on Ethereum — as that agent's income.
+
+Every one of those is either impossible or explicitly recorded under the new
+rule. PAY-4 in particular **cannot occur on the verified basis at all**:
+nothing can produce an EIP-712 signature for the zero address, so
+`setAgentWallet` cannot name one.
+
+**On the choice of address, because it is the whole argument.** The alternative
+was the `services[].name == "agentWallet"` convention. It is not in the spec, it
+carries no proof of control, it is served over mutable HTTP, it survives a
+transfer of the NFT that the registry's own value would have cleared, and on
+Base it contradicts the registry's verified value for **409 of 919** agents
+with a further **50** the registry has never verified. The verified basis is
+also narrower for a reason that is part of the rule rather than a filter: of
+the 40,473 Base agents with `getAgentWallet` set, **40,126 (99.1%) have it set
+to the owner's own address** — the contract default, requiring no signature
+from anybody, and not per-agent, since one owner holds 2,293 agents. Only
+**347** verified a distinct address. Those 40,126 are recorded as
+`wallet_equals_owner`, which is a different fact from "received nothing", and
+the table keeps them apart.
+
+The declared basis is **still computed on every run**, stored under
+`basis = 'declared_wallet'`, and never published. The gap between the two is
+the most honest thing this measurement produces, and refusing to compute it
+would be a decision about what a reader gets to see.
+
+**Measured effect — none, and this is the unusual part.**
+
+*On any published figure: none.* No rung's rule changed, no agent's status
+moves, no rate is recomputed, and no archived run is rewritten. `payments` is a
+new table that every existing run has zero rows in, and a run with no rows in
+it has **not been measured**, which is what absence has always meant here.
+
+*On the previously circulated figures: they are superseded and unpublishable.*
+Stated plainly, because three different numbers have been in circulation
+internally and all three are now retired:
+
+| figure | source | status |
+|---|---|---|
+| **358** agents paid across four chains, **34** via x402 | `analysis/payments-per-chain.md` §7, declared basis | **superseded** — not pinned, not recomputable |
+| **313** agents paid on Base | `analysis/payments-design.md` §6 | **retracted** (PAY-1, PAY-2) and superseded |
+| **190** agents paid on Base, post-mint | `analysis/identity-role-audit.md` §3 | **superseded** — correct under its own method, but declared-basis and not recomputable |
+
+**This is a new measurement, not a restatement.** No figure above is being
+re-derived, adjusted, or carried forward under a new label. The first number
+this pipeline produces will be the first number it has ever published, and it
+will come from a run rather than from an analysis document. Until such a run
+exists, AgentCount publishes **no** payment figure, and the absence means what
+an absent rung means: not measured.
+
+*What a future run will make visible, which the old figures could not.* Because
+both bases are stored side by side with a `basis` column, one query will give
+the count on the address the spec verifies and the count on the address anyone
+can write. The old study only ever attributed through the second
+(`analysis/payments-per-chain.md` §1 explains why: the verified set could not be
+confirmed against the live getter for every chain). Its single verified-basis
+figure — **37 of Base's 347 distinct wallets** received an external transfer —
+was measured **before** the pre-mint and contract-sender corrections and was
+never recomputed with them, so it is a ceiling and not a result. Nothing here
+predicts what the new number will be, and nothing should.
+
+**Not done, deliberately.** The pipeline has not been run against production.
+The deliverable is the rule and the rows; the figure comes from a run a
+maintainer schedules, and inventing one in advance would be the same error as
+publishing an analysis document's number as a census.
+
+---
+
 ## 2026-08-04 — NOT A CHECK-SEMANTICS CHANGE: three chains produced no census at all, and minter capture now works where it never had
 
 **What changed.** Two things, neither of which touches a rung's rule, a status,

@@ -1,5 +1,19 @@
 # Per-chain payment funnels
 
+> **SUPERSEDED, 2026-08-06. Every figure below is unpublishable.** Not because
+> it is wrong — the method here is sound and its corrections are inherited
+> intact — but because it was produced by a one-off log study that is not in
+> the database, not pinned to a block, and not reproducible by a sweep. **358
+> agents paid and 34 x402 settlements must not be quoted**, and neither may the
+> 313 or 190 that preceded them. The measurement now lives in a run-scoped
+> pipeline: `crates/payments` (the attribution rule and the exclusions),
+> migration 0019 (the tables), `crates/sweeper/src/bin/payments.rs` (the pass),
+> and `METHODOLOGY.md` §8 (what a reader is told). One rule changes materially
+> in the move: attribution is through the **on-chain, signature-verified**
+> `getAgentWallet`, not the declared `services[]` convention these funnels use —
+> §1 below is part of why. This document stays as the record of how the method
+> was arrived at and what each correction cost.
+
 Extends `payments-design.md` from Base to all four swept chains, with the three
 corrections from `payments-corrections-ledger.md` applied **from the start**
 rather than retrofitted:

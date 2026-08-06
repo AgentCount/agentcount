@@ -42,6 +42,19 @@ sol! {
     interface IIdentityRegistry {
         function ownerOf(uint256 tokenId) external view returns (address);
         function tokenURI(uint256 tokenId) external view returns (string);
+
+        /// The spec's payment address (`spec/ERC8004SPEC.md` line 141):
+        /// reserved registry metadata that "cannot be set via `setMetadata()`
+        /// or during `register()`", is "initially set to the owner's address",
+        /// and can only be changed by proving control of the new address with
+        /// an EIP-712 signature (EOA) or ERC-1271 (contract wallet). Cleared
+        /// automatically when the NFT is transferred.
+        ///
+        /// Selector `0x00339509`, confirmed live on the deployed Base registry
+        /// at block 49,262,617. This is the ONLY address a payment figure may
+        /// be attributed through — see `crates/payments`'s crate doc for the
+        /// full argument and the four retractions that motivated it.
+        function getAgentWallet(uint256 agentId) external view returns (address);
     }
 
     // Documents what the registry emits on mint. Not decoded anywhere in this
@@ -459,6 +472,38 @@ impl Registry {
             registration_tx_hash: None,
             registration_block: None,
         })
+    }
+
+    /// `getAgentWallet(agentId)` at one block — the spec's payment address.
+    ///
+    /// `Ok(Some(addr))` is what the registry returned, **including the zero
+    /// address**, which is a real answer meaning "no wallet is verified for
+    /// this agent" and is stored as such (19,624 of Base's 60,097 agents
+    /// return it). `Ok(None)` means the call reverted: either this deployment
+    /// has no `getAgentWallet` at all, or the token id does not exist. Both are
+    /// "we could not ask", never "the answer is zero" — the caller writes no
+    /// target row for them, exactly as an absent rung means not-checked.
+    ///
+    /// Everything else is an `Err`. The distinction is the same one
+    /// [`Registry::exists`] draws and matters for the same reason: a throttled
+    /// or dropped read misread as "unset" would silently shrink the
+    /// attributable population, and a smaller payment figure is exactly the
+    /// direction nobody would question.
+    pub async fn agent_wallet(&self, agent_id: u64, block: u64) -> Result<Option<String>> {
+        let c = IIdentityRegistry::new(self.address, &self.provider);
+        let token_id = U256::from(agent_id);
+        match retry_throttled(|| async {
+            c.getAgentWallet(token_id)
+                .block(BlockId::from(block))
+                .call()
+                .await
+        })
+        .await
+        {
+            Ok(addr) => Ok(Some(format!("{addr:?}").to_lowercase())),
+            Err(e) if is_revert(&e) => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("getAgentWallet({agent_id})")),
+        }
     }
 
     /// Every `Registered` event up to `to_block`, keyed by agent id.
