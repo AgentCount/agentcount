@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 chain = { path = "../chain" }
 checks = { path = "../checks" }
+payments = { path = "../payments" }
 probe = { path = "../probe" }
 alloy = { workspace = true }
 sqlx = { workspace = true }

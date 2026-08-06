@@ -6,5 +6,7 @@
 
 pub mod registry;
 pub mod reputation;
+pub mod token;
 pub use registry::{AgentSnapshot, Registry};
 pub use reputation::{FeedbackReads, Reputation};
+pub use token::{Erc20, Side, TokenMetadata, TransferLog};

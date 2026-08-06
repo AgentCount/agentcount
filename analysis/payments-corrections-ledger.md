@@ -1,5 +1,14 @@
 # Corrections ledger — the payments round
 
+> **The four corrections below are now enforced in code, 2026-08-06.** Each is
+> a named exclusion in `crates/payments/src/exclusions.rs` with a regression
+> test citing this ledger by entry, and excluded rows are stored with the rule
+> that excluded them so the uncorrected figure stays recomputable. The FIGURES
+> here — 313, 190, $8,845,244, $1,090,098 — are **superseded and
+> unpublishable**: they came from a study that cannot be recomputed by a sweep.
+> See `METHODOLOGY.md` §8 and the 2026-08-06 changelog entry. PAY-4, the fourth
+> costume, is recorded in `payments-per-chain.md` §2 rather than here.
+
 Same discipline as FIX 1–8 in `CHANGELOG-METHODOLOGY.md`: what was claimed, why
 it was wrong, what it became, and what would have prevented it. **Every
 correction here was made before publication.** Three findings were retracted;

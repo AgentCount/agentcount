@@ -13,13 +13,18 @@
 #   sweeper <chain>   pin a block, read every agent, answer rungs 1-5 and 7
 #   liveness <chain>  rung 6 — probe the service endpoints those documents declared
 #   delta <chain>     what changed against the previous finished run
+#   payments <chain>  token transfer logs at the run's pinned block — NOT a rung
 #   export-run <run>  rebuild the run's export from the rows it wrote
 #   heartbeat         the dead man's switch, pinged only once data is published
 #   tail --once       one discovery pass over each chain, between censuses
 #
-# `scripts/weekly-sweep.sh` is the entrypoint and runs the first five in that
+# `scripts/weekly-sweep.sh` is the entrypoint and runs the first six in that
 # order, per chain. The order matters: rung 6 reads documents the sweep
 # archived, and the delta compares a run that has finished.
+#
+# `payments` is in the image but OFF in the schedule (`SWEEP_PAYMENTS=1` turns
+# it on). It is the longest step, no published figure depends on it, and it is
+# equally useful run by hand against one finished run — see METHODOLOGY.md §8.
 #
 # `tail` is NOT part of that sequence and must not be added to it. It runs on
 # its own, far shorter schedule — a second Cloud Run Job on this same image
@@ -54,16 +59,17 @@ COPY crates/api/Cargo.toml crates/api/
 COPY crates/chain/Cargo.toml crates/chain/
 COPY crates/checks/Cargo.toml crates/checks/
 COPY crates/indexer/Cargo.toml crates/indexer/
+COPY crates/payments/Cargo.toml crates/payments/
 COPY crates/probe/Cargo.toml crates/probe/
 COPY crates/sweeper/Cargo.toml crates/sweeper/
 RUN set -eux; \
-    for c in api chain checks indexer probe sweeper; do \
+    for c in api chain checks indexer payments probe sweeper; do \
         mkdir -p "crates/$c/src"; \
         echo 'fn main() {}' > "crates/$c/src/main.rs"; \
         echo '' > "crates/$c/src/lib.rs"; \
     done; \
     mkdir -p crates/sweeper/src/bin; \
-    for b in liveness delta export-run heartbeat tail; do \
+    for b in liveness delta export-run heartbeat payments tail; do \
         echo 'fn main() {}' > "crates/sweeper/src/bin/$b.rs"; \
     done; \
     cargo build --release -p sweeper || true
@@ -77,7 +83,8 @@ RUN set -eux; \
     find crates -name '*.rs' -exec touch {} +; \
     cargo build --release -p sweeper; \
     strip target/release/sweeper target/release/liveness target/release/delta \
-          target/release/export-run target/release/heartbeat target/release/tail
+          target/release/export-run target/release/heartbeat target/release/payments \
+          target/release/tail
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 #
@@ -107,6 +114,7 @@ COPY --from=build /src/target/release/liveness /usr/local/bin/liveness
 COPY --from=build /src/target/release/delta /usr/local/bin/delta
 COPY --from=build /src/target/release/export-run /usr/local/bin/export-run
 COPY --from=build /src/target/release/heartbeat /usr/local/bin/heartbeat
+COPY --from=build /src/target/release/payments /usr/local/bin/payments
 COPY --from=build /src/target/release/tail /usr/local/bin/tail
 COPY scripts/ /opt/agentcount/scripts/
 # `chmod` in a RUN rather than `COPY --chmod`, which needs BuildKit — Cloud

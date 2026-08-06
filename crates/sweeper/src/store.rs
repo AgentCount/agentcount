@@ -1218,3 +1218,272 @@ pub struct ProbeRow {
     pub error: Option<String>,
     pub elapsed_ms: Option<u32>,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payments — the `payments` binary's half of this store (migration 0019).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Three tables, written by one pass: `payment_targets` (the attribution map),
+// `payment_scans` (what was looked at) and `payments` (the transfers and their
+// verdicts). Every one of them is `run_id`-scoped exactly like `check_results`,
+// so a figure is pinned to a block and recomputable — which the one-off study
+// these replace was not.
+
+/// One agent as the payments pass needs it: who owns it, when it came into
+/// existence, and what its document declared.
+pub struct PaymentCandidate {
+    pub agent_id: u64,
+    /// `ownerOf` at the pinned block, from `agent_snapshots`.
+    pub owner: String,
+    /// `None` when this run predates minter capture (migration 0013) or the
+    /// registration event could not be read. Fatal to attribution — see
+    /// `payments::Exclusion::MintBlockUnknown` — and never silently treated as
+    /// zero.
+    pub registration_block: Option<u64>,
+    /// The archived registration document, for the declared basis. `None` when
+    /// the archive kept no body.
+    pub body: Option<Vec<u8>>,
+}
+
+/// One row for `payment_targets`, assembled by the binary from
+/// `payments::TargetDecision`.
+pub struct TargetWrite<'a> {
+    pub run_id: Uuid,
+    pub chain: &'a str,
+    pub agent_id: u64,
+    pub basis: &'a str,
+    pub address: &'a str,
+    pub declared_index: Option<i32>,
+    pub eligible: bool,
+    pub ineligible_reason: Option<&'a str>,
+    pub owner: &'a str,
+    pub registration_block: Option<u64>,
+    pub read_at_block: u64,
+}
+
+/// One row for `payments`.
+pub struct PaymentWrite<'a> {
+    pub run_id: Uuid,
+    pub chain: &'a str,
+    pub agent_id: u64,
+    pub basis: &'a str,
+    pub credited_address: &'a str,
+    pub address_reached_by: i32,
+    pub token_address: &'a str,
+    pub token_symbol: &'a str,
+    pub token_decimals: i16,
+    pub direction: &'a str,
+    pub counterparty: &'a str,
+    /// The raw uint256 as a decimal string, cast to `NUMERIC` in the statement.
+    /// Never narrowed to an integer type on the way through.
+    pub value_raw: &'a str,
+    pub block_number: u64,
+    pub tx_hash: &'a str,
+    pub log_index: i32,
+    pub agent_registration_block: Option<u64>,
+    pub post_mint: Option<bool>,
+    pub counterparty_is_contract: Option<bool>,
+    pub counterparty_is_run_owner: Option<bool>,
+    pub eip3009_authorization: bool,
+    pub eip3009_authorizer: Option<&'a str>,
+    pub eip3009_authorizer_is_sender: Option<bool>,
+    pub included: bool,
+    pub exclusion: Option<&'a str>,
+}
+
+/// One row for `payment_scans`.
+pub struct ScanWrite<'a> {
+    pub run_id: Uuid,
+    pub chain: &'a str,
+    pub token_address: &'a str,
+    pub token_symbol: &'a str,
+    pub token_decimals: i16,
+    pub from_block: u64,
+    pub to_block: u64,
+    pub directions: &'a str,
+    pub basis: &'a str,
+    pub targets_scanned: i32,
+    pub transfers_found: i32,
+    pub rule_version: &'a str,
+}
+
+impl Db {
+    /// A finished run's chain and pinned block.
+    ///
+    /// Errors if the run has no `pinned_block`. There is no fallback: a
+    /// payments pass with no pin would read logs up to whatever block the node
+    /// had reached, and a figure assembled that way describes a population that
+    /// never simultaneously existed — the exact failure pinning exists for.
+    pub async fn run_pin(&self, run_id: Uuid) -> Result<(String, u64)> {
+        let row: (String, Option<i64>) =
+            sqlx::query_as("SELECT chain, pinned_block FROM runs WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_one(&self.pool)
+                .await
+                .with_context(|| format!("no run {run_id}"))?;
+        let pinned = row.1.with_context(|| {
+            format!("run {run_id} has no pinned_block — nothing to pin a payments pass to")
+        })?;
+        Ok((row.0, pinned as u64))
+    }
+
+    /// Every agent in a run, with its owner, registration block and archived
+    /// document.
+    ///
+    /// A LEFT JOIN on the archive, for the same reason `rung6_candidates` uses
+    /// one: an agent with no archived body must still be visible, so the caller
+    /// decides what that means rather than have it vanish from the population.
+    pub async fn payment_candidates(&self, run_id: Uuid) -> Result<Vec<PaymentCandidate>> {
+        /// `(agent_id, owner, registration_block, body)`, as the columns come
+        /// back. Named for the same reason `ProbeTuple` above is.
+        type CandidateTuple = (i64, String, Option<i64>, Option<Vec<u8>>);
+        let rows: Vec<CandidateTuple> = sqlx::query_as(
+            "SELECT a.agent_id, a.owner, a.registration_block, h.body \
+               FROM agent_snapshots a \
+               LEFT JOIN http_archive h \
+                 ON h.run_id = a.run_id AND h.agent_id = a.agent_id \
+              WHERE a.run_id = $1 \
+              ORDER BY a.agent_id",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("loading payment candidates")?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(agent_id, owner, registration_block, body)| PaymentCandidate {
+                    agent_id: agent_id as u64,
+                    owner,
+                    registration_block: registration_block.map(|b| b as u64),
+                    body,
+                },
+            )
+            .collect())
+    }
+
+    /// Everything the payments pass wrote for a run, removed.
+    ///
+    /// The pass is re-runnable — a wider token list or a fixed rule should
+    /// replace a run's payment rows, not double them — and a partial replace
+    /// would leave rows judged under two different `rule_version`s in one run.
+    /// All three tables are cleared in one transaction so a crash cannot leave
+    /// scans without their transfers or targets without their map.
+    pub async fn clear_payments(&self, run_id: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for table in ["payments", "payment_scans", "payment_targets"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE run_id = $1"))
+                .bind(run_id)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("clearing {table}"))?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn write_payment_target(&self, t: &TargetWrite<'_>) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO payment_targets \
+               (run_id, chain, agent_id, basis, address, declared_index, eligible, \
+                ineligible_reason, owner, registration_block, read_at_block) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) \
+             ON CONFLICT (run_id, chain, agent_id, basis, address) DO NOTHING",
+        )
+        .bind(t.run_id)
+        .bind(t.chain)
+        .bind(t.agent_id as i64)
+        .bind(t.basis)
+        .bind(t.address)
+        .bind(t.declared_index)
+        .bind(t.eligible)
+        .bind(t.ineligible_reason)
+        .bind(t.owner)
+        .bind(t.registration_block.map(|b| b as i64))
+        .bind(t.read_at_block as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn write_payment(&self, p: &PaymentWrite<'_>) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO payments \
+               (run_id, chain, agent_id, basis, credited_address, address_reached_by, \
+                token_address, token_symbol, token_decimals, direction, counterparty, \
+                value_raw, block_number, tx_hash, log_index, agent_registration_block, \
+                post_mint, counterparty_is_contract, counterparty_is_run_owner, \
+                eip3009_authorization, eip3009_authorizer, eip3009_authorizer_is_sender, \
+                included, exclusion) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::numeric,$13,$14,$15,$16,$17,\
+                     $18,$19,$20,$21,$22,$23,$24) \
+             ON CONFLICT ON CONSTRAINT payments_unique DO NOTHING",
+        )
+        .bind(p.run_id)
+        .bind(p.chain)
+        .bind(p.agent_id as i64)
+        .bind(p.basis)
+        .bind(p.credited_address)
+        .bind(p.address_reached_by)
+        .bind(p.token_address)
+        .bind(p.token_symbol)
+        .bind(p.token_decimals)
+        .bind(p.direction)
+        .bind(p.counterparty)
+        .bind(p.value_raw)
+        .bind(p.block_number as i64)
+        .bind(p.tx_hash)
+        .bind(p.log_index)
+        .bind(p.agent_registration_block.map(|b| b as i64))
+        .bind(p.post_mint)
+        .bind(p.counterparty_is_contract)
+        .bind(p.counterparty_is_run_owner)
+        .bind(p.eip3009_authorization)
+        .bind(p.eip3009_authorizer)
+        .bind(p.eip3009_authorizer_is_sender)
+        .bind(p.included)
+        .bind(p.exclusion)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record that a (basis, token) was scanned. Written LAST, after the
+    /// transfers it describes, so a crash mid-scan leaves no row claiming a
+    /// range was covered when it was not — absence means "not scanned", and
+    /// that has to stay true under failure, not only under success.
+    pub async fn write_payment_scan(&self, s: &ScanWrite<'_>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO payment_scans \
+               (run_id, chain, token_address, token_symbol, token_decimals, from_block, \
+                to_block, directions, basis, targets_scanned, transfers_found, rule_version) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             ON CONFLICT (run_id, basis, token_address) DO UPDATE SET \
+               token_symbol = EXCLUDED.token_symbol, \
+               token_decimals = EXCLUDED.token_decimals, \
+               from_block = EXCLUDED.from_block, \
+               to_block = EXCLUDED.to_block, \
+               directions = EXCLUDED.directions, \
+               targets_scanned = EXCLUDED.targets_scanned, \
+               transfers_found = EXCLUDED.transfers_found, \
+               rule_version = EXCLUDED.rule_version, \
+               scanned_at = now()",
+        )
+        .bind(s.run_id)
+        .bind(s.chain)
+        .bind(s.token_address)
+        .bind(s.token_symbol)
+        .bind(s.token_decimals)
+        .bind(s.from_block as i64)
+        .bind(s.to_block as i64)
+        .bind(s.directions)
+        .bind(s.basis)
+        .bind(s.targets_scanned)
+        .bind(s.transfers_found)
+        .bind(s.rule_version)
+        .execute(&self.pool)
+        .await
+        .context("recording a payment scan")?;
+        Ok(())
+    }
+}
