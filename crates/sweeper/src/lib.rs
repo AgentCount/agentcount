@@ -47,5 +47,6 @@
 //! agree exactly about how. `export` stays private to the sweeper binary: it
 //! writes the `data/<run_id>/` files, which only a full sweep produces.
 
+pub mod delta;
 pub mod store;
 pub mod tail;

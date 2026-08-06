@@ -74,7 +74,32 @@
 /// implement it" (schema ≤ 6) or "this run implemented it and this agent was
 /// not probed" (schema 7) — the same *did not ask* versus *asked and got
 /// nothing* distinction the statuses keep everywhere else.
-pub const SCHEMA_VERSION: i32 = 7;
+///
+/// 8 (2026-08-06): **`refused`** — a third answer for "the origin is there and
+/// declined us", produced by rungs 2 and 6, and **the first bump that moves
+/// existing agents' statuses**.
+///
+/// - `check_results.status` gains a seventh value (migration 0020 widens the
+///   `CHECK` constraint). On rung 2 it takes HTTP 429/503/401/402/407 out of
+///   `fail`, and `robots_disallowed`/`robots_unavailable` out of `error`. On
+///   rung 6 it takes 429/503/401/407 and the same two robots outcomes out of
+///   `fail`/`error`; 402 is unchanged there and still `pass`.
+/// - Rung 2's evidence gains `retry_after` (seconds), present only when a 429
+///   or 503 carried the header, and its `reason` for a decline is `declined`
+///   (or the pre-existing `payment_required` for a 402). Rung 6's evidence
+///   gains `endpoints_refused`.
+/// - No rung's PASS rule changes, no agent gains or loses a `pass`, and
+///   skip-propagation is unaffected — `refused` is not `pass`, so it stops a
+///   dependent rung exactly as the `fail` or `error` it replaced did.
+///
+/// **Runs swept under schema ≤ 7 are re-judged, not left inconsistent**, by
+/// `sweeper`'s `backfill-refused` binary, which re-reads the archived evidence
+/// and restamps each run it touches to this version. A run stamped 8 has been
+/// judged by this vocabulary whether it was swept under it or re-judged into
+/// it; the published archives of the 2026-07 and 2026-08 censuses were written
+/// before the backfill and carry the old words — see `DATA.md` and the
+/// 2026-08-06 changelog entry for the exact mapping.
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// The checks crate's own version — the semantics of the rungs.
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");

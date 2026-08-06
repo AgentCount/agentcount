@@ -230,9 +230,36 @@ archives across versions has to branch on it.
 | 5 | rung 2 evidence: `gateway_attempts` |
 | 6 | `minter`, `registration_tx_hash`, `registration_block`; rung 1 `tx_hash` populated |
 | 7 | rung 6 (`live`) ships; `unprobeable` status; `endpoint_probes` |
+| 8 | `refused` status on rungs 2 and 6; rung 2 evidence: `retry_after`; rung 6 evidence: `endpoints_refused` |
 
 Full detail for every one of these is in
 [`CHANGELOG-METHODOLOGY.md`](CHANGELOG-METHODOLOGY.md).
+
+### Version 8 is the one that moved existing rows
+
+Every earlier bump was additive: a new evidence field, or a status for a case
+nothing had ever been written for. **Version 8 renamed answers that already
+existed.** HTTP 429/503/401/402/407, and a `robots.txt` we could not get
+permission from, were `fail` (the agent's word) or `error` (ours); they are now
+`refused`. Nothing was re-probed and no agent's behaviour was re-assessed — the
+new word is derived from the `http_status` and `reason` each row already
+carried, and no row moves into or out of `pass` in either direction.
+
+The database has been re-judged so the published series says one thing. **The
+archives already at `data.agentcount.ai` have not been reissued**, for the same
+reason as the `checker_commit` defect above: immutable bytes at a permanent URL
+are the guarantee. So an archive stamped schema 7 or earlier carries the old
+words, and the mapping to schema 8 is mechanical and total:
+
+| in a schema ≤ 7 archive | in schema 8 |
+|---|---|
+| rung 2 `fail`, `evidence.http_status` one of 401/402/407/429/503 | `refused` |
+| rung 2 `error`, `evidence.reason` starting `robots_disallowed` or `robots_unavailable` | `refused` |
+| rung 6 `fail`, some endpoint 401/407/429/503 and none live or definitely not-live | `refused` |
+| rung 6 `error`, every endpoint's error a `robots_*` one | `refused` |
+| anything else | unchanged |
+
+The 2026-08-06 changelog entry has the measured counts per run.
 
 ## What is NOT published
 

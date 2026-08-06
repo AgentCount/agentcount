@@ -21,8 +21,8 @@ mod resolve;
 mod robots;
 
 pub use fetch::{
-    DEFAULT_GLOBAL_CONCURRENCY, FetchOutcome, GatewayAttempt, MAX_BODY_BYTES, MAX_REDIRECTS,
-    PER_HOST_CAP, Prober,
+    DEFAULT_GLOBAL_CONCURRENCY, DEFAULT_HOST_DELAY, FetchOutcome, GatewayAttempt, MAX_BODY_BYTES,
+    MAX_HONOURED_RETRY_AFTER, MAX_REDIRECTS, PER_HOST_CAP, Prober,
 };
 pub use resolve::{DataUriDecode, Target, ipfs_cid_and_path, resolve};
 

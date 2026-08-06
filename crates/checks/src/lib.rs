@@ -1,8 +1,10 @@
 //! # checks — the conformance ladder, as pure functions.
 //!
 //! Seven questions, each answered `pass` / `fail` / `skipped` / `error` — plus
-//! two rung-specific words for the agent that gave a rung nothing to judge:
-//! `unclaimed` for rung 5 (`bound`), added 2026-07-29 (see
+//! `refused` for an origin that is there and declined us, on rungs 2 and 6,
+//! added 2026-08-06 (see [`CheckStatus::Refused`] and the [`refusal`] module) —
+//! plus two rung-specific words for the agent that gave a rung nothing to
+//! judge: `unclaimed` for rung 5 (`bound`), added 2026-07-29 (see
 //! [`CheckStatus::Unclaimed`]), and `unprobeable` for rung 6 (`live`), added
 //! 2026-08-01 (see [`CheckStatus::Unprobeable`]). Each carries the evidence a
 //! reader can re-check by hand. There is no eighth function that combines them
@@ -24,6 +26,7 @@
 
 mod ladder;
 mod model;
+pub mod refusal;
 mod rung1_registered;
 mod rung2_resolvable;
 mod rung3_parseable;

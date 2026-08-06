@@ -15,15 +15,30 @@ use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::runs;
 
-/// The five statuses `check_results.status` is constrained to (the DB's own
-/// `check_results_status_check` — migration 0011 — is the source of truth;
-/// this list must never drift ahead of or behind it). `unclaimed` was added
-/// 2026-07-29 (P0 FIX 4/5 addendum): rung 5 (`bound`) produces it for a
-/// document that made no binding claim to verify. Checked against a caller's
-/// `status=` filter here, not in SQL, so an invalid value is a clean 400
-/// rather than a query that silently matches nothing — and so an
+/// The seven statuses `check_results.status` is constrained to (the DB's own
+/// `check_results_status_check` — migration 0020 — is the source of truth;
+/// this list must never drift ahead of or behind it). Checked against a
+/// caller's `status=` filter here, not in SQL, so an invalid value is a clean
+/// 400 rather than a query that silently matches nothing — and so an
 /// unrecognised status string can never be guessed at instead of rejected.
-const VALID_STATUSES: [&str; 5] = ["pass", "fail", "skipped", "error", "unclaimed"];
+///
+/// The additions, and the drift that made this comment necessary: `unclaimed`
+/// (2026-07-29, rung 5) was added with its migration, and `refused`
+/// (2026-08-06, rungs 2 and 6) with its own. **`unprobeable` was not** — it
+/// landed in migration 0015 on 2026-08-01 and this list was never widened, so
+/// `?status=unprobeable` answered 400 for the one status tens of thousands of
+/// agents actually had. Fixed here. A filter that rejects a status the database
+/// contains is worse than no filter, because a 400 reads as "you asked wrong"
+/// while the honest answer was a page of agents.
+const VALID_STATUSES: [&str; 7] = [
+    "pass",
+    "fail",
+    "skipped",
+    "error",
+    "refused",
+    "unclaimed",
+    "unprobeable",
+];
 
 fn validate_status(status: &str) -> ApiResult<()> {
     if VALID_STATUSES.contains(&status) {
@@ -630,4 +645,40 @@ pub async fn get_one(
         rungs,
         archive,
     }))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every status the checker can produce must be a status this endpoint
+    /// will accept as a filter.
+    ///
+    /// The `match` below has no wildcard arm on purpose: adding a variant to
+    /// `checks::CheckStatus` breaks this file's compilation, which is the only
+    /// mechanism that would have caught `unprobeable` going missing from
+    /// `VALID_STATUSES` for five days. A doc comment asking the next person to
+    /// remember did not.
+    #[test]
+    fn every_status_the_checker_can_produce_is_queryable() {
+        use checks::CheckStatus::*;
+        for status in [Pass, Fail, Skipped, Error, Refused, Unclaimed, Unprobeable] {
+            match status {
+                Pass | Fail | Skipped | Error | Refused | Unclaimed | Unprobeable => {}
+            }
+            assert!(
+                validate_status(status.as_str()).is_ok(),
+                "`{}` is a status the database can hold, and this endpoint rejects it",
+                status.as_str()
+            );
+        }
+        assert_eq!(VALID_STATUSES.len(), 7);
+    }
+
+    #[test]
+    fn an_invented_status_is_still_rejected() {
+        for junk in ["refuse", "REFUSED", "live", ""] {
+            assert!(validate_status(junk).is_err(), "{junk:?}");
+        }
+    }
 }

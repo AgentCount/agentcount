@@ -37,6 +37,11 @@ sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# `Retry-After` is defined as either delta-seconds or an HTTP-date (RFC 9110
+# §10.2.3), and real rate limiters send both. Parsing the date form needs a
+# calendar; this is the only thing chrono is used for here.
+chrono = { workspace = true }
+
 anyhow = { workspace = true }
 tracing = { workspace = true }
 
