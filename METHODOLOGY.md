@@ -156,6 +156,20 @@ successful HTTP response within the timeout?
   understood exactly what was declared, we simply cannot decode it — that is
   our limitation, not a defect in the agent's document. See
   `CHANGELOG-METHODOLOGY.md`'s FIX-7 entry for the full measurement.
+- **"Inline" is an evidence field, never a test on the URI text.** The
+  population of inline documents is `scheme == "data"` in this rung's
+  evidence. It is *not* the agents whose `agent_uri` begins with `data:`, and
+  the difference is large enough to change a published finding. Across the
+  four-chain census the evidence field counts **182,775** inline documents and
+  the string test counts **179,647** — a gap of 3,128, made of two things:
+  **+3,151** agents whose `tokenURI()` is a bare JSON document with no scheme
+  at all (decode path 5 above), which are inline by every meaning that
+  matters — nothing was fetched — and **−23** agents whose URI does begin
+  `data:` but is malformed (`;base64` followed by a space instead of a comma),
+  which this rung records as `unsupported` because nothing was decoded from
+  them. A report that splits agents into "inline" and "fetched over the
+  network" must read the evidence, or it will describe 3,128 agents as running
+  a server that was never contacted.
 - **`ipfs://` is tried against up to three gateways, in sequence (P0 FIX 8,
   2026-07-29 — reverses a 2026-07-28 ruling).** The earlier ruling used one
   disclosed gateway (`ipfs.io`), specifically so a failure would be honestly
