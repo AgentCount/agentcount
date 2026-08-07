@@ -28,12 +28,17 @@
 //! **Why this reads a table instead of counting.** Every finding is an
 //! aggregate over one run's `check_results`, and two of them cannot be answered
 //! from an index — one reads `evidence`, the other groups by `(chain,
-//! agent_id)` while filtering on `rung`. Both end in a heap scan across every
-//! page the run occupies, because the sweeper writes an agent's seven rungs
-//! together. For the 2026-08 BNB Chain run (251,782 agents) that was about
-//! 1 GB of heap reads per request and roughly 550 seconds on the production
-//! instance — an HTTP 408, every time, which took the homepage's all-chains
+//! agent_id)` while filtering on `rung`. Measured on production for the 2026-08
+//! BNB Chain run (251,782 agents), cache warm: 5.0 s for the first and 9.2 s
+//! for the second, roughly 2.5 GB of reads between them. This module's own
+//! timeout layer caps a request at ten seconds, so the endpoint returned an
+//! HTTP 408 for that run every time — which took the homepage's all-chains
 //! figure down with it.
+//!
+//! An earlier version of this comment said "roughly 550 seconds". That number
+//! was reconstructed on a workstation, not measured here, and the 408 is ours
+//! at ten seconds rather than the endpoint running for minutes. Migration 0021
+//! carries the correction and the query plans.
 //!
 //! So the arithmetic moved to `ls_run_findings()` (migration 0021), is run once
 //! per run by the `findings` binary after a sweep, and is read back from
