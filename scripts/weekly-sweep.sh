@@ -98,6 +98,20 @@ if [ -n "${SWEEP_REJUDGE:-}" ]; then
 
     rejudge_failed=""
     for run_id in $REJUDGE_RUNS; do
+        # Shape-checked before it reaches SQL. These ids come from an operator
+        # typing an environment variable, so this is a typo guard rather than a
+        # security boundary — but the id is interpolated into a query below, and
+        # a value that is not a uuid should be rejected by name here instead of
+        # becoming a psql syntax error twenty lines later.
+        case "$run_id" in
+            [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+            *)
+                echo "!!! $run_id: not a run id"
+                rejudge_failed="$rejudge_failed $run_id(malformed)"
+                continue
+                ;;
+        esac
+
         # The chain comes from the run, never from the caller: `liveness` takes
         # both, and a mismatched pair would re-judge the wrong population.
         chain=$(psql "$DATABASE_URL" -tAc \
