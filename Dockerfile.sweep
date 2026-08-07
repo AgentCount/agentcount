@@ -13,14 +13,17 @@
 #   sweeper <chain>   pin a block, read every agent, answer rungs 1-5 and 7
 #   liveness <chain>  rung 6 — probe the service endpoints those documents declared
 #   delta <chain>     what changed against the previous finished run
+#   findings <chain>  the homepage's five figures, counted once so a page load
+#                     need not count 1.7 million rows to render them
 #   payments <chain>  token transfer logs at the run's pinned block — NOT a rung
 #   export-run <run>  rebuild the run's export from the rows it wrote
 #   heartbeat         the dead man's switch, pinged only once data is published
 #   tail --once       one discovery pass over each chain, between censuses
 #
-# `scripts/weekly-sweep.sh` is the entrypoint and runs the first six in that
+# `scripts/weekly-sweep.sh` is the entrypoint and runs the first seven in that
 # order, per chain. The order matters: rung 6 reads documents the sweep
-# archived, and the delta compares a run that has finished.
+# archived, the delta compares a run that has finished, and the findings
+# summarise a run that is complete including rung 6.
 #
 # `payments` is in the image but OFF in the schedule (`SWEEP_PAYMENTS=1` turns
 # it on). It is the longest step, no published figure depends on it, and it is
@@ -69,7 +72,7 @@ RUN set -eux; \
         echo '' > "crates/$c/src/lib.rs"; \
     done; \
     mkdir -p crates/sweeper/src/bin; \
-    for b in liveness delta export-run heartbeat payments tail; do \
+    for b in liveness delta findings export-run heartbeat payments tail; do \
         echo 'fn main() {}' > "crates/sweeper/src/bin/$b.rs"; \
     done; \
     cargo build --release -p sweeper || true
@@ -83,8 +86,8 @@ RUN set -eux; \
     find crates -name '*.rs' -exec touch {} +; \
     cargo build --release -p sweeper; \
     strip target/release/sweeper target/release/liveness target/release/delta \
-          target/release/export-run target/release/heartbeat target/release/payments \
-          target/release/tail
+          target/release/findings target/release/export-run target/release/heartbeat \
+          target/release/payments target/release/tail
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 #
@@ -112,6 +115,7 @@ RUN set -eux; \
 COPY --from=build /src/target/release/sweeper /usr/local/bin/sweeper
 COPY --from=build /src/target/release/liveness /usr/local/bin/liveness
 COPY --from=build /src/target/release/delta /usr/local/bin/delta
+COPY --from=build /src/target/release/findings /usr/local/bin/findings
 COPY --from=build /src/target/release/export-run /usr/local/bin/export-run
 COPY --from=build /src/target/release/heartbeat /usr/local/bin/heartbeat
 COPY --from=build /src/target/release/payments /usr/local/bin/payments
