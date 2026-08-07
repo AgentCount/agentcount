@@ -139,3 +139,17 @@ jobs:
           done < <(python3 -c "import json;[print(r['run_id']) for r in json.load(open('published-runs.json'))]")
 
           [ "$fail" -eq 0 ] || { echo "::error::a published archive URL does not resolve"; exit 1; }
+
+  # ── No per-agent query may omit `chain` ───────────────────────────────────
+  #
+  # See scripts/check-chain-predicates.py for the measurements. Short version:
+  # `chain` sits between `run_id` and `agent_id` in every per-run key, so a
+  # predicate that skips it scans the whole run. Six queries were written that
+  # way before anyone noticed, because the column is redundant and leaving it
+  # out looks tidy. Two of them shipped and broke the site.
+  chain-predicates:
+    name: chain-predicates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 scripts/check-chain-predicates.py
