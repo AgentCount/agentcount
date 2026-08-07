@@ -381,6 +381,21 @@ static CURRENT_RUN: std::sync::OnceLock<(store::Db, Uuid)> = std::sync::OnceLock
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Answered before anything else, and without a database: the point is that
+    // somebody holding only the image can ask what is inside it. Every
+    // scheduled run of the 2026-08 census stamped `checker_commit: unknown`
+    // and nothing noticed, because nothing could ask.
+    // `scripts/deploy-weekly-sweep.sh` now asks as a build step and fails the
+    // deploy on an image that answers `unknown`.
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "sweeper {} checker_commit={}",
+            env!("CARGO_PKG_VERSION"),
+            env!("CHECKER_COMMIT")
+        );
+        return Ok(());
+    }
+
     let outcome = sweep().await;
     if let Err(e) = &outcome
         && let Some((db, run_id)) = CURRENT_RUN.get()
