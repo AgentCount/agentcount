@@ -58,6 +58,18 @@ anything that can move a status is decided here.
   regardless of how it is computed.
 - **Evidence, not assertion.** A new claim needs something a reader can
   re-check attached to it.
+- **Every per-agent query names `chain`.** On `check_results`,
+  `agent_snapshots` and `http_archive`, `chain` is denormalized convenience —
+  `run_id` determines it, verified on production as zero runs spanning two
+  chains and zero rows disagreeing with `runs.chain`. It is **never** a seek
+  key. But it sits between `run_id` and `agent_id` in the index, so a `WHERE`
+  that omits it scans the entire run instead of seeking: 8,915 ms against
+  8.8 ms on a 250,000-agent run. Six queries were written that way, precisely
+  because the column is redundant and leaving it out reads as tidy. The worst
+  of them passed `chain` to an `INSERT` and not to the `DELETE` beside it — it
+  was correct, invisible to every test, and 900× slower per agent. Only
+  measurement caught it, which is why this is a CI job
+  (`scripts/check-chain-predicates.py`) and not a note.
 - **New dependencies need a reason in the pull request description.** Not a
   high bar, just a stated one.
 
@@ -69,7 +81,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs exactly these, plus the checks-purity gate.
+```sh
+python3 scripts/check-chain-predicates.py
+```
+
+CI runs exactly these, plus the checks-purity and chain-predicates gates.
 
 ## Reporting a wrong number
 

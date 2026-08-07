@@ -1,0 +1,85 @@
+-- no-transaction
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 0025 — the unique key stops carrying a column it never seeks on.
+-- ─────────────────────────────────────────────────────────────────────────────
+--
+-- DO NOT APPLY THIS OUT OF SEQUENCE. It must run after the `refused` backfill
+-- and the rung-6 `liveness` pass have finished, and after one weekly sweep has
+-- written against the current key — so that the first production writes under
+-- the new order happen while somebody is watching. See the pull request.
+--
+-- ## What is wrong with (run_id, chain, agent_id, rung)
+--
+-- `chain` is functionally determined by `run_id`: a run sweeps one chain.
+-- Verified on production before writing this, not assumed —
+--
+--   runs whose check_results span two chains ....... 0
+--   rows where check_results.chain <> runs.chain ... 0
+--
+-- So the column adds nothing to the key's uniqueness: (run_id, agent_id, rung)
+-- is exactly as unique as (run_id, chain, agent_id, rung). What it does add is
+-- a trap. A B-tree seeks only on a leading prefix, so a query naming `run_id`
+-- and `agent_id` but not `chain` gets the first column and then walks every row
+-- the run wrote. Measured on the 2026-08 BNB Chain run, 1.76 million rows:
+--
+--   /api/agents page of 50    278,731 buffers   8,915 ms  ->  223 buffers  8.8 ms
+--   rung-6 delete, per agent   19,001 buffers   1,549 ms  ->   10 buffers  1.7 ms
+--   refused backfill chunk     timed out >120 s           ->              74 ms
+--
+-- Six queries were written that way. Two shipped — the agent directory returned
+-- 408 for BNB Chain — and one, caught only by measuring, passed `chain` to an
+-- INSERT and not to the DELETE three lines above it and would have turned a
+-- two-minute rung-6 pass into thirty-six hours.
+--
+-- Every one of those was fixed by naming the column. This removes the reason
+-- anyone has to.
+--
+-- ## Why the index and the CI gate both stay
+--
+-- They catch different things. This makes the primary seek path immune. The
+-- gate (`scripts/check-chain-predicates.py`) catches the seventh instance in a
+-- secondary index, or in a table that does not exist yet. Neither replaces the
+-- other, and the gate is not removed by this migration.
+--
+-- ## What was checked before writing this
+--
+--   * no foreign key references check_results ......................... none
+--   * no view or materialized view depends on it ...................... none
+--   * no ON CONFLICT names the constraint (the only ON CONSTRAINT in the
+--     tree is `payments_unique`, a different table) .................... none
+--   * no query scopes check_results by (run_id, chain) without agent_id,
+--     so nothing loses a seek it currently has ........................ none
+--   * no sqlx offline metadata to regenerate — queries here are runtime-
+--     bound, not `query!`-checked ..................................... none
+--   * every code mention of `check_results_unique` is a comment ....... yes
+--
+-- `idx_check_results_lookup`, the redundant prefix index, is already gone:
+-- migration 0022 dropped it. Nothing to fold in here.
+--
+-- ## Method
+--
+-- `-- no-transaction` above, because CREATE INDEX CONCURRENTLY cannot run
+-- inside one. The cost of that is that a failure part-way leaves state behind
+-- rather than rolling back, so:
+--
+--   * if this fails during the CREATE, an INVALID index named
+--     `check_results_unique_v2` is left. Drop it and re-run:
+--       DROP INDEX IF EXISTS check_results_unique_v2;
+--   * between the DROP CONSTRAINT and the ADD CONSTRAINT below, uniqueness is
+--     still enforced — by the new unique index, which is already built and
+--     valid at that point. A unique index enforces uniqueness whether or not a
+--     constraint is attached to it. There is no window in which two identical
+--     (run_id, agent_id, rung) rows could be written.
+--
+-- ADD CONSTRAINT ... USING INDEX adopts the existing index rather than building
+-- a second one, and renames it to the constraint's name — so the end state is a
+-- constraint called `check_results_unique`, exactly as before, over three
+-- columns instead of four.
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS check_results_unique_v2
+    ON check_results (run_id, agent_id, rung);
+
+ALTER TABLE check_results DROP CONSTRAINT check_results_unique;
+
+ALTER TABLE check_results
+    ADD CONSTRAINT check_results_unique UNIQUE USING INDEX check_results_unique_v2;
