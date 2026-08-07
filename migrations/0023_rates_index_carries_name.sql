@@ -1,0 +1,59 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 0023 — the rates index carries `name`, so the homepage can render.
+-- ─────────────────────────────────────────────────────────────────────────────
+--
+-- The homepage returned HTTP 500 for several days. Every other page was fine,
+-- which is why nothing looked broken: only `/` sums rates across every chain.
+--
+-- `GET /api/runs/{id}/rates` took 8 to 10 seconds for the three large chains.
+-- The site aborts a fetch at 8 seconds (`AbortSignal.timeout(8000)` in the web
+-- repo's `lib/api/client.ts`), so it gave up before the API answered. The API
+-- was never down and never logged an error; it was answering a question nobody
+-- was still listening to.
+--
+-- ## Why the query was slow
+--
+-- It reads `rung, name, status, count(*)` grouped by all three.
+-- `idx_check_results_rates` was `(run_id, rung, status)`. `name` is not in it,
+-- so the scan could not be index-only, and the planner chose a parallel
+-- sequential scan of the entire table over an index scan plus 1.6 million heap
+-- fetches. On the 2026-08 BNB Chain run, measured on production:
+--
+--   with `name`,    old index    Parallel Seq Scan       278,673 buffers   8.2 s
+--   without `name`, old index    Index Only Scan           1,568 buffers   1.1 s
+--   with `name`,    this index   Index Only Scan          11,087 buffers   1.2 s
+--
+-- A vacuum was needed first and was not sufficient. `check_results` had not
+-- been vacuumed since before the 2026-08 BNB Chain run finished, and the
+-- `refused` backfill left 229,432 dead tuples on top of that. With a stale
+-- visibility map an index-only scan cannot skip the heap, the planner knows it,
+-- and it costs the plan accordingly — so even the `name`-free query seq-scanned
+-- until `VACUUM (ANALYZE)` ran. That is an operational fact, not a schema one,
+-- and it is recorded here because the next person to read these numbers will
+-- otherwise not reproduce them.
+--
+-- ## Why `name` is carried rather than dropped
+--
+-- The obvious fix is to stop selecting `name`: `rates.rs` says it is
+-- functionally dependent on `rung`, and per run it is — checked across every
+-- run in the database, no `(run_id, rung)` has two names.
+--
+-- Across runs it is not. Rung 7 carries TWO names: `attested`, and
+-- `independent` from before the P0 FIX 4/5 rename. Deriving the name from the
+-- rung at read time would relabel what an archived run recorded, which is the
+-- one thing this project does not do to a published measurement. So the column
+-- stays in the query and moves into the index instead.
+--
+-- `INCLUDE` rather than a fourth key column: `name` is never a search term or a
+-- sort key, only a value the scan needs to return. An INCLUDE payload lives in
+-- leaf pages only, so it does not widen the internal nodes or change the
+-- ordering the other queries depend on.
+--
+-- The cost is real and worth stating: 50 MB to 381 MB, because a short string
+-- is now attached to each of 7.08 million entries. That is paid for by
+-- migration 0022, which returned 157 MB by dropping a redundant index, and by
+-- the alternative being a homepage that does not load.
+DROP INDEX IF EXISTS idx_check_results_rates;
+
+CREATE INDEX idx_check_results_rates
+    ON check_results (run_id, rung, status) INCLUDE (name);
