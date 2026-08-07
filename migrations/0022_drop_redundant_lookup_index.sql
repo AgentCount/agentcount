@@ -1,0 +1,35 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 0022 — one of `check_results`' four indexes was never needed.
+-- ─────────────────────────────────────────────────────────────────────────────
+--
+-- `idx_check_results_lookup (run_id, chain, agent_id)` is a strict prefix of
+-- `check_results_unique (run_id, chain, agent_id, rung)`. Every query the
+-- narrow one can answer, the wide one answers with the same index condition on
+-- the same leading columns, so the narrow one buys nothing a B-tree does not
+-- already give for free.
+--
+-- It is not, however, an unused index — which is why this was measured before
+-- it was dropped rather than after. It carried 18.7 million scans, more than
+-- the other three combined: it is the index behind every agent detail page.
+-- The question was whether pushing those lookups onto an index 3.5× its size
+-- (558 MB against 157 MB) would cost anything on an instance with 1.7 GB of
+-- RAM.
+--
+-- It does not. The same lookup, on production, before and after:
+--
+--   with    idx_check_results_lookup   cost=0.56..44.63   9 buffers   (3 hit, 6 read)
+--   without check_results_unique       cost=0.56..44.63   8 buffers   (4 hit, 4 read)
+--
+-- Identical planner cost and one buffer fewer. The two B-trees are the same
+-- depth at this row count, so the wider entries cost nothing until they cost a
+-- whole extra level, and they do not.
+--
+-- What is gained is on the write side, where this project actually hurts. A
+-- BNB Chain sweep inserts about 1.76 million `check_results` rows, and this is
+-- one B-tree insertion per row on the longest and most timeout-prone job here.
+-- It also returns 157 MB, on an instance with 15 GB of disk.
+--
+-- The index has existed since migration 0008, which introduced the conformance
+-- ladder and added both it and `check_results_unique` in the same file. The
+-- prefix was redundant on the day it was written.
+DROP INDEX IF EXISTS idx_check_results_lookup;
