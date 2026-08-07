@@ -15,12 +15,17 @@
 //!
 //! `GET /api/runs/{id}/findings` used to count on every request. Two of the
 //! five findings cannot be answered from an index — one reads `evidence`, the
-//! other groups by `(chain, agent_id)` while filtering on `rung` — so both end
-//! in a heap scan over every page the run occupies. For the 2026-08 BNB Chain
-//! run (251,782 agents) that was about 1 GB of heap reads per request and
-//! roughly 550 seconds on the production instance: an HTTP 408, every time,
-//! which took the homepage's all-chains figure down with it because the
+//! other groups by `(chain, agent_id)` while filtering on `rung` — so neither
+//! can be an index-only scan. Measured on production for the 2026-08 BNB Chain
+//! run (251,782 agents), cache warm: 5.0 s for the first and 9.2 s for the
+//! second, about 2.5 GB of reads between them. The API caps a request at ten
+//! seconds and returns 408, so the endpoint could not answer for that run at
+//! all — which took the homepage's all-chains figure down with it, because the
 //! aggregate sums one findings document per chain.
+//!
+//! An earlier version of this comment said "roughly 550 seconds", a figure that
+//! was reconstructed on a workstation rather than measured here. Migration 0021
+//! records the correction and the plans behind these numbers.
 //!
 //! These numbers stop changing the moment a sweep closes. Computing them once
 //! is not a cache; it is the same decision `delta` already made for the same
