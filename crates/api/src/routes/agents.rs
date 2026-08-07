@@ -372,17 +372,37 @@ pub async fn list(
     // check_results directly into the paginated query above: a join would
     // multiply each agent's snapshot row by however many rungs it has,
     // breaking LIMIT/OFFSET and the count(*) both.
+    //
+    // `chain` is in the predicate because `check_results_unique` is
+    // (run_id, chain, agent_id, rung). Without it, this seeks on `run_id`
+    // alone and then scans every row the run wrote to test `agent_id` — for
+    // the 2026-08 BNB Chain run, 1.76 million rows to return 350. Measured on
+    // production, one 50-agent page:
+    //
+    //   without chain   Parallel Seq Scan    278,731 buffers   8,915 ms
+    //   with chain      Bitmap Index Scan        223 buffers      8.8 ms
+    //
+    // That is the difference between this endpoint answering and returning
+    // 408, and it is the same omission that made the `refused` backfill take
+    // four hours. `chain` is redundant here — a run has exactly one — which is
+    // exactly why it keeps getting left out.
     let agent_ids: Vec<i64> = rows.iter().map(|r| r.agent_id).collect();
     let rung_rows: Vec<RungStatusRow> = if agent_ids.is_empty() {
         Vec::new()
     } else {
+        // Every row on this page belongs to one run, and a run is one chain,
+        // so the page's own first row names it. Taken from the data rather
+        // than from `params.chain`, which is optional and absent whenever the
+        // caller addressed a run directly.
+        let page_chain = rows[0].chain.clone();
         sqlx::query_as(
             "SELECT agent_id, rung, name, status FROM check_results \
-             WHERE run_id = $1 AND agent_id = ANY($2) \
+             WHERE run_id = $1 AND chain = $3 AND agent_id = ANY($2) \
              ORDER BY agent_id, rung",
         )
         .bind(run_id)
         .bind(&agent_ids)
+        .bind(&page_chain)
         .fetch_all(&state.db)
         .await?
     };

@@ -21,6 +21,15 @@ pub struct RunRow {
     pub pinned_block: Option<i64>,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// `running`, `finished`, `failed` or `stalled`.
+    ///
+    /// Served because `finished_at` alone cannot tell a consumer whether a run
+    /// is usable: a failed sweep is stamped with the moment it died, so the two
+    /// terminal-but-empty states look identical to a completed one from
+    /// outside. Omitting this column is what let the site default to a failed
+    /// run and report 0 agents on Base — it had no way to know. See
+    /// [`latest_completed`].
+    pub status: String,
     /// NULL until the sweep finishes — never coalesced into 0, which would
     /// claim an in-flight run had already counted zero agents.
     pub agent_count: Option<i32>,
@@ -46,7 +55,7 @@ pub async fn list(
         .map(|c| c.trim().to_lowercase())
         .filter(|c| !c.is_empty());
     let rows = sqlx::query_as::<_, RunRow>(
-        "SELECT run_id, chain, pinned_block, started_at, finished_at, agent_count, \
+        "SELECT run_id, chain, pinned_block, started_at, finished_at, status, agent_count, \
                 schema_version, checker_version, checker_commit, spec_commit, rerun_command \
          FROM runs \
          WHERE ($1::text IS NULL OR chain = $1) \
@@ -63,13 +72,31 @@ pub async fn list(
 /// one this very rewrite must not disturb) is never picked as a default,
 /// because its counts are still changing under the reader's feet.
 ///
+/// ## `finished_at IS NOT NULL` is not "this run succeeded"
+///
+/// It used to be the whole predicate here, and it put a **failed** run on the
+/// site. `fail_run` stamps `finished_at` when a sweep dies, which is correct
+/// bookkeeping — the run did end, at that moment — but it means the column
+/// answers "did this stop?" and not "is there anything in it".
+///
+/// Run `24d4d0e0` is what that costs. It failed after two and a half minutes
+/// on 2026-08-05 with zero `agent_snapshots` and zero `check_results`, and
+/// because it is the most recent base run with a `finished_at`, every base
+/// view defaulted to it: the directory told visitors there were
+/// **0 agents on Base** while a complete 60,589-agent run sat one row down.
+///
+/// So the status is checked too. `finished` is the only value a sweep writes
+/// on success; `failed` and `stalled` are both terminal and both empty or
+/// partial.
+///
 /// Returns [`ApiError::NotFound`] rather than `Option` so every caller gets
 /// the same 404 shape for "no completed run exists yet" without repeating
 /// the `.ok_or(ApiError::NotFound)` at each call site.
 pub async fn latest_completed(pool: &sqlx::PgPool, chain: Option<&str>) -> ApiResult<Uuid> {
     let run_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT run_id FROM runs \
-         WHERE finished_at IS NOT NULL AND ($1::text IS NULL OR chain = $1) \
+         WHERE finished_at IS NOT NULL AND status = 'finished' \
+           AND ($1::text IS NULL OR chain = $1) \
          ORDER BY started_at DESC LIMIT 1",
     )
     .bind(chain)
