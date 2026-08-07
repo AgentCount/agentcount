@@ -98,3 +98,44 @@ jobs:
             exit 1
           fi
           echo "no filesystem or env access in crates/checks"
+
+  # ── Every published download link still downloads ─────────────────────────
+  #
+  # `published-runs.json` is the census's index: publishing a run means adding
+  # a row here, and every archive link the site renders is built from it. The
+  # documented recipe in DATA.md pointed at `data.agentcount.ai` for weeks
+  # while that hostname resolved to nothing, and nothing failed — because no
+  # test had ever fetched one.
+  #
+  # So this fetches them. HEAD, both files, every published run, on every PR.
+  # It is the cheapest possible expression of the claim the project makes:
+  # a number you cannot download the evidence for is a number you have to
+  # take on trust.
+  archives-resolve:
+    name: archives-resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: every archive in published-runs.json returns 200
+        run: |
+          set -euo pipefail
+          host=$(grep -oE 'https://[^"]*/runs/' DATA.md | head -1)
+          [ -n "$host" ] || { echo "::error::no archive host found in DATA.md"; exit 1; }
+          echo "host: $host"
+
+          fail=0
+          while read -r run; do
+            for ext in .tar.zst .tar.zst.sha256; do
+              url="${host}${run}${ext}"
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 2 --max-time 30 -I "$url")
+              if [ "$code" = "200" ]; then
+                echo "  200  $run$ext"
+              else
+                echo "::error::$code for $url"
+                fail=1
+              fi
+            done
+          done < <(python3 -c "import json;[print(r['run_id']) for r in json.load(open('published-runs.json'))]")
+
+          [ "$fail" -eq 0 ] || { echo "::error::a published archive URL does not resolve"; exit 1; }

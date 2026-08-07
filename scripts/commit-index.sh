@@ -111,7 +111,7 @@ git add "$INDEX"
 git commit -q -m "$MSG" -m "Chains: $DETAIL
 
 Archives are already public and immutable at
-https://data.agentcount.ai/runs/<run_id>.tar.zst — this commit is what makes
+https://storage.googleapis.com/agentcount-data/runs/<run_id>.tar.zst — this commit is what makes
 their hashes attestable, by putting them in a history that predates any
 dispute about what an archive contained."
 git push -q -u origin "$BRANCH"

@@ -146,7 +146,7 @@ sqlx migrate run
 
 # celo, the smallest published run: 4.1 MB, 9,747 agents
 run=7833fc49-a5b7-477b-99ce-946f650f0064
-curl -LO https://data.agentcount.ai/runs/$run.tar.zst
+curl -LO https://storage.googleapis.com/agentcount-data/runs/$run.tar.zst
 cargo run -p sweeper --bin import-run -- $run.tar.zst
 
 cargo run -p api      # GET /api/runs now serves a real census
