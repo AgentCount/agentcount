@@ -200,19 +200,32 @@ pub async fn get(
     // would drag in the same agent's rows from every OTHER requested run.
     // Separate query for the same reason as in `/api/agents`: a join would
     // multiply each snapshot row per rung and break the per-run cap.
-    let (key_runs, key_agents): (Vec<Uuid>, Vec<i64>) =
-        rows.iter().map(|r| (r.run_id, r.agent_id)).unzip();
+    //
+    // `chain` travels with the key and is joined on, because
+    // `check_results_unique` is (run_id, chain, agent_id, rung): a join given
+    // `run_id` and `agent_id` but not `chain` can use only the leading column
+    // and then scans each run's rows to match the rest. Every row here already
+    // knows its chain, so carrying it costs one more array.
+    let mut key_runs: Vec<Uuid> = Vec::with_capacity(rows.len());
+    let mut key_chains: Vec<String> = Vec::with_capacity(rows.len());
+    let mut key_agents: Vec<i64> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        key_runs.push(r.run_id);
+        key_chains.push(r.chain.clone());
+        key_agents.push(r.agent_id);
+    }
     let rung_rows: Vec<RungStatusRow> = if key_runs.is_empty() {
         Vec::new()
     } else {
         sqlx::query_as(
             "SELECT c.run_id, c.agent_id, c.rung, c.name, c.status \
              FROM check_results c \
-             JOIN unnest($1::uuid[], $2::bigint[]) AS k(run_id, agent_id) \
-               ON c.run_id = k.run_id AND c.agent_id = k.agent_id \
+             JOIN unnest($1::uuid[], $2::text[], $3::bigint[]) AS k(run_id, chain, agent_id) \
+               ON c.run_id = k.run_id AND c.chain = k.chain AND c.agent_id = k.agent_id \
              ORDER BY c.agent_id, c.rung",
         )
         .bind(&key_runs)
+        .bind(&key_chains)
         .bind(&key_agents)
         .fetch_all(&state.db)
         .await?

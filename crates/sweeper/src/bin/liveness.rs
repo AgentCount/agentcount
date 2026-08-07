@@ -412,7 +412,7 @@ async fn main() -> Result<()> {
         let laddered = match candidate {
             // Probeable endpoints, none probed: no row at all. Not a status.
             Some(None) => {
-                if let Err(e) = db.clear_rung6(run_id, c.agent_id).await {
+                if let Err(e) = db.clear_rung6(run_id, &chain, c.agent_id).await {
                     tracing::warn!("could not clear rung 6 for {}: {e}", c.agent_id);
                 }
                 absent += 1;
@@ -433,7 +433,7 @@ async fn main() -> Result<()> {
                     // would otherwise stand as a verdict this one declined to
                     // reach. Every branch that decides "no row" has to say so
                     // to the database, or absence stops meaning absence.
-                    if let Err(e) = db.clear_rung6(run_id, c.agent_id).await {
+                    if let Err(e) = db.clear_rung6(run_id, &chain, c.agent_id).await {
                         tracing::warn!("could not clear rung 6 for {}: {e}", c.agent_id);
                     }
                     absent += 1;

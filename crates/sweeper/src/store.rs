@@ -918,12 +918,20 @@ impl Db {
     /// rung produces, so it cannot be mistaken for one.
     pub async fn rung6_candidates(&self, run_id: Uuid) -> Result<Vec<Rung6Candidate>> {
         let rows: Vec<(i64, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
+            // `chain` is in both join conditions, taken from `a` rather than
+            // passed in: every one of these tables is keyed
+            // (run_id, chain, agent_id, …), so a join that omits it can only
+            // use the leading column of the index. It costs nothing to add —
+            // a run is one chain, so `a.chain` is a constant here — and it is
+            // what lets the planner reach the rows by index instead of
+            // hashing the whole run.
             "SELECT a.agent_id, h.body, c.status \
                FROM agent_snapshots a \
                LEFT JOIN http_archive h \
-                 ON h.run_id = a.run_id AND h.agent_id = a.agent_id \
+                 ON h.run_id = a.run_id AND h.chain = a.chain AND h.agent_id = a.agent_id \
                LEFT JOIN check_results c \
-                 ON c.run_id = a.run_id AND c.agent_id = a.agent_id AND c.rung = 4 \
+                 ON c.run_id = a.run_id AND c.chain = a.chain AND c.agent_id = a.agent_id \
+                    AND c.rung = 4 \
               WHERE a.run_id = $1 \
               ORDER BY a.agent_id",
         )
@@ -1028,11 +1036,22 @@ impl Db {
         result: &checks::CheckResult,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM check_results WHERE run_id = $1 AND agent_id = $2 AND rung = 6")
-            .bind(run_id)
-            .bind(agent_id as i64)
-            .execute(&mut *tx)
-            .await?;
+        // `chain` is in the predicate for the reason recorded on
+        // `mark_rung2_refused`: `check_results_unique` is
+        // (run_id, chain, agent_id, rung), so a predicate that skips `chain`
+        // seeks on `run_id` alone and then walks every row the run wrote.
+        // Measured on production against the 2026-08 BNB Chain run, one agent:
+        // 1,549 ms without, 1.7 ms with. This runs ONCE PER AGENT — on that
+        // run it is the difference between 36 hours and two minutes.
+        sqlx::query(
+            "DELETE FROM check_results \
+             WHERE run_id = $1 AND chain = $3 AND agent_id = $2 AND rung = 6",
+        )
+        .bind(run_id)
+        .bind(agent_id as i64)
+        .bind(chain)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "INSERT INTO check_results \
                (run_id, chain, agent_id, rung, name, status, evidence, checked_at) \
@@ -1057,12 +1076,26 @@ impl Db {
     /// real outcome here — an agent whose every URL fell outside its host's
     /// budget gets no row. Without this, a re-run with a smaller budget would
     /// leave a stale verdict standing for an agent it did not probe.
-    pub async fn clear_rung6(&self, run_id: Uuid, agent_id: u64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM check_results WHERE run_id = $1 AND agent_id = $2 AND rung = 6")
-            .bind(run_id)
-            .bind(agent_id as i64)
-            .execute(&self.pool)
-            .await?;
+    ///
+    /// `chain` is a parameter for the same reason it is one on
+    /// `replace_rung6`: without it in the predicate this walks every row the
+    /// run wrote, once per agent. 1,549 ms against 1.7 ms on the 2026-08 BNB
+    /// Chain run.
+    pub async fn clear_rung6(
+        &self,
+        run_id: Uuid,
+        chain: &str,
+        agent_id: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "DELETE FROM check_results \
+             WHERE run_id = $1 AND chain = $3 AND agent_id = $2 AND rung = 6",
+        )
+        .bind(run_id)
+        .bind(agent_id as i64)
+        .bind(chain)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1519,10 +1552,14 @@ impl Db {
         /// back. Named for the same reason `ProbeTuple` above is.
         type CandidateTuple = (i64, String, Option<i64>, Option<Vec<u8>>);
         let rows: Vec<CandidateTuple> = sqlx::query_as(
+            // `chain` in the join condition, taken from `a` rather than passed
+            // in: `http_archive` is keyed (run_id, chain, agent_id), so
+            // omitting it leaves the planner the leading column only. See
+            // `scripts/check-chain-predicates.py` for why this keeps happening.
             "SELECT a.agent_id, a.owner, a.registration_block, h.body \
                FROM agent_snapshots a \
                LEFT JOIN http_archive h \
-                 ON h.run_id = a.run_id AND h.agent_id = a.agent_id \
+                 ON h.run_id = a.run_id AND h.chain = a.chain AND h.agent_id = a.agent_id \
               WHERE a.run_id = $1 \
               ORDER BY a.agent_id",
         )
