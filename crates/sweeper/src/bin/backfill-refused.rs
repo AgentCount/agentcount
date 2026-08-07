@@ -180,10 +180,10 @@ async fn main() -> Result<()> {
 
         if apply {
             for chunk in declined.chunks(CHUNK) {
-                db.mark_rung2_refused(*run_id, chunk, true).await?;
+                db.mark_rung2_refused(*run_id, chain, chunk, true).await?;
             }
             for chunk in keep_reason.chunks(CHUNK) {
-                db.mark_rung2_refused(*run_id, chunk, false).await?;
+                db.mark_rung2_refused(*run_id, chain, chunk, false).await?;
             }
             if !declined.is_empty() || !keep_reason.is_empty() {
                 // The run has now been judged by this checker, and must say so
