@@ -37,6 +37,8 @@
 #   RPC_URL_BASE, _BSC, _MAINNET, _CELO   required per chain swept
 #   SWEEP_CHAINS            optional, space-separated; defaults to all four
 #   SWEEP_PAYMENTS          optional; 1 runs the payments pass, default off
+#   SWEEP_REJUDGE           optional; run ids, or `all`. Re-judges rung 6 on
+#                           EXISTING runs and does nothing else — see below
 #
 # RPC URLs carry API keys. Nothing here echoes one, and nothing should be
 # added that does — `set -x` in particular would put every key in the job log.
@@ -48,6 +50,82 @@ CHAINS="${SWEEP_CHAINS:-base celo mainnet bsc}"
 # having spent the whole window on the 244,208-agent one.
 
 : "${DATABASE_URL:?DATABASE_URL must be set}"
+
+# ── Re-judge mode: rung 6 over runs that already exist ───────────────────────
+#
+#   SWEEP_REJUDGE=all                       every finished run carrying rung 6
+#   SWEEP_REJUDGE="<run-id> <run-id> …"     exactly these
+#
+# When rung 6's rules change, every published run still carries the old words
+# until something re-reads them. On 2026-08-06 rung 6 gained `refused` and five
+# runs needed re-judging; that was done by hand, as four `gcloud run jobs
+# update && execute` pairs typed one after another, which is how a step gets
+# skipped or given the wrong run id at midnight. This is that sequence, once,
+# in the same place as everything else the census does.
+#
+# **It sweeps nothing and publishes nothing.** No block is pinned, no archive is
+# written, no heartbeat is sent. A re-judge is not a census: it re-reads
+# evidence already in the database and re-answers one rung from it.
+#
+# ## What it does and does not send
+#
+# `liveness` probes only URLs it has not already probed for that run, so a
+# re-judge of a completed pass sends NOTHING — all five runs on 2026-08-07
+# logged `0 URLs to probe`. That is a property of the data, not a promise of
+# this script: if rung 6's host budget or endpoint selection has changed since
+# the run, the newly-selected URLs have no archived probe and WILL be fetched.
+# Check the `URLs to probe` line in the log before assuming a quiet pass.
+#
+# `findings` follows each run because the stored figures summarise rung 6 among
+# other things, and leaving them describing the old verdicts is how the homepage
+# comes to disagree with the run behind it.
+if [ -n "${SWEEP_REJUDGE:-}" ]; then
+    if [ "$SWEEP_REJUDGE" = "all" ]; then
+        # Every finished run that HAS rung-6 rows. A run without them was swept
+        # before rung 6 existed, and inventing a verdict for it now would be a
+        # measurement, not a re-judgement.
+        REJUDGE_RUNS=$(psql "$DATABASE_URL" -tAc \
+            "SELECT DISTINCT r.run_id FROM runs r JOIN check_results c USING (run_id) \
+             WHERE c.rung = 6 AND r.status = 'finished' ORDER BY 1" 2>/dev/null)
+    else
+        REJUDGE_RUNS="$SWEEP_REJUDGE"
+    fi
+
+    if [ -z "$REJUDGE_RUNS" ]; then
+        echo "SWEEP_REJUDGE set but no run matched — nothing to do"
+        exit 1
+    fi
+
+    rejudge_failed=""
+    for run_id in $REJUDGE_RUNS; do
+        # The chain comes from the run, never from the caller: `liveness` takes
+        # both, and a mismatched pair would re-judge the wrong population.
+        chain=$(psql "$DATABASE_URL" -tAc \
+            "SELECT chain FROM runs WHERE run_id = '$run_id'" 2>/dev/null | tr -d '[:space:]')
+        if [ -z "$chain" ]; then
+            echo "!!! $run_id: no such run"
+            rejudge_failed="$rejudge_failed $run_id(unknown)"
+            continue
+        fi
+
+        echo "═══════════════════════════════════════════ $chain $run_id: rung 6 re-judge"
+        liveness "$chain" "$run_id" \
+            || { echo "!!! $run_id: liveness exited $?"; rejudge_failed="$rejudge_failed $run_id(rung6)"; continue; }
+
+        echo "═══════════════════════════════════════════ $chain $run_id: findings"
+        findings "$run_id" \
+            || { echo "!!! $run_id: findings exited $?"; rejudge_failed="$rejudge_failed $run_id(findings)"; }
+    done
+
+    if [ -n "$rejudge_failed" ]; then
+        echo
+        echo "REJUDGE FAILED:$rejudge_failed"
+        exit 1
+    fi
+    echo
+    echo "rung 6 re-judged for every run named"
+    exit 0
+fi
 
 failed=""
 for chain in $CHAINS; do
