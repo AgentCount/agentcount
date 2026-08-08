@@ -152,13 +152,39 @@ ON CONFLICT (chain) DO UPDATE SET
 -- nowhere.
 --
 -- ENABLED IS A MAINTAINER DECISION, NOT A CONSEQUENCE OF THIS FILE.
--- Every chain added on 2026-08-04 is seeded `enabled = false`. Only base, bsc,
--- celo and mainnet stay `enabled = true`, exactly as before this change.
 -- Adding a row records that a chain EXISTS and where its data starts; it must
 -- never change what actually gets swept. Sweeping a chain is a deliberate act:
--- flip `enabled` to true here AND add the chain to SWEEP_CHAINS. Two switches,
--- both explicit, because a census that silently grew its own population
--- between runs would make every published figure incomparable with the last.
+-- flip `enabled` here AND set SWEEP_CHAINS. Two switches, both explicit,
+-- because a census that silently grew its own population between runs would
+-- make every published figure incomparable with the last.
+--
+-- 2026-08-08 — SEVEN CHAINS TURNED ON. billions, megaeth, xlayer, gnosis,
+-- arbitrum, polygon and op go to `enabled = true` here, and the Cloud Run job's
+-- SWEEP_CHAINS was set to match in the same change. The census goes from four
+-- chains to eleven and from ~370,000 agents to ~425,000, first swept
+-- 2026-08-10.
+--
+-- This file had to change, not just the database. Every statement below is
+-- `ON CONFLICT … DO UPDATE SET … enabled = EXCLUDED.enabled`, so re-running a
+-- file that still said `false` would have switched all seven back OFF — and
+-- the next sweep would have quietly dropped seven chains while every other
+-- signal said the census was healthy. A seed file that disagrees with
+-- production is worse than no seed file.
+--
+-- STILL OFF, both deliberately:
+--
+--   robinhood — registries deployed, ZERO agents minted. Sweeping it produces
+--     a run with no agent files, and `publish-run.sh` refuses to publish an
+--     empty run (correctly — an empty archive at a permanent URL is a claim
+--     nobody can check). That refusal would fail the chain, fail the job, and
+--     suppress the heartbeat. The zero is a genuine finding and belongs in a
+--     report; it does not belong in the sweep list until publishing an empty
+--     run is a decision somebody has made on purpose.
+--
+--   monad — 10,189 agents and NOT in this file at all, because its deploy
+--     block could not be measured: the RPC serves ~32 hours of history and the
+--     registry still has code at the oldest height it will answer. See the
+--     archive-depth note above.
 --
 -- Each row carries its agent count as of 2026-08-04 so a reader can see the
 -- size of what they would be turning on. Those counts are a snapshot, not a
@@ -193,7 +219,7 @@ ON CONFLICT (chain) DO UPDATE SET
 INSERT INTO chains (chain, chain_id, identity_registry, reputation_registry,
                     validation_registry, deploy_block, confirmations, enabled)
 VALUES
-    -- ── Swept today. enabled = true, unchanged by this file. ────────────────
+    -- ── Swept. enabled = true. ──────────────────────────────────────────────
     ('bsc',        56,     '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
                            '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  79027268, 30, true),
                            -- 250,814 agents. 0 bytes at 79,027,267 / 130 at 79,027,268.
@@ -204,29 +230,29 @@ VALUES
                            '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  58396724, 30, true),
                            --   9,757 agents. 0 bytes at 58,396,723 / 130 at 58,396,724.
 
-    -- ── Not swept. enabled = false. Flip this AND set SWEEP_CHAINS to sweep. ─
+    -- ── Enabled 2026-08-08, see the note above. ────────────────────────────
     ('billions',   45056,  '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,   4915296, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,   4915296, 30, true),
                            --  25,974 agents. 0 bytes at 4,915,295 / 130 at 4,915,296.
                            -- The only chain here not reachable via Alchemy:
                            -- RPC_URL_BILLIONS=https://rpc.billions.gateway.fm (no key).
     ('megaeth',    4326,   '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,   7833805, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,   7833805, 30, true),
                            --  12,727 agents. 0 bytes at 7,833,804 / 130 at 7,833,805.
     ('xlayer',     196,    '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  51947237, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  51947237, 30, true),
                            --  10,488 agents. 0 bytes at 51,947,236 / 130 at 51,947,237.
     ('gnosis',     100,    '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  44505010, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  44505010, 30, true),
                            --   4,106 agents. 0 bytes at 44,505,009 / 130 at 44,505,010.
     ('arbitrum',   42161,  '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL, 428895443, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL, 428895443, 30, true),
                            --   1,224 agents. 0 bytes at 428,895,442 / 130 at 428,895,443.
     ('polygon',    137,    '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  82458484, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL,  82458484, 30, true),
                            --     596 agents. 0 bytes at 82,458,483 / 130 at 82,458,484.
     ('op',         10,     '0x8004a169fb4a3325136eb29fa0ceb6d2e539a432',
-                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL, 147514947, 30, false),
+                           '0x8004baa17c55a88189ae136b182e5fda19de9b63', NULL, 147514947, 30, true),
                            --     535 agents. 0 bytes at 147,514,946 / 130 at 147,514,947.
                            -- Named `op`, not `optimism`: the row name IS the env
                            -- var suffix, and the secret is rpc-url-op.

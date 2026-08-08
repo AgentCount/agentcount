@@ -44,7 +44,7 @@
 # added that does — `set -x` in particular would put every key in the job log.
 set -uo pipefail
 
-CHAINS="${SWEEP_CHAINS:-base celo mainnet bsc}"
+CHAINS="${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet base bsc}"
 # Cheapest chain first, most expensive last. If the job is going to hit a
 # timeout it should do so having already published three censuses rather than
 # having spent the whole window on the 244,208-agent one.
