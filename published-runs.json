@@ -1,5 +1,27 @@
 [
   {
+    "run_id": "9a6bee56-1594-4980-bafd-5efe49aae6ce",
+    "chain": "op",
+    "pinned_block": 155291584,
+    "started_at": "2026-08-08T09:39:06.440025+00:00",
+    "finished_at": "2026-08-08T09:40:35.797124+00:00",
+    "schema_version": 8,
+    "checker_version": "0.7.0",
+    "checker_commit": "55deaa9ce71c025a9199311a53cdc2de236eae53",
+    "exporter_version": "0.2.0",
+    "exporter_commit": "55deaa9ce71c025a9199311a53cdc2de236eae53",
+    "rebuilt_at": "2026-08-08T09:41:48.793704243+00:00",
+    "spec_commit": "68fc6765761a10fb26f0692df21c8a6f9d12b1be",
+    "rerun_command": "cargo run -p sweeper -- op   # at block 155291584",
+    "agent_count": 535,
+    "swept": 535,
+    "unreadable": null,
+    "unwritable": null,
+    "archive": "9a6bee56-1594-4980-bafd-5efe49aae6ce.tar.zst",
+    "archive_bytes": 117063,
+    "archive_sha256": "5e364b2b5e34416acdb37da58e4ed6f8f4c487d01328bc71641c6f797de2be47"
+  },
+  {
     "run_id": "e6f87cdb-4b66-49c8-97ad-f7e51449e426",
     "chain": "bsc",
     "pinned_block": 114108286,
