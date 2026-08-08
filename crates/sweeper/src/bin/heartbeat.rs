@@ -154,15 +154,29 @@ async fn main() -> Result<()> {
         );
     }
 
-    match std::env::var("HEARTBEAT_URL") {
-        Err(_) => {
+    // `.filter(non-empty)`, not a bare `env::var`. An env var that is SET AND
+    // EMPTY returns `Ok("")`, not `Err` — and `scripts/deploy-weekly-sweep.sh`
+    // wrote exactly that, via `HEARTBEAT_URL=${HEARTBEAT_URL:-}`, whenever it
+    // was run without one.
+    //
+    // The 2026-08-05 run is what this cost: every chain swept, every archive
+    // published, every chain reported healthy — and then the job FAILED,
+    // because it tried to ping the empty string. A pipeline that does all its
+    // work correctly and then reports failure is worse than one that fails
+    // early: it trains whoever reads the alert to ignore it.
+    match std::env::var("HEARTBEAT_URL")
+        .ok()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+    {
+        None => {
             tracing::warn!(
                 "all {} chains healthy, but HEARTBEAT_URL is unset — nothing was pinged. \
                  Until it is set, a schedule that stops firing is still invisible.",
                 chains.len()
             );
         }
-        Ok(url) => {
+        Some(url) => {
             let res = reqwest::Client::new()
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(15))
@@ -178,4 +192,39 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// An env var that is SET AND EMPTY must behave exactly like an unset one.
+    ///
+    /// This is not a hypothetical. `deploy-weekly-sweep.sh` wrote
+    /// `HEARTBEAT_URL=` whenever it ran without one, and on 2026-08-05 the
+    /// weekly job swept four chains, published every archive, reported every
+    /// chain healthy — and then failed, trying to ping the empty string. A
+    /// pipeline that does all its work and then reports failure is worse than
+    /// one that fails early: it teaches whoever reads the alert to ignore it.
+    ///
+    /// The production code reads the variable directly, so this pins the
+    /// PREDICATE it applies rather than mutating the process environment,
+    /// which would race every other test in the binary.
+    fn configured(raw: Option<&str>) -> Option<String> {
+        raw.map(|u| u.trim().to_string()).filter(|u| !u.is_empty())
+    }
+
+    #[test]
+    fn an_empty_heartbeat_url_counts_as_unset() {
+        assert_eq!(configured(None), None, "unset");
+        assert_eq!(
+            configured(Some("")),
+            None,
+            "set and empty — the 2026-08-05 case"
+        );
+        assert_eq!(configured(Some("   ")), None, "whitespace only");
+        assert_eq!(
+            configured(Some(" https://hc.example/abc ")).as_deref(),
+            Some("https://hc.example/abc"),
+            "a real URL survives, trimmed"
+        );
+    }
 }
