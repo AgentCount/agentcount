@@ -132,7 +132,7 @@ RPC_URL_BASE=rpc-url-base:latest,\
 RPC_URL_BSC=rpc-url-bsc:latest,\
 RPC_URL_MAINNET=rpc-url-mainnet:latest,\
 RPC_URL_CELO=rpc-url-celo:latest" \
-    --set-env-vars "DATA_BUCKET=gs://agentcount-data,HEARTBEAT_URL=${HEARTBEAT_URL:-}" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet base bsc}${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
     --task-timeout 24h \
     --max-retries 0 \
     --memory 2Gi --cpu 2 \
