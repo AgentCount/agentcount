@@ -92,11 +92,17 @@ RUN set -eux; \
 # ── runtime ──────────────────────────────────────────────────────────────────
 #
 # Based on the Cloud SDK image rather than `debian:bookworm-slim`, because
-# `publish-run.sh` shells out to `gsutil` and there is no lighter honest way to
-# get it. An earlier version of this file claimed the SDK arrived "from the
-# base layer at deploy time", which was simply not true — nothing would have
-# installed it, and the publish step would have failed on the first run with
-# `gsutil: not found`.
+# `publish-run.sh` shells out to `gcloud storage` and there is no lighter honest
+# way to get it. An earlier version of this file claimed the SDK arrived "from
+# the base layer at deploy time", which was simply not true — nothing would
+# have installed it, and the publish step would have failed on the first run
+# with `command not found`.
+#
+# `gcloud storage`, not `gsutil`: gsutil is deprecated and refuses to run on
+# Python 3.13, which is what a developer machine started shipping in August
+# 2026. The scripts have to work both in this image and on a workstation, and
+# pinning an old Python on the workstation to keep a deprecated tool alive is
+# the wrong half of that trade to fix.
 #
 # The image is large (~1 GB against ~120 MB). That is the right trade here and
 # would not be for the API: this is a weekly batch job that runs to completion,
@@ -106,9 +112,9 @@ FROM google/cloud-sdk:slim AS runtime
 RUN set -eux; \
     apt-get update; \
     # `psql` finds the run id the sweep just finished; `zstd` compresses the
-    # archive. Python and gsutil come with the base image. `git` is NOT here:
-    # the job publishes the index to the bucket and the commit is a human step
-    # taken when the week's report is written — see `weekly-sweep.sh`.
+    # archive. Python and the gcloud CLI come with the base image. `git` is NOT
+    # here: the job publishes the index to the bucket and the commit is a human
+    # step taken when the week's report is written — see `weekly-sweep.sh`.
     apt-get install -y --no-install-recommends postgresql-client zstd; \
     rm -rf /var/lib/apt/lists/*
 

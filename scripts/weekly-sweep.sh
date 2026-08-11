@@ -238,7 +238,7 @@ done
 # Git is still where a hash becomes EVIDENCE — a value in a commit predating
 # any dispute — so the commit happens when the week's report is written:
 #
-#     gsutil cp gs://agentcount-data/runs/index.json published-runs.json
+#     gcloud storage cp gs://agentcount-data/runs/index.json published-runs.json
 #     git add published-runs.json && git commit -m "data: publish <date> runs"
 #
 # A divergence between the bucket and git is visible to anyone who compares
