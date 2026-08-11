@@ -29,9 +29,28 @@
 # What it creates
 # ─────────────────────────────────────────────────────────────────────────────
 #
-#   Artifact Registry image   built from Dockerfile.sweep (sweeper + liveness + delta)
-#   Cloud Run Job             agentcount-sweep, 24h task timeout, no retries
-#   Cloud Scheduler job       Mondays 06:00 UTC, triggering the above
+#   Artifact Registry image   built from Dockerfile.sweep (one image, both jobs)
+#   Cloud Run Job             agentcount-sweep      — ten chains, Monday 06:00 UTC
+#   Cloud Run Job             agentcount-sweep-bsc  — BNB Chain, Tuesday 06:00 UTC
+#   Cloud Scheduler jobs      one per Cloud Run job
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Why BNB Chain has a job of its own
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 24 hours is the Cloud Run Jobs MAXIMUM task timeout, not a setting — there is
+# nothing left to raise. On 2026-08-10 eleven chains in one job hit it: the ten
+# smaller chains took 10h30m, BSC started with 13h left, needed 12h44m, and was
+# killed at 96.4% with ~6,600 agents unswept.
+#
+# It was not close to a fluke. RPC throughput varies about 3x run to run — BSC
+# took 3h47m on 2026-08-05 and 11h19m on 2026-07-29 — so the same job finishes
+# comfortably one week and times out the next, which is the worst kind of
+# schedule to own.
+#
+# Split, each job gets the full 24h window for its own work: ten chains in
+# ~10h30m, BSC in ~13h. A day apart rather than hours, so a slow Monday cannot
+# push into Tuesday's run and have the two contend for the same RPC endpoints.
 #
 # **No retries, on purpose.** A sweep that failed halfway has written partial
 # rows and holds a `running` run. The resume path (`SWEEP_RESUME=<run_id>`)
@@ -122,7 +141,7 @@ for s in rpc-url-base rpc-url-bsc rpc-url-mainnet rpc-url-celo agentcount-db-url
         || { echo "missing secret: $s — create it by hand, see above"; exit 1; }
 done
 
-echo "==> 3/4 the Cloud Run Job"
+echo "==> 3/4 the Cloud Run Jobs"
 gcloud run jobs deploy agentcount-sweep \
     --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
@@ -138,17 +157,62 @@ RPC_URL_CELO=rpc-url-celo:latest" \
     --memory 2Gi --cpu 2 \
     --parallelism 1 --tasks 1
 
-echo "==> 4/4 the schedule"
+# BNB Chain, same image and the same database, its own timeout window. Only the
+# one RPC secret it needs: a job that cannot reach the other chains cannot
+# accidentally sweep them if SWEEP_CHAINS is ever mistyped.
+gcloud run jobs deploy agentcount-sweep-bsc \
+    --project "$PROJECT" --region "$REGION" \
+    --image "$IMAGE" \
+    --set-cloudsql-instances "$INSTANCE" \
+    --set-secrets "DATABASE_URL=agentcount-db-url:latest,RPC_URL_BSC=rpc-url-bsc:latest" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=bsc${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
+    --task-timeout 24h \
+    --max-retries 0 \
+    --memory 8Gi --cpu 4 \
+    --parallelism 1 --tasks 1
+
+echo "==> 4/4 the schedules"
 # Monday 06:00 UTC. Weekly rather than daily because the delta's unit is a
 # week, and because rung 6's traffic to third-party servers is only defensible
 # at this cadence.
+# Cloud Scheduler does NOT support europe-north1, where the jobs run. The
+# scheduler location and the job's region are independent — the trigger is an
+# HTTPS call to the regional Run endpoint — so europe-west1 here is not a
+# mistake and must not be "corrected" to match REGION.
+SCHED_LOCATION="${SCHED_LOCATION:-europe-west1}"
+
+# A dedicated service account holding `run.invoker` on these two jobs and
+# nothing else.
+#
+# NOT `gcloud config get-value account`, which this script used to pass: that is
+# whoever happened to run the deploy. A schedule authenticated as a person
+# breaks when they lose access, rotate credentials, or leave, and it grants the
+# trigger everything that person can do rather than the one permission it needs.
+SCHED_SA="agentcount-scheduler@${PROJECT}.iam.gserviceaccount.com"
+gcloud iam service-accounts describe "$SCHED_SA" --project "$PROJECT" >/dev/null 2>&1 \
+    || gcloud iam service-accounts create agentcount-scheduler \
+         --display-name="Triggers the weekly AgentCount census" --project "$PROJECT"
+for job in agentcount-sweep agentcount-sweep-bsc; do
+    gcloud run jobs add-iam-policy-binding "$job" \
+        --region "$REGION" --project "$PROJECT" \
+        --member "serviceAccount:$SCHED_SA" --role roles/run.invoker --quiet >/dev/null
+done
+
 gcloud scheduler jobs create http agentcount-weekly-sweep \
-    --project "$PROJECT" --location "$REGION" \
+    --project "$PROJECT" --location "$SCHED_LOCATION" \
     --schedule "0 6 * * 1" --time-zone "Etc/UTC" \
     --uri "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/agentcount-sweep:run" \
     --http-method POST \
-    --oauth-service-account-email "$(gcloud config get-value account)" \
+    --oauth-service-account-email "$SCHED_SA" \
     2>/dev/null || echo "(scheduler job already exists — use \`update\` to change it)"
+
+gcloud scheduler jobs create http agentcount-weekly-sweep-bsc \
+    --project "$PROJECT" --location "$SCHED_LOCATION" \
+    --schedule "0 6 * * 2" --time-zone "Etc/UTC" \
+    --uri "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/agentcount-sweep-bsc:run" \
+    --http-method POST \
+    --oauth-service-account-email "$SCHED_SA" \
+    2>/dev/null || echo "(bsc scheduler job already exists — use \`update\` to change it)"
 
 cat <<'NOTES'
 
