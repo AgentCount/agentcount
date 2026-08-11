@@ -83,3 +83,34 @@ ALTER TABLE check_results DROP CONSTRAINT check_results_unique;
 
 ALTER TABLE check_results
     ADD CONSTRAINT check_results_unique UNIQUE USING INDEX check_results_unique_v2;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- APPLIED to production 2026-08-11, supervised. Measured, not predicted.
+-- ─────────────────────────────────────────────────────────────────────────────
+--
+-- Preconditions re-verified against the table as it stood — 9,839,636 rows
+-- across eleven chains, not the four it had when this was written:
+--
+--     runs whose check_results span two chains ....... 0
+--     rows where check_results.chain <> runs.chain ... 0
+--
+-- Timing, against the live database with no traffic paused:
+--
+--     CREATE INDEX CONCURRENTLY ...... 72 s, no write lock
+--     DROP + ADD CONSTRAINT .......... 0.6 s, ACCESS EXCLUSIVE
+--
+-- Effect, on the query this exists for — one agent's rungs, naming `run_id`
+-- and `agent_id` but not `chain`, against BNB Chain's 263,181-agent run:
+--
+--                     before          after
+--     time            260.454 ms      4.726 ms      55x
+--     buffers         19,031          8             2,379x
+--
+-- Six rows returned in both cases. The before figure is the trap in one
+-- number: a B-tree seeks on a leading prefix, so omitting `chain` cost a walk
+-- of every row the run wrote.
+--
+-- Integrity after: 9,839,636 rows (unchanged), zero duplicate
+-- (run_id, agent_id, rung), all three indexes valid, and the live API answered
+-- every endpoint. `check-chain-predicates.py` stays — see the PR; it catches
+-- the case this cannot.
