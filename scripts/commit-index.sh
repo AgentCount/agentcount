@@ -53,7 +53,7 @@ git checkout -q main
 git pull -q origin main
 
 echo "==> fetching the published index from $BUCKET"
-gsutil cp "$BUCKET/runs/index.json" "$INDEX"
+gcloud storage cp "$BUCKET/runs/index.json" "$INDEX"
 
 if git diff --quiet -- "$INDEX"; then
     echo "already up to date — every published run is already in git"

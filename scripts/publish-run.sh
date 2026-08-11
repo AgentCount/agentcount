@@ -111,7 +111,7 @@ printf '%s  %s\n' "$SHA" "$ARCHIVE" > "/tmp/$ARCHIVE.sha256"
 echo "    $ARCHIVE  $SIZE bytes  sha256 $SHA"
 
 echo "==> 2/5 checking whether this run is already published"
-if REMOTE=$(gsutil cat "$BUCKET/runs/$ARCHIVE.sha256" 2>/dev/null); then
+if REMOTE=$(gcloud storage cat "$BUCKET/runs/$ARCHIVE.sha256" 2>/dev/null); then
     REMOTE_SHA=$(echo "$REMOTE" | cut -d' ' -f1)
     if [ "$REMOTE_SHA" = "$SHA" ]; then
         echo "    already published, identical bytes — nothing to do"
@@ -129,12 +129,14 @@ else
     echo "==> 3/5 uploading"
     # `-n` (no-clobber) as a second line of defence behind the check above:
     # two operators racing must not be able to overwrite each other.
-    gsutil -h "Content-Type:application/zstd" \
-           -h "Cache-Control:public, max-age=31536000, immutable" \
-           cp -n "/tmp/$ARCHIVE" "$BUCKET/runs/$ARCHIVE"
-    gsutil -h "Content-Type:text/plain" \
-           -h "Cache-Control:public, max-age=31536000, immutable" \
-           cp -n "/tmp/$ARCHIVE.sha256" "$BUCKET/runs/$ARCHIVE.sha256"
+    gcloud storage cp --no-clobber \
+        --content-type="application/zstd" \
+        --cache-control="public, max-age=31536000, immutable" \
+        "/tmp/$ARCHIVE" "$BUCKET/runs/$ARCHIVE"
+    gcloud storage cp --no-clobber \
+        --content-type="text/plain" \
+        --cache-control="public, max-age=31536000, immutable" \
+        "/tmp/$ARCHIVE.sha256" "$BUCKET/runs/$ARCHIVE.sha256"
 fi
 
 echo "==> 4/5 recording the hash"
@@ -146,7 +148,7 @@ echo "==> 4/5 recording the hash"
 # entry — silently losing every earlier run from the machine-readable index
 # while the archives themselves stayed fine. Fetch first, append second.
 if [ ! -f "$INDEX" ]; then
-    gsutil cp "$BUCKET/runs/index.json" "$INDEX" 2>/dev/null \
+    gcloud storage cp "$BUCKET/runs/index.json" "$INDEX" 2>/dev/null \
         || echo "[]" > "$INDEX"
 fi
 # The point of this file: a hash in a commit that predates any dispute is
@@ -215,9 +217,10 @@ echo "==> 5/5 uploading the index"
 # week's report is written. The two must agree; `heartbeat` fails the job if
 # the bucket's copy is missing a chain, and a divergence between bucket and git
 # is visible to anyone who compares them.
-gsutil -h "Content-Type:application/json" \
-       -h "Cache-Control:public, max-age=60" \
-       cp "$INDEX" "$BUCKET/runs/index.json"
+gcloud storage cp \
+    --content-type="application/json" \
+    --cache-control="public, max-age=60" \
+    "$INDEX" "$BUCKET/runs/index.json"
 
 echo "==> done"
 echo
