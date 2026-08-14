@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/runs", get(routes::runs::list))
         .route("/api/runs/{id}/rates", get(routes::rates::get))
         .route("/api/runs/{id}/findings", get(routes::findings::get))
+        .route("/api/runs/{id}/delta", get(routes::deltas::get))
         .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
         // The one read endpoint that spans runs — the caller names them (the
