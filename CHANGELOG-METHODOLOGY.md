@@ -20,6 +20,43 @@ Format per entry:
 
 ---
 
+## 2026-08-14 — Deltas are published: METHODOLOGY §9 and `GET /api/runs/{id}/delta`
+
+**This entry changes no number.** The delta series (`newly_registered`,
+`disappeared`, `newly_resolving`, `stopped_resolving`, `flips`) have been
+computed and stored after every sweep since migration 0016, under the rules
+this changelog already records (the 2026-08-06 `refused` exclusion). What
+changes is that they become published figures with a methodology home.
+
+**What changed.**
+
+1. **METHODOLOGY.md gains §9 (Deltas)** — until now the only definitions of
+   the delta series lived in migration comments (0016, 0020) and in
+   `crates/sweeper/src/delta.rs`'s module doc. A published figure needs a
+   published method, so the definitions move into the methodology proper:
+   the pair (one run against the previous finished run on the same chain,
+   recorded permanently), the series, the three things deliberately not
+   counted as change, the `refused` exclusion, and the confound rule.
+2. **`GET /api/runs/{id}/delta`** serves the stored row. A run with no delta
+   is a 404, never zeros — "first observation" and "nothing changed" are
+   different claims. The response always carries `checker_before/after`,
+   `schema_before/after` and a precomputed `method_changed`, because
+   migration 0016's rule stands: any surface that renders a delta must say
+   when the method changed across the pair. It also carries
+   `rung2_declined` — the total volume of rung-2 transitions into or out of
+   `refused` that the two headline series exclude — so the exclusion is
+   visible in the same response that benefits from it.
+
+**Why.** The delta is this census's one number nobody else can produce, and
+it has been computed weekly and shown to nobody. Publishing it is the point;
+publishing it without a §-level method would make it exactly the kind of
+figure this project exists to check.
+
+**Measured effect.** None — no stored value changes, no run is re-judged.
+The 21 published runs' existing deltas become readable exactly as computed.
+
+---
+
 ## 2026-08-06 — NEW MEASUREMENT: payments become a pinned, run-scoped pipeline, and the old 358 / 313 / 190 are superseded
 
 **Read the last paragraph of this entry first if you are checking whether a

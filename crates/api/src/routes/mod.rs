@@ -7,6 +7,9 @@
 //!   * [`rates`] — the headline output: per-rung status counts for one run.
 //!   * [`findings`] — the same population, cross-cut into the handful of
 //!     numbers the census leads with. Still counts, still no score.
+//!   * [`deltas`] — what changed between one run and the previous one, read
+//!     back from the row the `delta` binary wrote at sweep time. The one
+//!     legitimate two-run figure — see its module doc for why.
 //!   * [`agents`] — the directory and single-agent detail.
 //!   * [`search`] — one `q` across several caller-named runs, grouped per
 //!     run. The only endpoint that touches more than one run, and it still
@@ -32,6 +35,7 @@
 //! handlers when building the router, e.g. `routes::agents::list`.
 
 pub mod agents;
+pub mod deltas;
 pub mod findings;
 pub mod methodology;
 pub mod rates;

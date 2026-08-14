@@ -1192,3 +1192,69 @@ the first number it produces will be the first number it has ever published.
 That number comes from a run a maintainer schedules. Until one exists, the
 absence of a payment figure on this site means exactly what an absent rung
 means: **not measured**.
+
+## 9. Deltas — what changed between two sweeps
+
+Registration counts go up, and everyone publishes them. **Agents that stopped
+resolving** is the number nobody else can produce, because it requires having
+asked the same question of the same population at two pinned blocks and kept
+both answers. This section defines that number and the series around it,
+because a figure with no published method is a claim, not a measurement.
+
+### The pair
+
+A delta compares **one run against the previous finished run on the same
+chain** — the pair is chosen when the sweep finishes and recorded permanently
+(`run_id`, `previous_run_id`), so "previous" can never silently re-bind as
+later runs land. A run with no predecessor gets **no delta at all**: "first
+observation" and "nothing changed" are different claims, and a row of zeroes
+would read as the second. For the same reason the API serves a missing delta
+as an absence (404), never as zeros.
+
+### The series
+
+Over the agents with check results in each run of the pair:
+
+| Series | Definition |
+|---|---|
+| `newly_registered` | Present in the newer run, absent from the older. |
+| `disappeared` | Present in the older run, absent from the newer. Expected to be 0 — an ERC-721 is not usually burned — so a non-zero value is a finding. |
+| `newly_resolving` | Rung 2 (`resolvable`) moved from a not-pass to `pass`. |
+| `stopped_resolving` | Rung 2 moved from `pass` to a not-pass. |
+| `flips` | Every (rung, from-status, to-status) transition with the number of agents that made it. Complete — including everything the series above exclude. |
+
+Three things are deliberately **not** counted as change: an agent present in
+only one run of the pair contributes to `newly_registered`/`disappeared` and
+to nothing else; a rung with a result on only one side is not a flip ("we did
+not ask" is not a change in the world); and — the rule with an incident behind
+it — **a transition into or out of `refused` is excluded from
+`newly_resolving` and `stopped_resolving`**. A `refused` (429, 503, an
+auth/payment challenge, a robots.txt that declined us) means the origin
+declined the probe, which is not the agent having gone away, and not the agent
+having come back. The 2026-08 census briefly reported 19,983 BSC agents
+stopped resolving; 19,962 were HTTP 429s this census itself caused, 19,658
+from a single host. Excluding transitions touching `refused`, that chain lost
+**10** agents (see the 2026-08-06 methodology changelog entry). The excluded
+transitions remain in `flips` — deleting the evidence would make a rate limit
+invisible, which is the same failure in the other direction — and the API
+totals them (`rung2_declined`) so the exclusion is visible rather than silent.
+
+### The confound, and the rule for publishing
+
+Each delta records the checker version and evidence schema of **both** runs
+(`checker_before/after`, `schema_before/after`). When they differ, an unknown
+share of the flips is a method change rather than a change in the world — the
+first delta computed on real data showed 564 agents "stopped resolving" across
+a checker fix, and publishing that as decay would have been quotable and
+wrong. **Any surface that renders a delta must say when the method changed
+across the pair.** The API serves all four fields plus a precomputed
+`method_changed` so no consumer has to remember the comparison.
+
+### Recomputing one
+
+A delta names both runs; each run names its pinned block, checker commit and
+rerun command (§5). Recomputing `sweeper::delta::compute` over the two runs'
+check results — the same function the sweep itself calls — reproduces every
+series and every flip, byte-identically (flips are sorted). A delta read from
+the API and one recomputed from the two published archives cannot disagree
+without one of the archives having been altered.
