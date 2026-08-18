@@ -20,7 +20,57 @@ Format per entry:
 
 ---
 
-## 2026-08-14 — Deltas are published: METHODOLOGY §9 and `GET /api/runs/{id}/delta`
+## 2026-08-18 — Rung-2 `error` transitions join `refused` outside the headline delta series
+
+**This entry changes stored, published numbers — every stored delta row is
+recomputed. No measurement changes: no run is re-swept, no check result
+moves, and `flips` still records every transition. What changes is which
+transitions the two headline series count.**
+
+**What changed.** `sweeper::delta`'s `NOT_CHURN` grows from `refused` to
+`{refused, error}`: a rung-2 transition into or out of `error` no longer
+counts toward `stopped_resolving` or `newly_resolving`. The API serves the
+newly excluded volume as `rung2_errored` (rung-2 flips touching `error`,
+minus those touching `refused`, which `rung2_declined` already counts — the
+two totals are additive), so the exclusion is visible in the same response
+that benefits from it, exactly like the 2026-08-06 one. A `recompute-deltas`
+binary (dry-run by default) refreshes every stored `run_deltas` row through
+the one implementation of the arithmetic; a delta is derived, not measured,
+which is why rewriting it is legitimate at all.
+
+**Why.** The 2026-08-17 Base sweep ran ~17 hours through a degraded network —
+the sweep's own RPC calls timing out on 45-second boundaries all night — and
+was killed at Cloud Run's 24-hour cap, then resumed and finished at its
+pinned block the next morning. Its delta booked **4,479** Base agents as
+`stopped_resolving`, of which **4,477 were `pass → error`** (issue #59).
+`error` is defined in METHODOLOGY §4 and `checks::CheckStatus` as OUR
+failure — "a timeout in our prober, an RPC error. Never the agent's" — so
+counting its transitions as churn published a checker-side outage as agents
+going dark: the 19,983 mistake of 2026-08-06 again, one status over. The
+argument is symmetric (`error → pass` is the prober recovering, not an agent
+returning), and the same rule that already governs `refused` covers both.
+
+The cost is stated plainly, here and in §9: a server that vanishes outright
+also surfaces as `error` (one observer cannot distinguish a dead server from
+its own unreachability), so the series now undercounts true disappearances
+rather than ever overcounting them — the direction of error this census
+chooses everywhere.
+
+**Measured effect.** Recomputed from the stored `flips` of all 20 stored
+delta rows (the arithmetic is derivable from the published transitions; no
+re-sweep). Across the 20 rows, `stopped_resolving` totals fall 5,329 → 379
+and `newly_resolving` 545 → 104. The rows the rule was written for, and the
+row that shows it keeps real losses:
+
+| chain | run | `stopped_resolving` | `newly_resolving` |
+|---|---|---|---|
+| base | `70eb892e` (2026-08-17, the incident) | 4,479 → 2 | 12 → 1 |
+| celo | `a3c91733` (2026-08-17) | 429 → 365 | 0 → 0 |
+| bsc | `56129cc8` (2026-08 census) | 12 → 1 | 8 → 0 |
+
+Celo is the counterexample that validates the rule: 365 of its 429 are
+`pass → fail` — definitive answers — and survive. The full per-row table is
+printed by `recompute-deltas` before anything is written.
 
 **This entry changes no number.** The delta series (`newly_registered`,
 `disappeared`, `newly_resolving`, `stopped_resolving`, `flips`) have been

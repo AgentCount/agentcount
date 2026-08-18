@@ -59,7 +59,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use sweeper::{delta, store};
+use sweeper::store;
 use uuid::Uuid;
 
 /// How many agent ids go into one `UPDATE … agent_id = ANY($2)`.
@@ -245,34 +245,12 @@ async fn main() -> Result<()> {
     }
 
     // ── Deltas, which are derived and therefore legitimately recomputed ──
-    let deltas = db.all_deltas().await?;
-    tracing::info!("recomputing {} delta row(s)", deltas.len());
-    for (new_run, old_run, chain) in deltas {
-        let after = db.rung_statuses(new_run).await?;
-        let before = db.rung_statuses(old_run).await?;
-        let counts = delta::compute(&before, &after);
-        let (checker_after, schema_after) = db.run_provenance(new_run).await?;
-        let (checker_before, schema_before) = db.run_provenance(old_run).await?;
-        db.write_delta(&store::DeltaWrite {
-            run_id: new_run,
-            previous_run_id: old_run,
-            chain: &chain,
-            agents_before: counts.agents_before as i32,
-            agents_after: counts.agents_after as i32,
-            newly_registered: counts.newly_registered as i32,
-            disappeared: counts.disappeared as i32,
-            newly_resolving: counts.newly_resolving as i32,
-            stopped_resolving: counts.stopped_resolving as i32,
-            flips: &counts.flips_json(),
-            checker_before: &checker_before,
-            checker_after: &checker_after,
-            schema_before,
-            schema_after,
-        })
-        .await?;
+    let recomputed = sweeper::recompute::all(&db, true).await?;
+    tracing::info!("recomputed {} delta row(s)", recomputed.len());
+    for r in &recomputed {
         println!(
-            "delta {chain} {new_run}: -{} stopped resolving, +{} newly resolving",
-            counts.stopped_resolving, counts.newly_resolving
+            "delta {} {}: -{} stopped resolving, +{} newly resolving",
+            r.chain, r.run_id, r.counts.stopped_resolving, r.counts.newly_resolving
         );
     }
 

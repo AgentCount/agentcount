@@ -28,12 +28,13 @@
 //!   changed" are different claims and a row of zeroes reads as the second.
 //!   The same absence-is-not-a-status rule as everywhere else in this API.
 //!
-//! Transitions into or out of `refused` are already excluded from
+//! Transitions into or out of `refused` or `error` are already excluded from
 //! `stopped_resolving` and `newly_resolving` by `sweeper::delta::compute` —
-//! by rule, not here (see the 2026-08-06 methodology changelog entry: a rate
-//! limit of ours was briefly published as 19,983 agents going dark). They
-//! remain in `flips`, and `rung2_declined` totals them so a reader can see
-//! the excluded volume without deriving it client-side.
+//! by rule, not here (see the 2026-08-06 and 2026-08-18 methodology changelog
+//! entries: a rate limit of ours was briefly published as 19,983 agents going
+//! dark, and a degraded night of our own probe timeouts as 4,479). They
+//! remain in `flips`, and `rung2_declined` / `rung2_errored` total them so a
+//! reader can see the excluded volumes without deriving them client-side.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -84,19 +85,26 @@ pub struct DeltaResponse {
     /// Present in the older run, absent from the newer. Expected to be 0 —
     /// an ERC-721 is not usually burned — so a non-zero value is a finding.
     pub disappeared: i32,
-    /// Rung 2 went from a not-pass to `pass`. A transition out of `refused`
-    /// is excluded: getting through this week after being declined last week
-    /// is not the agent having come back.
+    /// Rung 2 went from a not-pass to `pass`. Transitions out of `refused`
+    /// or `error` are excluded: getting through this week after being
+    /// declined last week is not the agent having come back, and our prober
+    /// recovering is not the agent having returned.
     pub newly_resolving: i32,
-    /// Rung 2 went from `pass` to a not-pass. A transition into `refused`
+    /// Rung 2 went from `pass` to a not-pass. Transitions into `refused`
     /// (429, 503, an auth/payment challenge, a robots.txt that declined us)
-    /// is excluded: the origin declined us, which is not the agent having
-    /// gone away.
+    /// or `error` (a timeout, TLS or DNS failure of OUR probe — see
+    /// `checks::CheckStatus::Error`) are excluded: neither is the agent
+    /// having gone away.
     pub stopped_resolving: i32,
     /// Rung-2 transitions into or out of `refused` — the volume the two
     /// series above exclude, totalled so the exclusion is visible rather
     /// than silent. Derived here from `flips`, which retains every one.
     pub rung2_declined: i64,
+    /// Rung-2 transitions into or out of `error` (2026-08-18) — the checker's
+    /// own failures, the other volume the two series exclude — minus any that
+    /// also touch `refused`, which the total above already counts. Additive
+    /// with `rung2_declined`; derived here from `flips` the same way.
+    pub rung2_errored: i64,
     /// Every status transition, including the refused ones:
     /// `[{"rung", "from", "to", "agents"}, …]`, sorted by (rung, from, to).
     pub flips: serde_json::Value,
@@ -128,6 +136,26 @@ fn rung2_declined(flips: &serde_json::Value) -> i64 {
         .sum()
 }
 
+/// Sum of `agents` over rung-2 flips that enter or leave `error` — the other
+/// volume the two series exclude (2026-08-18) — EXCEPT flips that also touch
+/// `refused`, which `rung2_declined` already counts. The two totals are
+/// additive: every excluded transition appears in exactly one of them.
+fn rung2_errored(flips: &serde_json::Value) -> i64 {
+    let Some(rows) = flips.as_array() else {
+        return 0;
+    };
+    rows.iter()
+        .filter(|f| f.get("rung").and_then(|v| v.as_i64()) == Some(2))
+        .filter(|f| {
+            let word = |key| f.get(key).and_then(|v| v.as_str());
+            (word("from") == Some("error") || word("to") == Some("error"))
+                && word("from") != Some("refused")
+                && word("to") != Some("refused")
+        })
+        .filter_map(|f| f.get("agents").and_then(|v| v.as_i64()))
+        .sum()
+}
+
 /// `GET /api/runs/{id}/delta` — the stored comparison for one run, or 404.
 ///
 /// 404 covers two different absences and deliberately does not distinguish
@@ -152,6 +180,7 @@ pub async fn get(
     .ok_or(ApiError::NotFound)?;
 
     let declined = rung2_declined(&row.flips);
+    let errored = rung2_errored(&row.flips);
     Ok(Json(DeltaResponse {
         run_id: row.run_id,
         previous_run_id: row.previous_run_id,
@@ -163,6 +192,7 @@ pub async fn get(
         newly_resolving: row.newly_resolving,
         stopped_resolving: row.stopped_resolving,
         rung2_declined: declined,
+        rung2_errored: errored,
         flips: row.flips,
         checker_before: row.checker_before.clone(),
         checker_after: row.checker_after.clone(),
@@ -200,6 +230,34 @@ mod tests {
         assert_eq!(rung2_declined(&json!(null)), 0);
     }
 
+    /// The other exclusion (2026-08-18): `rung2_errored` totals the rung-2
+    /// transitions that touch `error` — except those that also touch
+    /// `refused`, which `rung2_declined` already counts. The two totals are
+    /// additive; no transition appears in both.
+    #[test]
+    fn errored_totals_only_rung2_error_transitions_not_already_declined() {
+        // The 2026-08-17 Base shape: a night of checker-side timeouts.
+        let flips = json!([
+            {"rung": 2, "from": "pass", "to": "error", "agents": 4_477},
+            {"rung": 2, "from": "error", "to": "pass", "agents": 11},
+            {"rung": 2, "from": "fail", "to": "error", "agents": 2},
+            {"rung": 2, "from": "refused", "to": "error", "agents": 256},
+            {"rung": 2, "from": "error", "to": "refused", "agents": 1},
+            {"rung": 2, "from": "pass", "to": "fail", "agents": 2},
+            {"rung": 6, "from": "pass", "to": "error", "agents": 9},
+        ]);
+        assert_eq!(rung2_errored(&flips), 4_477 + 11 + 2);
+        // ...and the refused-touching ones stay where they were.
+        assert_eq!(rung2_declined(&flips), 256 + 1);
+    }
+
+    #[test]
+    fn errored_is_zero_for_empty_or_malformed_flips() {
+        assert_eq!(rung2_errored(&json!([])), 0);
+        assert_eq!(rung2_errored(&json!({})), 0);
+        assert_eq!(rung2_errored(&json!(null)), 0);
+    }
+
     /// The response always carries the confound: serializing a delta yields
     /// the four before/after method columns and the precomputed comparison,
     /// so no client can render churn without them.
@@ -216,6 +274,7 @@ mod tests {
             newly_resolving: 12,
             stopped_resolving: 10,
             rung2_declined: 19_962,
+            rung2_errored: 11,
             flips: json!([]),
             checker_before: "0.6.0".into(),
             checker_after: "0.7.0".into(),
@@ -232,6 +291,7 @@ mod tests {
             "schema_after",
             "method_changed",
             "rung2_declined",
+            "rung2_errored",
         ] {
             assert!(value.get(key).is_some(), "response lost `{key}`");
         }

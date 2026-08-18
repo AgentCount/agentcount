@@ -1226,18 +1226,37 @@ Over the agents with check results in each run of the pair:
 Three things are deliberately **not** counted as change: an agent present in
 only one run of the pair contributes to `newly_registered`/`disappeared` and
 to nothing else; a rung with a result on only one side is not a flip ("we did
-not ask" is not a change in the world); and — the rule with an incident behind
-it — **a transition into or out of `refused` is excluded from
-`newly_resolving` and `stopped_resolving`**. A `refused` (429, 503, an
-auth/payment challenge, a robots.txt that declined us) means the origin
-declined the probe, which is not the agent having gone away, and not the agent
-having come back. The 2026-08 census briefly reported 19,983 BSC agents
-stopped resolving; 19,962 were HTTP 429s this census itself caused, 19,658
-from a single host. Excluding transitions touching `refused`, that chain lost
-**10** agents (see the 2026-08-06 methodology changelog entry). The excluded
-transitions remain in `flips` — deleting the evidence would make a rate limit
-invisible, which is the same failure in the other direction — and the API
-totals them (`rung2_declined`) so the exclusion is visible rather than silent.
+not ask" is not a change in the world); and — the rule with two incidents
+behind it — **a transition into or out of `refused` or `error` is excluded
+from `newly_resolving` and `stopped_resolving`**.
+
+A `refused` (429, 503, an auth/payment challenge, a robots.txt that declined
+us) means the origin declined the probe, which is not the agent having gone
+away, and not the agent having come back. The 2026-08 census briefly reported
+19,983 BSC agents stopped resolving; 19,962 were HTTP 429s this census itself
+caused, 19,658 from a single host. Excluding transitions touching `refused`,
+that chain lost **10** agents (see the 2026-08-06 methodology changelog
+entry).
+
+An `error` means **this checker failed to complete the probe** — a timeout,
+a TLS or DNS failure, a connection that never completed (§4 defines the
+vocabulary: `error` is ours, never the agent's). The 2026-08-17 Base sweep
+ran ~17 hours through a degraded network — its own RPC calls timing out all
+night — and its delta booked 4,479 Base agents as `stopped_resolving`, of
+which 4,477 were `pass → error`: a checker-side outage published as agents
+going dark, the 19,983 mistake one status over (see the 2026-08-18 changelog
+entry). The exclusion is symmetric here too: `error → pass` is the prober
+recovering, not an agent returning.
+
+The cost of the second exclusion is stated plainly: a server that vanishes
+outright also surfaces as `error` (one observer cannot distinguish a dead
+server from its own unreachability), so these series now **undercount true
+disappearances rather than ever overcounting them** — the direction of error
+this census chooses everywhere. The excluded transitions remain in `flips` —
+deleting the evidence would make a rate limit or an outage invisible, which
+is the same failure in the other direction — and the API totals both volumes
+(`rung2_declined`, `rung2_errored`; additive, no transition in both) so each
+exclusion is visible rather than silent.
 
 ### The confound, and the rule for publishing
 

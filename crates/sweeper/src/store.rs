@@ -1347,14 +1347,17 @@ impl Db {
 
     /// Every delta row that exists, newest first.
     ///
-    /// Only `backfill-refused` needs this: re-judging a run's results changes
-    /// what its delta means, and a delta nobody recomputed would keep reporting
-    /// churn that the reclassification just removed. Every delta is recomputed
-    /// rather than only the ones whose `run_id` moved, because a delta reads
-    /// BOTH runs and the older one may be the reclassified side.
-    pub async fn all_deltas(&self) -> Result<Vec<(Uuid, Uuid, String)>> {
-        let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
-            "SELECT run_id, previous_run_id, chain FROM run_deltas ORDER BY computed_at DESC",
+    /// Only `sweeper::recompute` needs this: re-judging a run's results (or
+    /// changing the delta arithmetic itself) changes what its delta means, and
+    /// a delta nobody recomputed would keep reporting churn the change just
+    /// removed. Every delta is recomputed rather than only the ones whose
+    /// `run_id` moved, because a delta reads BOTH runs and the older one may
+    /// be the reclassified side. The stored series come along so the caller
+    /// can report old → new without a second query.
+    pub async fn all_deltas(&self) -> Result<Vec<(Uuid, Uuid, String, i32, i32)>> {
+        let rows: Vec<(Uuid, Uuid, String, i32, i32)> = sqlx::query_as(
+            "SELECT run_id, previous_run_id, chain, newly_resolving, stopped_resolving \
+               FROM run_deltas ORDER BY computed_at DESC",
         )
         .fetch_all(&self.pool)
         .await
