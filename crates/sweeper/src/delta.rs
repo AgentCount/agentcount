@@ -10,16 +10,17 @@
 //! # The rule this module exists to hold
 //!
 //! `stopped_resolving` is the number nobody else can produce, and therefore the
-//! number that must not lie. **A transition into or out of `refused` is not
-//! churn**, and is excluded from `stopped_resolving`/`newly_resolving` by rule,
-//! not by anybody remembering to filter it.
+//! number that must not lie. **A transition into or out of `refused` or
+//! `error` is not churn**, and is excluded from
+//! `stopped_resolving`/`newly_resolving` by rule, not by anybody remembering
+//! to filter it.
 //!
-//! The 2026-08 census is why. It reported 19,983 BSC agents as having stopped
-//! resolving. 19,962 of those were HTTP 429 — 19,658 from a single host — which
-//! is traffic we generated, at a host we chose the concurrency for. Excluding
-//! 429/503, that chain lost **10** agents. "19,983 agents went dark" is the
-//! most quotable wrong thing this project could publish, and the delta table
-//! must not be able to say it again.
+//! The 2026-08 census is why `refused` is here. It reported 19,983 BSC agents
+//! as having stopped resolving. 19,962 of those were HTTP 429 — 19,658 from a
+//! single host — which is traffic we generated, at a host we chose the
+//! concurrency for. Excluding 429/503, that chain lost **10** agents. "19,983
+//! agents went dark" is the most quotable wrong thing this project could
+//! publish, and the delta table must not be able to say it again.
 //!
 //! `refused` means the origin is demonstrably there and declined us (see
 //! `checks::CheckStatus::Refused`). An agent moving `pass → refused` has not
@@ -28,6 +29,22 @@
 //! An agent moving `refused → pass` has not started resolving either — we
 //! simply got an answer this week that we were declined last week. Both are
 //! facts about the conversation, not about the population.
+//!
+//! The 2026-08-17 Base sweep is why `error` joined it (2026-08-18). That sweep
+//! ran ~17 hours through a degraded network — 45-second RPC timeouts from the
+//! sweep's own environment, the whole night — and its delta booked 4,479 Base
+//! agents as `stopped_resolving`, of which **4,477 were `pass → error`**.
+//! `error` is defined as OUR failure — "a timeout in our prober, an RPC
+//! error. Never the agent's" (`checks::CheckStatus::Error`) — so counting its
+//! transitions as churn published a checker-side outage as agents going dark:
+//! the 19,983 mistake again, one status over. The same argument holds in both
+//! directions, exactly as it does for `refused`: `error → pass` is our prober
+//! recovering, not an agent returning. The cost is stated plainly — a server
+//! that vanishes outright surfaces as `error` too (rung 2 books DNS and
+//! connection failures as ours, because one observer cannot tell a dead
+//! server from its own unreachability), so this series now undercounts true
+//! deaths rather than ever overcounting them. That is the direction of error
+//! this project chooses everywhere.
 //!
 //! **Every transition is still recorded in `flips`, including these.** The
 //! exclusion is on the two headline series only. Deleting the evidence would
@@ -39,8 +56,8 @@ use std::collections::{HashMap, HashSet};
 /// Every `(agent_id, rung) -> status` one run recorded.
 pub type RungStatuses = HashMap<(u64, i16), String>;
 
-/// The status whose transitions never count as churn. See the module doc.
-pub const NOT_CHURN: &str = "refused";
+/// The statuses whose transitions never count as churn. See the module doc.
+pub const NOT_CHURN: [&str; 2] = ["refused", "error"];
 
 /// One (rung, from, to) transition and how many agents made it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,14 +136,14 @@ pub fn compute(before: &RungStatuses, after: &RungStatuses) -> DeltaCounts {
     let newly_resolving: i64 = counted
         .iter()
         .filter(|((rung, from, to), _)| {
-            *rung == 2 && *from != "pass" && *to == "pass" && *from != NOT_CHURN
+            *rung == 2 && *from != "pass" && *to == "pass" && !NOT_CHURN.contains(from)
         })
         .map(|(_, n)| *n)
         .sum();
     let stopped_resolving: i64 = counted
         .iter()
         .filter(|((rung, from, to), _)| {
-            *rung == 2 && *from == "pass" && *to != "pass" && *to != NOT_CHURN
+            *rung == 2 && *from == "pass" && *to != "pass" && !NOT_CHURN.contains(to)
         })
         .map(|(_, n)| *n)
         .sum();
@@ -210,6 +227,53 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_to_error_transition_is_not_a_stop() {
+        // THE 2026-08-17 case. Our prober timing out is not a death.
+        let before = run(&[(1, 2, "pass")]);
+        let after = run(&[(1, 2, "error")]);
+        let d = compute(&before, &after);
+        assert_eq!(
+            d.stopped_resolving, 0,
+            "our own timeout must never be publishable as an agent that stopped resolving"
+        );
+        assert_eq!(flip_of(&d, 2, "pass", "error"), 1);
+    }
+
+    #[test]
+    fn an_error_to_pass_transition_is_not_a_start() {
+        let before = run(&[(1, 2, "error")]);
+        let after = run(&[(1, 2, "pass")]);
+        let d = compute(&before, &after);
+        assert_eq!(
+            d.newly_resolving, 0,
+            "our prober recovering is not the agent having come back"
+        );
+        assert_eq!(flip_of(&d, 2, "error", "pass"), 1);
+    }
+
+    #[test]
+    fn the_2026_08_17_base_shape_reports_two_not_four_and_a_half_thousand() {
+        // The incident that extended the rule to `error`: the Base sweep ran
+        // ~17 hours through a degraded network (45s RPC timeouts throughout),
+        // and 4,477 agents moved pass → error while 2 moved pass → fail.
+        // "4,479 Base agents went dark" would have been the 19,983 mistake
+        // again, one status over.
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        for id in 0..4_477u64 {
+            before.push((id, 2i16, "pass"));
+            after.push((id, 2i16, "error"));
+        }
+        for id in 100_000..100_002u64 {
+            before.push((id, 2, "pass"));
+            after.push((id, 2, "fail"));
+        }
+        let d = compute(&run(&before), &run(&after));
+        assert_eq!(d.stopped_resolving, 2, "only the definitive answers count");
+        assert_eq!(flip_of(&d, 2, "pass", "error"), 4_477);
+    }
+
+    #[test]
     fn refused_to_fail_and_fail_to_refused_are_both_excluded() {
         // Neither direction touches `pass`, so neither belongs in either
         // series — but the exclusion must hold whichever end `refused` is on.
@@ -224,9 +288,10 @@ mod tests {
     #[test]
     fn the_2026_08_bsc_shape_reports_ten_not_nineteen_thousand() {
         // The census that motivated all of this, in miniature and to scale:
-        // 19,962 agents rate-limited, 21 genuinely gone (10 to `fail`, 11 to
-        // `error`, matching "excluding 429/503, BSC lost 10 agents" for the
-        // one status that means the agent).
+        // 19,962 agents rate-limited, 11 probe errors of ours, and 10 to
+        // `fail` — matching "excluding 429/503, BSC lost 10 agents" exactly,
+        // now that `error` is excluded too (2026-08-18; it briefly made this
+        // number 21).
         let mut before = Vec::new();
         let mut after = Vec::new();
         for id in 0..19_962u64 {
@@ -243,10 +308,11 @@ mod tests {
         }
         let d = compute(&run(&before), &run(&after));
         assert_eq!(
-            d.stopped_resolving, 21,
+            d.stopped_resolving, 10,
             "only the agents that actually stopped answering"
         );
         assert_eq!(flip_of(&d, 2, "pass", "refused"), 19_962);
+        assert_eq!(flip_of(&d, 2, "pass", "error"), 11);
         assert_eq!(flip_of(&d, 2, "pass", "fail"), 10);
     }
 

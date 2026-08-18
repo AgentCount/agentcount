@@ -48,5 +48,6 @@
 //! writes the `data/<run_id>/` files, which only a full sweep produces.
 
 pub mod delta;
+pub mod recompute;
 pub mod store;
 pub mod tail;

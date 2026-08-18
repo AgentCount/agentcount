@@ -105,16 +105,20 @@ async fn main() -> Result<()> {
     // sweep where they are large is a sweep whose politeness settings want
     // looking at, and that is invisible if the only thing printed is the
     // (correctly) small churn number.
-    let declined: i64 = counts
+    let excluded: i64 = counts
         .flips
         .iter()
-        .filter(|f| f.rung == 2 && (f.to == delta::NOT_CHURN || f.from == delta::NOT_CHURN))
+        .filter(|f| {
+            f.rung == 2
+                && (delta::NOT_CHURN.contains(&f.to.as_str())
+                    || delta::NOT_CHURN.contains(&f.from.as_str()))
+        })
         .map(|f| f.agents)
         .sum();
     tracing::info!(
         "delta written: {} agents (was {}), +{} registered, -{} disappeared, \
          +{} resolving, -{} STOPPED resolving \
-         ({declined} rung-2 transitions in or out of `{}` excluded from both)",
+         ({excluded} rung-2 transitions in or out of {:?} excluded from both)",
         counts.agents_after,
         counts.agents_before,
         counts.newly_registered,
