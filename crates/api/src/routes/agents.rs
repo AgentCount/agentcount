@@ -343,7 +343,17 @@ pub async fn list(
          {from_sql} {filter_sql} {order_sql} \
          LIMIT $8 OFFSET $9"
     );
-    let rows: Vec<SnapshotIdRow> = sqlx::query_as(&items_sql)
+    // The page and its total, CONCURRENTLY. Each is an independent read of
+    // the same filter, and on a BSC-sized run with a corpus-common search
+    // term ("agent" matches 88% of that chain's documents) each leg is an
+    // unavoidable ~4s scan — the OR in `q_match_sql` spans both joined
+    // tables, which no index can serve, and at that selectivity a bitmap
+    // plan would lose to the seq scan anyway. Run serially the two legs
+    // exceeded the web client's 8-second bound (#58); side by side they fit,
+    // and the numbers are byte-identical because nothing about either query
+    // changed but the clock.
+    let total_sql = format!("SELECT count(*) {from_sql} {filter_sql}");
+    let items_fut = sqlx::query_as::<_, SnapshotIdRow>(&items_sql)
         .bind(run_id)
         .bind(&chain)
         .bind(params.rung)
@@ -353,11 +363,8 @@ pub async fn list(
         .bind(&q)
         .bind(limit)
         .bind(offset)
-        .fetch_all(&state.db)
-        .await?;
-
-    let total_sql = format!("SELECT count(*) {from_sql} {filter_sql}");
-    let total: i64 = sqlx::query_scalar(&total_sql)
+        .fetch_all(&state.db);
+    let total_fut = sqlx::query_scalar::<_, i64>(&total_sql)
         .bind(run_id)
         .bind(&chain)
         .bind(params.rung)
@@ -365,8 +372,8 @@ pub async fn list(
         .bind(&facet_rungs)
         .bind(&facet_statuses)
         .bind(&q)
-        .fetch_one(&state.db)
-        .await?;
+        .fetch_one(&state.db);
+    let (rows, total) = tokio::try_join!(items_fut, total_fut)?;
 
     // One extra query for the page's rung statuses, rather than joining
     // check_results directly into the paginated query above: a join would
