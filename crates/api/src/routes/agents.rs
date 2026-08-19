@@ -432,13 +432,24 @@ pub async fn list(
             None => (Vec::new(), 0),
         }
     } else {
-        // Browsing: the page is a pkey-ordered index scan and the count is
-        // index-served — two cheap queries, unchanged.
+        // Browsing: page on the snapshot index FIRST, join documents for only
+        // the returned rows. The straightforward LEFT-JOIN-then-OFFSET shape
+        // heap-fetched every document in the run before discarding them —
+        // 8.9s for the pagination-overflow probe on the 269,339-agent BSC run
+        // — where the deferred join walks the pkey index and touches at most
+        // one page of documents: 86ms at the same offset, 3ms at offset 0
+        // (both measured). Everything the browse filter needs (`chain`, the
+        // rung/status EXISTS, the facets) reads only `s`, which is what makes
+        // the inner query self-contained; `q` is NULL on this branch by
+        // definition, so the outer join exists purely to carry `d.name`.
         let items_sql = format!(
             "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, \
                     s.observed_at, d.name \
-             {from_sql} {filter_sql} {order_sql} \
-             LIMIT $8 OFFSET $9"
+             FROM (SELECT * FROM agent_snapshots s {filter_head} \
+                   ORDER BY s.chain, s.agent_id LIMIT $7 OFFSET $8) s \
+             LEFT JOIN agent_documents d \
+               ON d.run_id = s.run_id AND d.chain = s.chain AND d.agent_id = s.agent_id \
+             ORDER BY s.chain, s.agent_id"
         );
         let rows: Vec<SnapshotIdRow> = sqlx::query_as(&items_sql)
             .bind(run_id)
@@ -447,7 +458,6 @@ pub async fn list(
             .bind(&params.status)
             .bind(&facet_rungs)
             .bind(&facet_statuses)
-            .bind(&q)
             .bind(limit)
             .bind(offset)
             .fetch_all(&state.db)
