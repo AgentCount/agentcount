@@ -103,12 +103,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/runs/{id}/rates", get(routes::rates::get))
         .route("/api/runs/{id}/findings", get(routes::findings::get))
         .route("/api/runs/{id}/delta", get(routes::deltas::get))
-        .route("/api/agents", get(routes::agents::list))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
-        // The one read endpoint that spans runs — the caller names them (the
-        // canonical set lives in the web repo, not here), and results stay
-        // grouped per run. See `routes::search`.
-        .route("/api/search", get(routes::search::get))
         // The two endpoints that serve rows belonging to NO run: agents the
         // chain has that no census has checked yet. Separate paths, and a
         // response shape that shares almost nothing with a census result, so
@@ -134,7 +129,26 @@ async fn main() -> anyhow::Result<()> {
             axum::http::StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(10),
         ))
-        // ── Added AFTER the 10s layer, deliberately ──────────────────────────
+        // ── The two routes that accept `q`, AFTER the 10s layer ─────────────
+        //
+        // Free-text search over a corpus-common term is an honest full-run
+        // scan: after #64 collapsed the page and its count into one pass,
+        // `q=agent` on the BSC run still measures 7–9s — an exact count over
+        // a corpus where the term matches 88% of documents has a floor no
+        // index can lower. At 10 seconds these two routes 408'd on cold
+        // spikes; at 15 they answer, and every other database read keeps the
+        // tighter bound. Same mechanism as the spot check below: a route
+        // registered after a layer is not covered by it.
+        .route("/api/agents", get(routes::agents::list))
+        // The one read endpoint that spans runs — the caller names them (the
+        // canonical set lives in the web repo, not here), and results stay
+        // grouped per run. See `routes::search`.
+        .route("/api/search", get(routes::search::get))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(15),
+        ))
+        // ── Added AFTER the 15s layer, deliberately ──────────────────────────
         //
         // `Router::layer` wraps the routes registered *so far*, so a route
         // added below it is not covered by it. That is what this needs: 10
