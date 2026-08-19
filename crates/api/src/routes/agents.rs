@@ -193,6 +193,36 @@ struct SnapshotIdRow {
     name: Option<String>,
 }
 
+/// `SnapshotIdRow` plus the window total the search branch's single scan
+/// carries on every row. Split from `SnapshotIdRow` rather than making
+/// `total` an `Option` there, so the browse branch cannot accidentally
+/// deserialize a column it never selects.
+#[derive(sqlx::FromRow)]
+struct SnapshotTotalRow {
+    chain: String,
+    agent_id: i64,
+    owner: String,
+    agent_uri: String,
+    block_number: i64,
+    observed_at: DateTime<Utc>,
+    name: Option<String>,
+    total: i64,
+}
+
+impl From<SnapshotTotalRow> for SnapshotIdRow {
+    fn from(r: SnapshotTotalRow) -> Self {
+        SnapshotIdRow {
+            chain: r.chain,
+            agent_id: r.agent_id,
+            owner: r.owner,
+            agent_uri: r.agent_uri,
+            block_number: r.block_number,
+            observed_at: r.observed_at,
+            name: r.name,
+        }
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct RungStatusRow {
     agent_id: i64,
@@ -338,42 +368,102 @@ pub async fn list(
         q_relevance_sql("$7")
     );
 
-    let items_sql = format!(
-        "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, s.observed_at, d.name \
-         {from_sql} {filter_sql} {order_sql} \
-         LIMIT $8 OFFSET $9"
-    );
-    // The page and its total, CONCURRENTLY. Each is an independent read of
-    // the same filter, and on a BSC-sized run with a corpus-common search
-    // term ("agent" matches 88% of that chain's documents) each leg is an
-    // unavoidable ~4s scan — the OR in `q_match_sql` spans both joined
-    // tables, which no index can serve, and at that selectivity a bitmap
-    // plan would lose to the seq scan anyway. Run serially the two legs
-    // exceeded the web client's 8-second bound (#58); side by side they fit,
-    // and the numbers are byte-identical because nothing about either query
-    // changed but the clock.
     let total_sql = format!("SELECT count(*) {from_sql} {filter_sql}");
-    let items_fut = sqlx::query_as::<_, SnapshotIdRow>(&items_sql)
-        .bind(run_id)
-        .bind(&chain)
-        .bind(params.rung)
-        .bind(&params.status)
-        .bind(&facet_rungs)
-        .bind(&facet_statuses)
-        .bind(&q)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db);
-    let total_fut = sqlx::query_scalar::<_, i64>(&total_sql)
-        .bind(run_id)
-        .bind(&chain)
-        .bind(params.rung)
-        .bind(&params.status)
-        .bind(&facet_rungs)
-        .bind(&facet_statuses)
-        .bind(&q)
-        .fetch_one(&state.db);
-    let (rows, total) = tokio::try_join!(items_fut, total_fut)?;
+    let (rows, total): (Vec<SnapshotIdRow>, i64) = if q.is_some() {
+        // Searching: ONE scan produces both the page and its total, via
+        // `count(*) OVER ()`. A corpus-common term ("agent" matches 88% of
+        // the BSC run's documents) makes the filter an unavoidable ~4s scan —
+        // the OR in `q_match_sql` spans both joined tables, which no index
+        // can serve, and at that selectivity a bitmap plan loses to the seq
+        // scan anyway. Two queries scanned twice (~8.6s serially, #58; run
+        // concurrently they contended for the same cores and 408'd), so the
+        // scan happens once. `SET LOCAL work_mem` keeps the relevance sort
+        // off disk — the 236k-row sort spilled at the 4MB default, and the
+        // LOCAL form ends with the transaction, so nothing else inherits it.
+        //
+        // This branch is search-only on purpose: the unsearched directory's
+        // two queries are index-served and fast, and a window count there
+        // would force a full-run scan on every browse page.
+        let paged_sql = format!(
+            "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, \
+                    s.observed_at, d.name, count(*) OVER () AS total \
+             {from_sql} {filter_sql} {order_sql} \
+             LIMIT $8 OFFSET $9"
+        );
+        let mut tx = state.db.begin().await?;
+        sqlx::query("SET LOCAL work_mem = '64MB'")
+            .execute(&mut *tx)
+            .await?;
+        let paged: Vec<SnapshotTotalRow> = sqlx::query_as(&paged_sql)
+            .bind(run_id)
+            .bind(&chain)
+            .bind(params.rung)
+            .bind(&params.status)
+            .bind(&facet_rungs)
+            .bind(&facet_statuses)
+            .bind(&q)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        match paged.first() {
+            Some(first) => {
+                let total = first.total;
+                (paged.into_iter().map(SnapshotIdRow::from).collect(), total)
+            }
+            // An empty page means the window count never materialized — which
+            // is "no matches" only when this is the FIRST page. Past the end
+            // (the pagination-overflow probe) the total still exists and must
+            // hold, so it is counted the old way on this rare path.
+            None if offset > 0 => {
+                let total = sqlx::query_scalar(&total_sql)
+                    .bind(run_id)
+                    .bind(&chain)
+                    .bind(params.rung)
+                    .bind(&params.status)
+                    .bind(&facet_rungs)
+                    .bind(&facet_statuses)
+                    .bind(&q)
+                    .fetch_one(&state.db)
+                    .await?;
+                (Vec::new(), total)
+            }
+            None => (Vec::new(), 0),
+        }
+    } else {
+        // Browsing: the page is a pkey-ordered index scan and the count is
+        // index-served — two cheap queries, unchanged.
+        let items_sql = format!(
+            "SELECT s.chain, s.agent_id, s.owner, s.agent_uri, s.block_number, \
+                    s.observed_at, d.name \
+             {from_sql} {filter_sql} {order_sql} \
+             LIMIT $8 OFFSET $9"
+        );
+        let rows: Vec<SnapshotIdRow> = sqlx::query_as(&items_sql)
+            .bind(run_id)
+            .bind(&chain)
+            .bind(params.rung)
+            .bind(&params.status)
+            .bind(&facet_rungs)
+            .bind(&facet_statuses)
+            .bind(&q)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.db)
+            .await?;
+        let total: i64 = sqlx::query_scalar(&total_sql)
+            .bind(run_id)
+            .bind(&chain)
+            .bind(params.rung)
+            .bind(&params.status)
+            .bind(&facet_rungs)
+            .bind(&facet_statuses)
+            .bind(&q)
+            .fetch_one(&state.db)
+            .await?;
+        (rows, total)
+    };
 
     // One extra query for the page's rung statuses, rather than joining
     // check_results directly into the paginated query above: a join would
