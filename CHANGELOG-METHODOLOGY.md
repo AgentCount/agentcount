@@ -20,6 +20,38 @@ Format per entry:
 
 ---
 
+## 2026-08-20 — NEW MEASUREMENT: the Seller Census method locks (METHODOLOGY §10)
+
+**This entry changes no number and re-judges no run — there is nothing to
+change yet, which is the point.** The x402 Seller Census (Instrument 02) has
+its method published before the first seller is enumerated and before the
+first cent is spent, per this project's standing order of operations.
+
+**What locks.** METHODOLOGY §10: the unit (a deduped `(payTo, host)` pair;
+rotation is churn on purpose, shared payTos are findings, never merges);
+the population (named catalogs, snapshotted and hash-committed per sweep,
+the list itself versioned); six questions in v1 (`listed`, `reachable`,
+`quotes`, `delivers`, `settled`, `consistent` — `receipted` designed but
+reserved until the receipts extension stabilizes); robots.txt binding every
+request including the 402 handshake; and the mystery-shopper rules — wallet
+published in §10.4 before any purchase, $0.10 stablecoin cap with
+`unprobed` for everything else, one purchase per seller per sweep, per-host
+politeness budgets, spend published, purchased content evidenced but never
+archived. Sweep 1 covers Base (USDC) only. Design and the recorded
+decisions of the 2026-08-20 review: `analysis/seller-census-design.md`.
+
+**Why.** Registration counts get cited as proof an agent economy exists,
+and payment-volume claims get cited as proof it transacts. Nobody pays
+every seller and publishes who delivers. The number this instrument exists
+to produce — the verified delivery rate — does not exist anywhere, and a
+number like that needs its method on record before the first version of it
+can be trusted.
+
+**Measured effect.** None. The first sweep produces the first numbers, under
+exactly the rules above.
+
+---
+
 ## 2026-08-18 — Rung-2 `error` transitions join `refused` outside the headline delta series
 
 **This entry changes stored, published numbers — every stored delta row is

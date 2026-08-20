@@ -11,7 +11,11 @@ being one.
 
 ## 1. What this is
 
-AgentCount is an independent conformance and census layer for
+AgentCount is an independent audit layer for the agent economy, built as
+instruments that each enumerate a population and ask it checkable yes/no
+questions. Sections 2–9 describe the first instrument; §10 the second.
+
+The first instrument is a conformance and census layer for
 [ERC-8004](spec/SOURCE.md) ("Trustless Agents"). It enumerates every agent
 registered in an Identity Registry, reads the chain's current state for each
 one, fetches and evaluates the off-chain document it points at, and checks
@@ -1277,3 +1281,116 @@ check results — the same function the sweep itself calls — reproduces every
 series and every flip, byte-identically (flips are sorted). A delta read from
 the API and one recomputed from the two published archives cannot disagree
 without one of the archives having been altered.
+
+## 10. The Seller Census — Instrument 02
+
+Everything above describes the registration census: whether the agents
+everyone counts are real. This section locks the method for the second
+instrument: whether the x402 economy everyone cites is real. It follows the
+same order as everything else in this project — the method is published
+here, in full, before the first seller is enumerated and before the first
+cent is spent. The design and its recorded decisions live in
+[`analysis/seller-census-design.md`](analysis/seller-census-design.md); this
+section is the subset that is LOCKED, meaning a change to any rule below is
+a methodology-changelog event, never a quiet edit.
+
+### 10.1 The unit
+
+A **seller** is a deduped **(payTo, host)** pair:
+
+- **payTo** — the payment-receiving address named in a resource's 402
+  payment requirements, normalized per network (EVM addresses lowercased).
+- **host** — the full lowercase host of the resource URL, port stripped when
+  it is the scheme default, IDN in punycode. The full host, not the
+  registrable domain: `api.example.com` and `example.com` are different
+  services.
+
+The same payTo behind two hosts is two sellers; the same host quoting two
+payTos is two sellers. A seller that rotates its payTo is a new seller by
+this definition, deliberately: the rotation is information, and host-only
+identity would blend genuinely distinct sellers behind shared hosts. Shared
+payTos across many sellers are published as findings over the population,
+never as merges of the unit. A seller has **resources** — the individual
+priced URLs below its host that name its payTo — and both counts are
+published; neither stands in for the other.
+
+### 10.2 The population
+
+Sellers are enumerated from named catalogs, because every catalog is partial
+and nobody publishes the union. The catalog list is part of this method:
+adding or removing one changes the population and is a changelog event, and
+a seller whose only catalog was removed is a method change, not churn. Every
+sweep archives each catalog's raw response bytes, hash-committed exactly as
+run archives are (`DATA.md`), and each seller's row records which catalogs
+list it. The self-declaration conventions (`.well-known`, OpenAPI payment
+extensions) only ever enrich hosts a catalog already named — crawling the
+open web for payment hints has no stopping rule and therefore no defensible
+population claim.
+
+### 10.3 The questions
+
+Statuses reuse this document's vocabulary verbatim — `pass`, `fail`,
+`error` (ours, never the seller's, §4), `refused` (the origin declined us),
+`skipped` (a prerequisite did not pass) — plus one word this instrument
+needs: **`unprobed`** — we chose not to ask, and the row says why. `error`,
+`refused` and `unprobed` are never publishable as a seller's failure.
+
+This is not a strict ladder; each rung names its prerequisites.
+
+| # | Rung | Question |
+|---|------|----------|
+| 1 | `listed` | Which catalogs list it, and since when. The population is the listed, so this rung is evidence rather than a verdict. |
+| 2 | `reachable` | Does the host answer at all? Any HTTP response — including 4xx/5xx — is `pass`; the question is existence, not health. |
+| 3 | `quotes` | Does ≥1 resource return a spec-valid 402 naming a scheme, network, amount, asset and this seller's payTo — judged against a pinned x402 spec commit, exactly as rung 4 of the registration census pins ERC-8004. |
+| 4 | `delivers` | Given a real payment (§10.4), does it serve the resource? `fail` here means a payment settled and the resource did not arrive, and carries the settlement proof and the full response. |
+| 5 | — | **Reserved.** `receipted` (offers/receipts per the x402 extension) is designed but not in the locked method; it enters by changelog once the extension stabilizes. |
+| 6 | `settled` | Does the payTo have on-chain settlement history at a pinned block — facilitator-agnostic, with first/last settlement, count, and distinct payers? Our own shopper payments (§10.4) are excluded by wallet address. |
+| 7 | `consistent` | Does what the catalogs claim (price, description, schema) match what the endpoint quotes, field by field? A seller in two disagreeing catalogs is judged against each; the disagreement is itself evidence. |
+
+**robots.txt binds every request this instrument makes** — catalog
+enrichment, reachability, the 402 handshake, consistency fetches — with no
+carve-out for "the protocol's designed use". A host that disallows us is
+`refused`, stated as such. One rule, everywhere, same as §6.
+
+Not measured, on purpose: revenue, dollar volume, uptime, latency, quality
+of the delivered resource. No score, no rank, no badge; nothing publishable
+is purchasable (GOVERNANCE.md).
+
+### 10.4 The shopper
+
+Rung 4 pays real sellers real money on a schedule, which is only defensible
+under pre-registered rules:
+
+- **The wallet is published here, before the first purchase.** Every
+  purchase this census ever makes comes from this address, so anyone
+  measuring x402 volume can exclude our probes, and our own rung-6 scans
+  exclude it mechanically. Rotating it is a changelog event.
+
+  > Base (USDC): **`<TO BE FILLED BY MAINTAINER BEFORE THIS SECTION MERGES>`**
+
+- **The cap is $0.10 face value in stablecoin quotes.** A resource quoting
+  above cap, or in anything we cannot read at face value, is `unprobed`
+  (reason `over_cap` / `unpriced`), and the unprobed share is published
+  beside every delivery rate it qualifies.
+- **One purchase per seller per sweep**, the cheapest at-or-under-cap
+  resource, no retries within a sweep: a payment that settled and a
+  resource that did not arrive is the measurement.
+- **Politeness is part of the method, not a setting**: per-host concurrency
+  of 1, at most 500 probed sellers per host per sweep, `Retry-After`
+  honoured with §6's semantics. A 429/503 is `refused` and is never churn.
+- **Purchased content is evidenced, never archived**: hash, size,
+  content-type, schema-validity against the quote, HTTP metadata. A
+  purchased resource is a product; the census stores proof, not copies.
+- **Spend is published per sweep**: total, per network, per outcome.
+
+### 10.5 Scope, pinning, change
+
+Sweep 1 covers **Base (USDC)** only. Networks are added the way chains were
+added to the registration census: a stated expansion, dated in the
+changelog, never silently. Catalog snapshots are hashed per sweep; rung 6 is
+pinned to a block; rungs 2–4 and 7 are HTTP facts, timestamped not
+block-pinned (§7's honesty applies). Every rate carries its denominator,
+absence is served as absence (404, never zeros), and the delta series ship
+with the instrument from the first pair of sweeps — with `refused`, `error`
+and `unprobed` transitions excluded from headline churn by the same rule §9
+records, from day one rather than after the first incident.
