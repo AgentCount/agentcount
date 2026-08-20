@@ -1366,7 +1366,7 @@ under pre-registered rules:
   measuring x402 volume can exclude our probes, and our own rung-6 scans
   exclude it mechanically. Rotating it is a changelog event.
 
-  > Base (USDC): **`<TO BE FILLED BY MAINTAINER BEFORE THIS SECTION MERGES>`**
+  > Base (USDC): **`0x8945b93E68C8927250DDFC41cd10EAc6CbEEd25f`**
 
 - **The cap is $0.10 face value in stablecoin quotes.** A resource quoting
   above cap, or in anything we cannot read at face value, is `unprobed`
