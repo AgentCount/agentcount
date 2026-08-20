@@ -124,35 +124,12 @@ pub enum ParseError {
 mod tests {
     use super::*;
 
-    /// The captured body — a real `GET .../discovery/resources` response.
-    const CAPTURED: &str = include_str!("../../tests/fixtures/bazaar-resources.json");
-
-    #[test]
-    fn the_captured_body_parses_into_listings() {
-        let p = parse(CAPTURED).expect("the captured Bazaar body must parse");
-        assert!(p.items_seen > 0, "the capture carries items");
-        assert!(
-            !p.listings.is_empty(),
-            "and those items name payees and resources"
-        );
-        assert!(
-            p.listings.iter().all(|l| l.catalog == NAME),
-            "every listing records which catalog it came from"
-        );
-        assert!(
-            p.listings.iter().all(|l| l.resource.starts_with("http")),
-            "resources are URLs"
-        );
-    }
-
-    #[test]
-    fn the_catalogs_own_total_is_read_so_our_coverage_of_it_is_statable() {
-        let p = parse(CAPTURED).unwrap();
-        assert!(
-            p.total.is_some_and(|t| t > 1_000),
-            "the Bazaar reported 15,155 resources when this was captured"
-        );
-    }
+    // The tests that read the captured Bazaar body live in
+    // `tests/bazaar_population.rs`, not here: this crate's `src/` may not
+    // reach the filesystem, not even at compile time to embed a fixture,
+    // and CI enforces that for every crate claiming purity. (It caught this
+    // exact file when the fixture was embedded here, which is the job
+    // working.) The tests below need no fixture.
 
     #[test]
     fn a_resource_naming_two_payees_becomes_two_listings() {

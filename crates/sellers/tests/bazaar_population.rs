@@ -23,6 +23,36 @@ fn population() -> catalog::Population {
 }
 
 #[test]
+fn the_captured_body_parses_into_listings() {
+    let p = bazaar::parse(CAPTURED).expect("the captured Bazaar body must parse");
+    assert!(p.items_seen > 0, "the capture carries items");
+    assert!(
+        !p.listings.is_empty(),
+        "and those items name payees and resources"
+    );
+    assert!(
+        p.listings.iter().all(|l| l.catalog == bazaar::NAME),
+        "every listing records which catalog it came from"
+    );
+    assert!(
+        p.listings.iter().all(|l| l.resource.starts_with("http")),
+        "resources are URLs"
+    );
+}
+
+#[test]
+fn the_catalogs_own_total_is_read_so_our_coverage_of_it_is_statable() {
+    // The catalog's own claim about its size, beside the part this census
+    // could actually read — "the Bazaar says N, we resolved M" is only a
+    // statable sentence because this field is parsed.
+    let p = bazaar::parse(CAPTURED).unwrap();
+    assert!(
+        p.total.is_some_and(|t| t > 1_000),
+        "the Bazaar reported 15,155 resources when this was captured"
+    );
+}
+
+#[test]
 fn a_real_catalog_page_assembles_into_sellers() {
     let p = population();
     assert!(!p.is_empty(), "a live catalog page names sellers");
