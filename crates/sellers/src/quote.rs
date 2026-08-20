@@ -132,8 +132,14 @@ fn parse_requirement(entry: &serde_json::Value, network: Network) -> Result<Requ
     // uint256 does not survive JSON's number type. A number is accepted too
     // and read exactly — but only if it is an integer, since a fractional
     // atomic unit is not a price anybody can pay.
+    //
+    // Two field names, both live: `maxAmountRequired` is x402 v1's, and
+    // `amount` is what v2 bodies and the Bazaar's own listings carry
+    // (observed 2026-08-20). Reading only the documented one would price
+    // nothing on a v2 endpoint.
     let amount_value = entry
         .get("maxAmountRequired")
+        .or_else(|| entry.get("amount"))
         .ok_or_else(|| "maxAmountRequired".to_string())?;
     let max_amount_required = match amount_value {
         serde_json::Value::String(s) => s
@@ -292,6 +298,20 @@ mod tests {
                 field: "maxAmountRequired".into()
             })
         );
+    }
+
+    #[test]
+    fn a_v2_quote_naming_the_amount_field_is_priced_too() {
+        // x402 v2 (and the Bazaar's own listings) carry `amount` where v1
+        // carried `maxAmountRequired`. Reading only the documented name
+        // would price nothing on a v2 endpoint.
+        let body = r#"{"x402Version":2,"accepts":[{"scheme":"exact","network":"eip155:8453",
+            "amount":"3000","asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payTo":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#;
+        let QuoteVerdict::Quotes(reqs) = judge(&seller(), body, Network::Evm) else {
+            panic!("a v2 quote is a quote");
+        };
+        assert_eq!(reqs[0].max_amount_required, 3000);
     }
 
     #[test]

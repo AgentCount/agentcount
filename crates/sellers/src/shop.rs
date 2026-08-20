@@ -71,8 +71,13 @@ pub struct PricedAsset {
 
 /// What sweep 1 covers: Base, USDC (METHODOLOGY §10.5). Adding an entry
 /// changes the population that can be probed and is a changelog event.
+///
+/// The network is written in its canonical CAIP-2 form because that is what
+/// the catalogs actually serve — every one of the Bazaar's 15,155 resources
+/// names `eip155:8453` — and comparisons go through [`crate::network`] so a
+/// quote saying `base` matches it anyway.
 pub const SWEEP_ONE_ASSETS: &[PricedAsset] = &[PricedAsset {
-    network: "base",
+    network: crate::network::BASE,
     // Circle's canonical USDC on Base, lowercased like every other address
     // this crate handles.
     address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -93,7 +98,7 @@ pub fn face_value_cents(
 ) -> Option<u64> {
     let entry = assets
         .iter()
-        .find(|a| a.network.eq_ignore_ascii_case(network) && a.address == asset)?;
+        .find(|a| crate::network::same(a.network, network) && a.address == asset)?;
     let scale = 10u128.checked_pow(entry.decimals)?;
     let cents = amount.checked_mul(100)?.div_ceil(scale);
     u64::try_from(cents).ok()
@@ -120,7 +125,7 @@ pub fn decide(assets: &[PricedAsset], requirements: &[Requirement]) -> Decision 
         .filter(|(_, r)| {
             assets
                 .iter()
-                .any(|a| a.network.eq_ignore_ascii_case(&r.network))
+                .any(|a| crate::network::same(a.network, &r.network))
         })
         .map(|(i, _)| i)
         .collect();
@@ -300,6 +305,16 @@ mod tests {
         // make "free" a category the census does not measure.
         assert_eq!(face_value_cents(SWEEP_ONE_ASSETS, "base", USDC, 1), Some(1));
         assert_eq!(face_value_cents(SWEEP_ONE_ASSETS, "base", USDC, 0), Some(0));
+    }
+
+    #[test]
+    fn a_quote_naming_the_chain_in_caip2_is_in_scope() {
+        // THE near miss, as a regression test. Every one of the Bazaar's
+        // 15,155 resources names `eip155:8453`; the scope says Base. Match
+        // the raw strings and the whole catalog reads as out of scope, and
+        // the census publishes a delivery rate over nobody.
+        let d = decide(SWEEP_ONE_ASSETS, &[req("eip155:8453", USDC, 50_000)]);
+        assert_eq!(d, Decision::Buy { index: 0, cents: 5 });
     }
 
     #[test]
