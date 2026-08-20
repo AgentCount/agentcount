@@ -83,6 +83,11 @@ Statuses reuse the census vocabulary verbatim — `pass`, `fail`, `error`
 the delta rules exclude them from churn from day one (§6) — the 19,983 and
 4,479 incidents are baked in here, not waiting to be rediscovered.
 
+robots.txt binds every request this instrument makes — catalog enrichment,
+rung-2 reachability, the rung-3/4 protocol probe, rung-7 fetches — with no
+carve-out for the 402 handshake (§8.1). A host that disallows us is
+`refused`, stated as such.
+
 Unlike Instrument 01 this is **not a strict ladder** — settlement does not
 require delivery — so each rung names its prerequisites explicitly and
 `skipped` refers to them:
@@ -93,7 +98,7 @@ require delivery — so each rung names its prerequisites explicitly and
 | 2 | `reachable` | Does the host answer at all? | 1 | One probe per host. Any HTTP response — including 4xx/5xx — is `pass`: the question is existence, not health. |
 | 3 | `quotes` | Does a resource return a spec-valid 402 — parseable payment requirements naming a scheme, network, amount, asset and the payTo that defines this seller? | 2 | `pass` if ≥1 resource quotes validly; per-resource results stored. Validated against a **pinned x402 spec commit**, like `spec/` pins ERC-8004. |
 | 4 | `delivers` | Given a real payment, does it serve the resource? | 3 | The shopper (§4) probes exactly one resource: the cheapest at-or-under cap. `pass` = resource delivered; `fail` = payment settled, resource not delivered (the strongest finding this instrument can produce, and the evidence bar is correspondingly §4's highest); `unprobed` = every resource priced above cap. |
-| 5 | `receipted` | Does it sign offers/receipts per the x402 receipts extension? | 4 attempted | Evaluated on the same purchase — no extra spend. Expected to be nearly universally `fail` at first; that is the finding, not a defect of the design. |
+| 5 | `receipted` | Does it sign offers/receipts per the x402 receipts extension? | 4 attempted | Evaluated on the same purchase — no extra spend. Expected to be nearly universally `fail` at first; that is the finding, not a defect of the design. **Held out of the first locked method (§8.5); the number stays reserved.** |
 | 6 | `settled` | Does the payTo have on-chain settlement history, facilitator-agnostic, at a pinned block? | 1 | Chain-scoped scan (the `crates/payments` pattern: pinned block, stated basis, stated exclusions). Evidence: first/last settlement, count, **distinct payers**. Our own shopper payments are excluded by the published wallet (§4). |
 | 7 | `consistent` | Does what the catalogs claim (price, description, schema) match what the endpoint quotes? | 1 ∧ 3 | Compared field-by-field between the archived catalog snapshot and the archived 402 body. Divergence is recorded per field. A seller in two disagreeing catalogs is judged against each, and the disagreement is itself evidence. |
 
@@ -177,30 +182,39 @@ cap, checker) says so on the row.
 * **No intent.** "Took payment, did not deliver" is publishable evidence;
   "scam" is not a word this census has a rung for.
 
-## 8. Open questions for review
+## 8. Decisions — the review of 2026-08-20
 
-1. **robots.txt at rungs 3–4.** The census honours robots.txt before any
-   probe (§6). An x402 endpoint's 402 handshake is the protocol's designed
-   use, arguably not crawling — but "arguably" is not a rule. Proposed:
-   honour robots.txt for everything (C6 crawling, rung 7 fetches, rung 2)
-   **including** the 402 probe; a host that disallows us is `refused`,
-   stated as such. Costs coverage, keeps one rule.
-2. **The cap's denomination.** $0.10 face value assumes stablecoin quotes.
-   A seller quoting in a volatile asset needs a conversion rule and a pinned
-   price source, or `unprobed` with reason `unpriced`. Proposed: the latter
-   until a real population exists to justify the former.
-3. **Networks in scope for sweep 1.** Proposed: Base (USDC) only, then
-   Solana in a stated expansion — the enable-a-chain playbook from
-   Instrument 01.
-4. **Seller identity churn.** A seller that rotates payTo weekly is a new
-   seller weekly by §1's definition. True, and it will look like churn.
-   Counter-proposal considered and rejected for now: host-only identity
-   (blends genuinely distinct sellers behind shared hosts). The rotation
-   pattern itself becomes a finding.
-5. **Rung 5 before the extension stabilizes.** If the receipts extension
-   moves under us, rung 5 pins to a spec commit like rung 3 — but a rung
-   that re-judges the population on every upstream edit is method churn.
-   Alternative: hold rung 5 out of the first locked method entirely.
+The five questions this design left open were decided with the maintainer on
+2026-08-20. They are recorded here as rules, with the road not taken, so the
+next reader does not relitigate them without new evidence.
+
+1. **robots.txt binds everything, including the 402 handshake.** One rule,
+   no carve-outs: C6 crawling, rung 7 fetches, rung 2, and the rung-3/4
+   protocol probe all honour robots.txt, and a host that disallows us is
+   `refused`, stated as such. The carve-out ("a 402 handshake is the
+   protocol's designed use, not crawling") was considered and declined: it
+   costs some coverage, but the auditor's neutrality armour stays seamless —
+   nobody can accuse this census of ignoring a no.
+2. **The cap is $0.10 face value in stablecoin quotes; anything else is
+   `unprobed` with reason `unpriced`.** No conversion rule and no pinned
+   price source in v1 — inventing a pricing methodology to spend ten cents
+   is complexity before evidence. Revisit when a real population of
+   non-stablecoin quotes exists.
+3. **Sweep 1 is Base (USDC) only.** Complete coverage of one network beats
+   partial claims about two. Solana follows as a stated expansion with its
+   own changelog entry — the enable-a-chain playbook from Instrument 01.
+4. **Identity stays `(payTo, host)`; rotation is a finding.** A seller that
+   rotates its payTo weekly will read as churn, and that is accepted: the
+   churn is real information (a host whose payment address never stabilises
+   is a pattern worth publishing), where host-only identity would blend
+   genuinely distinct sellers behind shared hosts — the exact
+   compares-an-agent-to-itself failure the census forbids.
+5. **Rung 5 (`receipted`) is held out of the first locked method.** The
+   receipts extension is still moving, and a rung that re-judges the
+   population on every upstream edit is method churn in the
+   credibility-critical launch window. The rung number stays reserved and
+   the design above stands; it enters the method as a stated expansion once
+   the extension stabilises — pinned to a spec commit, like rung 3.
 
 ---
 
