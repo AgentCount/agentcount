@@ -20,6 +20,30 @@ Format per entry:
 
 ---
 
+## 2026-08-21 — §10.4's `unprobed` vocabulary is named in full, before first use
+
+**This entry changes no number — the Seller Census has not run.** It is
+recorded anyway, because §10 is locked and a locked rule is not edited
+quietly, however early.
+
+**What changed.** §10.4 listed two `unprobed` reasons (`over_cap`,
+`unpriced`) as examples. It now names all four the method actually implies
+and `crates/sellers` implements — adding `out_of_scope_network` (§10.5
+scopes sweep 1 to Base, so a seller quoting only elsewhere was always going
+to be unprobed) and `no_quote` (rung 3 did not pass, so there was nothing to
+buy from) — and states two things the prose left implicit: the cap is
+inclusive with face value rounded UP, and when several reasons apply the row
+carries the most informative one.
+
+**Why.** The code would otherwise know a vocabulary the method did not. The
+`unprobed` counts are published beside every delivery rate they qualify, so
+the words are part of the published figure, not an implementation detail.
+
+**Measured effect.** None. No seller has been enumerated and no purchase has
+been made.
+
+---
+
 ## 2026-08-20 — NEW MEASUREMENT: the Seller Census method locks (METHODOLOGY §10)
 
 **This entry changes no number and re-judges no run — there is nothing to

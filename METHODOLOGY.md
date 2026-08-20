@@ -1368,10 +1368,23 @@ under pre-registered rules:
 
   > Base (USDC): **`0x8945b93E68C8927250DDFC41cd10EAc6CbEEd25f`**
 
-- **The cap is $0.10 face value in stablecoin quotes.** A resource quoting
-  above cap, or in anything we cannot read at face value, is `unprobed`
-  (reason `over_cap` / `unpriced`), and the unprobed share is published
-  beside every delivery rate it qualifies.
+- **The cap is $0.10 face value in stablecoin quotes**, inclusive, with the
+  face value rounded UP — the only direction that cannot make this census
+  pay a price it had decided was too high. A seller not bought from is
+  `unprobed`, and the row carries which of exactly four reasons applied:
+
+  | reason | what it says |
+  |---|---|
+  | `over_cap` | every quote priced above the cap — a price we read and declined |
+  | `unpriced` | quoted in an asset this census cannot read at face value |
+  | `out_of_scope_network` | quoted only on a network this sweep does not cover (§10.5) |
+  | `no_quote` | rung 3 did not pass, so there was nothing to buy from |
+
+  When several apply, the row carries the most informative: a price we read
+  and declined says more about a seller than an asset we could not read,
+  which says more than a network we do not sweep. Every one of these counts
+  is published beside the delivery rate it qualifies — "delivered 61% of the
+  83% under cap" is the honest sentence shape, and it needs them.
 - **One purchase per seller per sweep**, the cheapest at-or-under-cap
   resource, no retries within a sweep: a payment that settled and a
   resource that did not arrive is the measurement.
