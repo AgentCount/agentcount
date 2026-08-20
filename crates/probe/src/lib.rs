@@ -25,8 +25,12 @@ pub use fetch::{
     MAX_HONOURED_RETRY_AFTER, MAX_REDIRECTS, PER_HOST_CAP, Prober,
 };
 pub use resolve::{DataUriDecode, Target, ipfs_cid_and_path, resolve};
+/// Re-exported for callers that must honour robots.txt before a request of
+/// their own — see [`fetch::Prober::robots_permits`].
+pub use robots::RobotsDecision;
 
 /// Re-exported at crate root for anything (tests, future crates) that wants
 /// the exact product token this prober identifies itself with, without
 /// reaching into `fetch`.
+#[cfg(test)]
 pub(crate) use fetch::PRODUCT_TOKEN;

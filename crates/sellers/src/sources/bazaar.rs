@@ -9,9 +9,10 @@
 //!
 //! * the API reference documents `accepts[].amount`, and the live body also
 //!   carries `currency` and `recipient` as aliases of `asset` and `payTo`;
-//! * the reference's examples name networks `base`, and every live entry
-//!   names `eip155:8453` (see [`crate::network`], and the near miss it
-//!   records);
+//! * the reference's examples name networks `base`, and live entries name
+//!   CAIP-2 ids — `eip155:8453` and eight or more others, since the Bazaar
+//!   is not a Base-only catalog (see [`crate::network`], and the near miss
+//!   it records);
 //! * `x402Version` is 2 on the live index, where most written examples show
 //!   1.
 //!
@@ -52,7 +53,10 @@ pub fn parse(body: &str) -> Result<Parsed, ParseError> {
             continue;
         };
         let accepts = item.get("accepts").and_then(|a| a.as_array());
-        let mut pay_tos: Vec<&str> = accepts
+        // (payee, network) rather than payee alone: the network decides
+        // which encoding the address is read with, and one resource can be
+        // sold on more than one chain.
+        let mut payees: Vec<(&str, &str)> = accepts
             .map(|entries| {
                 entries
                     .iter()
@@ -60,17 +64,20 @@ pub fn parse(body: &str) -> Result<Parsed, ParseError> {
                         // `payTo` is the documented field; `recipient` is the
                         // alias the live body also carries. Reading both
                         // means an entry that drops one still names a payee.
-                        e.get("payTo")
+                        let pay_to = e
+                            .get("payTo")
                             .or_else(|| e.get("recipient"))
-                            .and_then(|p| p.as_str())
+                            .and_then(|p| p.as_str())?;
+                        let network = e.get("network").and_then(|n| n.as_str()).unwrap_or("");
+                        Some((pay_to, network))
                     })
                     .collect()
             })
             .unwrap_or_default();
-        pay_tos.sort_unstable();
-        pay_tos.dedup();
+        payees.sort_unstable();
+        payees.dedup();
 
-        if pay_tos.is_empty() {
+        if payees.is_empty() {
             // A listing with no payee names no seller. It is not an error —
             // the catalog may simply carry a free or unpriced entry — but it
             // is counted, because "the Bazaar lists N resources and M of
@@ -78,11 +85,12 @@ pub fn parse(body: &str) -> Result<Parsed, ParseError> {
             unreadable += 1;
             continue;
         }
-        for pay_to in pay_tos {
+        for (pay_to, network) in payees {
             listings.push(Listing {
                 catalog: NAME.to_string(),
                 pay_to: pay_to.to_string(),
                 resource: resource.to_string(),
+                network: network.to_string(),
             });
         }
     }

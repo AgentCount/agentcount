@@ -33,6 +33,18 @@ pub struct Listing {
     /// The priced URL. Its host becomes half the seller's identity, and the
     /// URL itself is kept as one of the seller's resources.
     pub resource: String,
+    /// The network the catalog said this listing settles on, VERBATIM.
+    ///
+    /// Not part of the identity (§10.1's unit is `(payTo, host)`), but
+    /// carried because it decides whether this census can read the address
+    /// at all — and because dropping it caused a real mislabel. About half
+    /// the Bazaar's listings settle somewhere other than Base (roughly a
+    /// fifth on Solana), and assembling those under EVM rules recorded 138
+    /// of 443 perfectly good listings as `malformed_address`. A listing on a
+    /// network this sweep does not cover is out of scope, which is a fact
+    /// about OUR coverage; calling it malformed is a false claim about
+    /// somebody else's catalog.
+    pub network: String,
 }
 
 /// One seller, assembled from every listing that resolved to its identity.
@@ -86,7 +98,27 @@ impl Population {
     }
 }
 
+/// Split listings into the ones this sweep can read and the ones it cannot.
+///
+/// "Cannot read" means the network is not in `in_scope` — a real listing on
+/// a chain this census does not sweep. It is returned separately rather than
+/// rejected, because [`assemble`] would judge its address by the wrong
+/// encoding and record a valid Solana payee as a malformed EVM one. Coverage
+/// this census lacks is never somebody else's malformity.
+pub fn partition_by_scope<'a>(
+    listings: &'a [Listing],
+    in_scope: &[&str],
+) -> (Vec<&'a Listing>, Vec<&'a Listing>) {
+    listings
+        .iter()
+        .partition(|l| in_scope.iter().any(|s| crate::network::same(s, &l.network)))
+}
+
 /// Assemble a population from every catalog's listings.
+///
+/// `network` is the ENCODING to read addresses with, not a filter: callers
+/// pass only listings they have already scoped (see [`partition_by_scope`]),
+/// because assembling a Solana listing under EVM rules mislabels it.
 pub fn assemble(listings: &[Listing], network: Network) -> Population {
     let mut by_id: BTreeMap<SellerId, Seller> = BTreeMap::new();
     let mut rejected = Vec::new();
@@ -133,10 +165,15 @@ mod tests {
     use super::*;
 
     fn listing(catalog: &str, pay_to: &str, resource: &str) -> Listing {
+        listing_on(catalog, pay_to, resource, crate::network::BASE)
+    }
+
+    fn listing_on(catalog: &str, pay_to: &str, resource: &str, network: &str) -> Listing {
         Listing {
             catalog: catalog.into(),
             pay_to: pay_to.into(),
             resource: resource.into(),
+            network: network.into(),
         }
     }
 
@@ -237,6 +274,47 @@ mod tests {
         assert!(reasons.contains(&"malformed_address"));
         assert!(reasons.contains(&"malformed_url"));
         assert!(reasons.contains(&"zero_address"));
+    }
+
+    #[test]
+    fn a_listing_on_a_chain_we_do_not_sweep_is_out_of_scope_not_malformed() {
+        // THE mislabel, as a regression test. About half the Bazaar's
+        // listings settle off Base, a fifth of them on Solana; read under
+        // EVM rules they were recorded as `malformed_address` — 138 of 443
+        // on the first three pages. They are not malformed. They are
+        // somebody else's perfectly good listing on a chain this sweep does
+        // not cover, and the difference is a false claim about another
+        // project's data.
+        let solana = "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj";
+        let listings = [
+            listing("bazaar", A, "https://a.example/x"),
+            listing_on("bazaar", solana, "https://b.example/x", "solana"),
+        ];
+        let (in_scope, out_of_scope) = partition_by_scope(&listings, &[crate::network::BASE]);
+        assert_eq!(in_scope.len(), 1);
+        assert_eq!(out_of_scope.len(), 1);
+
+        let scoped: Vec<Listing> = in_scope.into_iter().cloned().collect();
+        let p = assemble(&scoped, Network::Evm);
+        assert_eq!(p.len(), 1);
+        assert!(
+            p.rejected.is_empty(),
+            "nothing valid was called malformed: {:?}",
+            p.rejected
+        );
+    }
+
+    #[test]
+    fn scope_matching_uses_canonical_network_names() {
+        // `base` and `eip155:8453` are one network; a catalog writing either
+        // is in scope.
+        let listings = [
+            listing_on("bazaar", A, "https://a.example/x", "base"),
+            listing_on("bazaar", B, "https://b.example/x", "eip155:8453"),
+        ];
+        let (in_scope, out) = partition_by_scope(&listings, &[crate::network::BASE]);
+        assert_eq!(in_scope.len(), 2);
+        assert!(out.is_empty());
     }
 
     #[test]

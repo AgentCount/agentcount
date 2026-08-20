@@ -73,9 +73,9 @@ pub struct PricedAsset {
 /// changes the population that can be probed and is a changelog event.
 ///
 /// The network is written in its canonical CAIP-2 form because that is what
-/// the catalogs actually serve — every one of the Bazaar's 15,155 resources
-/// names `eip155:8453` — and comparisons go through [`crate::network`] so a
-/// quote saying `base` matches it anyway.
+/// the catalogs actually serve — the Bazaar names `eip155:8453`, never
+/// `base` — and comparisons go through [`crate::network`] so a quote saying
+/// `base` matches it anyway.
 pub const SWEEP_ONE_ASSETS: &[PricedAsset] = &[PricedAsset {
     network: crate::network::BASE,
     // Circle's canonical USDC on Base, lowercased like every other address

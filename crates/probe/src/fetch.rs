@@ -306,6 +306,14 @@ pub struct Prober {
     global: Arc<Semaphore>,
     per_host: Mutex<HashMap<String, Arc<HostLane>>>,
     pub(crate) robots: RobotsCache,
+    /// The product token this prober identifies itself with, in its
+    /// User-Agent AND when matching `User-agent:` groups in a robots.txt.
+    ///
+    /// A field rather than the constant it used to be, since 2026-08-20: the
+    /// Seller Census (METHODOLOGY §10.3) honours robots.txt through this
+    /// same implementation, and a host must be able to disallow one
+    /// instrument without disallowing the other. One parser, two identities.
+    pub(crate) product_token: &'static str,
 }
 
 fn global_concurrency() -> usize {
@@ -343,6 +351,7 @@ impl Prober {
     pub fn new(contact_url: &str, ipfs_gateways: &[String]) -> anyhow::Result<Self> {
         anyhow::ensure!(!ipfs_gateways.is_empty(), "ipfs_gateways must not be empty");
         Self::build(
+            PRODUCT_TOKEN,
             contact_url,
             ipfs_gateways,
             Duration::from_secs(5),
@@ -351,14 +360,34 @@ impl Prober {
         )
     }
 
+    /// A prober that will only ever be asked [`Self::robots_permits`].
+    ///
+    /// No IPFS gateways, because nothing here resolves an `ipfs://` URI —
+    /// declaring gateways it would never use would be this crate claiming a
+    /// capability it does not exercise. `product_token` is the name this
+    /// caller answers to in a `User-agent:` group, so an operator can
+    /// disallow one AgentCount instrument without disallowing the other
+    /// (METHODOLOGY §10.3).
+    pub fn for_robots_only(product_token: &'static str, contact_url: &str) -> anyhow::Result<Self> {
+        Self::build(
+            product_token,
+            contact_url,
+            &[],
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            host_delay(),
+        )
+    }
+
     fn build(
+        product_token: &'static str,
         contact_url: &str,
         ipfs_gateways: &[String],
         connect_timeout: Duration,
         total_timeout: Duration,
         host_delay: Duration,
     ) -> anyhow::Result<Self> {
-        let user_agent = format!("{PRODUCT_TOKEN}/{PRODUCT_VERSION} (+{contact_url})");
+        let user_agent = format!("{product_token}/{PRODUCT_VERSION} (+{contact_url})");
         let client = reqwest::Client::builder()
             .user_agent(user_agent)
             .connect_timeout(connect_timeout)
@@ -372,6 +401,7 @@ impl Prober {
             total_timeout,
             host_delay,
             global: Arc::new(Semaphore::new(global_concurrency())),
+            product_token,
             per_host: Mutex::new(HashMap::new()),
             robots: RobotsCache::new(),
         })
@@ -391,6 +421,7 @@ impl Prober {
     #[cfg(test)]
     pub(crate) fn new_for_test(connect_timeout: Duration, total_timeout: Duration) -> Self {
         Self::build(
+            PRODUCT_TOKEN,
             "https://agentcount.ai/methodology; contact: probes@agentcount.ai",
             &[
                 "https://ipfs.io/ipfs/".to_string(),
@@ -410,6 +441,7 @@ impl Prober {
     #[cfg(test)]
     pub(crate) fn new_for_test_with_host_delay(host_delay: Duration) -> Self {
         Self::build(
+            PRODUCT_TOKEN,
             "https://agentcount.ai/methodology; contact: probes@agentcount.ai",
             &["https://ipfs.io/ipfs/".to_string()],
             Duration::from_secs(2),
@@ -429,6 +461,7 @@ impl Prober {
         total_timeout: Duration,
     ) -> Self {
         Self::build(
+            PRODUCT_TOKEN,
             "https://agentcount.ai/methodology; contact: probes@agentcount.ai",
             &ipfs_gateways,
             connect_timeout,

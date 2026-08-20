@@ -5,8 +5,11 @@
 //! * **Friendly names** — `"base"`, `"base-sepolia"` — which x402 v1 quotes
 //!   carry, and which the spec's own examples use.
 //! * **CAIP-2 chain ids** — `"eip155:8453"` — which the Bazaar's v2 listings
-//!   carry today (observed 2026-08-20: every one of its 15,155 resources
-//!   names `eip155:8453`, not `base`).
+//!   carry today. Observed 2026-08-20 over the first 300 of its ~15,158
+//!   resources: not one said `base`, and the catalog spans at least nine
+//!   networks (Base, Solana, BNB Chain, Worldchain, Base Sepolia,
+//!   Hyperliquid, Stellar, XRPL, and more), about half of the listings
+//!   settling somewhere other than Base.
 //!
 //! A census that matched on the raw string would have measured the same
 //! network twice under two names, or — worse, and this was the near miss —
@@ -26,9 +29,18 @@ pub const BASE: &str = "eip155:8453";
 /// Base Sepolia, CAIP-2. Not swept — testnet volume is not economy — but
 /// named so it can be recognised and excluded rather than counted.
 pub const BASE_SEPOLIA: &str = "eip155:84532";
-/// Solana mainnet, CAIP-2 (the genesis-hash form the standard defines).
-/// Reserved for the stated expansion (METHODOLOGY §10.5).
-pub const SOLANA: &str = "solana:5eykt4NQHMXjUTzZ7wm2Ge8Rm2Nfxvfg8P8NJdTREpY1";
+/// Solana mainnet, CAIP-2: the first 32 characters of the genesis hash, as
+/// the namespace defines. Reserved for the stated expansion (§10.5).
+///
+/// This value is the one the catalogs actually serve. An earlier draft of
+/// this file carried a longer, made-up string that no listing ever matched —
+/// and nothing would have caught it, because the only symptom was Solana
+/// listings quietly landing in the "unknown network" bucket beside the real
+/// id. A crawl of the live Bazaar showed both forms side by side, 125
+/// listings under the real one and 1 under ours, which is what gave it away.
+/// Constants that name somebody else's identifier get checked against
+/// somebody else's data.
+pub const SOLANA: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 
 /// The one name this census uses for a network.
 ///
@@ -111,13 +123,7 @@ mod tests {
         // names no chain — the same rule `identity` keeps for Solana
         // addresses. The namespace beside it is still case-insensitive.
         assert_eq!(canonical(SOLANA), SOLANA);
-        assert!(same(
-            "SOLANA:5eykt4NQHMXjUTzZ7wm2Ge8Rm2Nfxvfg8P8NJdTREpY1",
-            SOLANA
-        ));
-        assert!(!same(
-            "solana:5eykt4nqhmxjutzz7wm2ge8rm2nfxvfg8p8njdtrepy1",
-            SOLANA
-        ));
+        assert!(same("SOLANA:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", SOLANA));
+        assert!(!same("solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp", SOLANA));
     }
 }
