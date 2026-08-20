@@ -6,8 +6,11 @@
 //! wallet — the method of `METHODOLOGY.md` §10 expressed as functions:
 //!
 //! * [`identity`] — what counts as one seller (§10.1).
+//! * [`network`] — one name per network, whichever convention a catalog
+//!   wrote (`base` and `eip155:8453` are the same chain, and treating them
+//!   as two would put the whole Bazaar out of scope).
 //! * [`catalog`] — how many catalogs' listings become one population, losing
-//!   nothing silently (§10.2).
+//!   nothing silently (§10.2), with one adapter per catalog in [`sources`].
 //! * [`quote`] — whether a 402 is a quote a buyer can act on (§10.3, rung 3).
 //! * [`shop`] — what this census is allowed to pay for (§10.4).
 //!
@@ -27,8 +30,10 @@
 
 pub mod catalog;
 pub mod identity;
+pub mod network;
 pub mod quote;
 pub mod shop;
+pub mod sources;
 
 /// The seller-census semantics' own version, stamped onto every seller sweep
 /// so a stored answer names the rules that produced it — the same contract
