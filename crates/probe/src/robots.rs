@@ -54,8 +54,15 @@ use crate::fetch::{Prober, SendError};
 pub(crate) const MAX_ROBOTS_REDIRECTS: u8 = 5;
 
 /// Per-path answer for one request.
+///
+/// Public since 2026-08-20, because the Seller Census (METHODOLOGY §10.3)
+/// binds robots.txt to every request IT makes too — catalog pages, seller
+/// reachability, the 402 handshake. That instrument asks this crate rather
+/// than growing a robots parser of its own: two implementations of "were we
+/// permitted to ask" would eventually disagree, and the disagreement would
+/// be invisible in both.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RobotsDecision {
+pub enum RobotsDecision {
     Allowed,
     Disallowed,
     /// Could not determine permission (5xx / timeout / connection failure).
@@ -108,6 +115,24 @@ impl RobotsCache {
 }
 
 impl Prober {
+    /// Whether this URL's host permits us to fetch this URL's path.
+    ///
+    /// The public entry point, for callers outside this crate that must
+    /// honour robots.txt before a request of their own — the Seller Census's
+    /// crawler and probes (METHODOLOGY §10.3). It is the same cache, the
+    /// same RFC 9309 reading and the same redirect handling the agent
+    /// document fetch uses, because "were we permitted to ask" must mean one
+    /// thing in this project. Which `User-agent:` groups apply is decided by
+    /// this prober's own product token, so the two instruments can be
+    /// disallowed independently.
+    pub async fn robots_permits(&self, url: &url::Url) -> RobotsDecision {
+        let path = match url.query() {
+            Some(q) => format!("{}?{}", url.path(), q),
+            None => url.path().to_string(),
+        };
+        self.check_robots(url, &path, true).await
+    }
+
     /// Is `path` on `origin`'s host allowed? Fetches and parses robots.txt
     /// the first time this origin is seen (through the same per-host/global
     /// caps and body cap as any other request — a robots.txt is still a
@@ -185,7 +210,7 @@ impl Prober {
 
             return if (200..300).contains(&resp.status) {
                 match String::from_utf8(resp.body) {
-                    Ok(text) => RobotsRules::Restricted(parse_disallow(&text)),
+                    Ok(text) => RobotsRules::Restricted(parse_disallow(&text, self.product_token)),
                     Err(_) => {
                         // A non-UTF-8 robots.txt is unusable, not a
                         // permission grant or denial we can trust — treat
@@ -216,7 +241,7 @@ impl Prober {
 /// from a raw robots.txt body. Groups are the standard "consecutive
 /// `User-agent:` lines, then directives until the next `User-agent:` line"
 /// shape; `#` starts a comment.
-fn parse_disallow(body: &str) -> Vec<String> {
+fn parse_disallow(body: &str, product_token: &str) -> Vec<String> {
     let mut disallows = Vec::new();
     let mut applies_to_us = false;
     let mut group_has_started = false;
@@ -239,7 +264,7 @@ fn parse_disallow(body: &str) -> Vec<String> {
                     applies_to_us = false;
                     group_has_started = false;
                 }
-                if value.eq_ignore_ascii_case(crate::PRODUCT_TOKEN) || value == "*" {
+                if value.eq_ignore_ascii_case(product_token) || value == "*" {
                     applies_to_us = true;
                 }
             }
@@ -566,7 +591,7 @@ mod tests {
     #[test]
     fn parse_disallow_unions_our_token_and_wildcard_groups() {
         let body = "User-agent: agentcount-probe\nDisallow: /no-probe/\n\nUser-agent: *\nDisallow: /no-anyone/\n";
-        let rules = parse_disallow(body);
+        let rules = parse_disallow(body, crate::PRODUCT_TOKEN);
         assert!(rules.contains(&"/no-probe/".to_string()));
         assert!(rules.contains(&"/no-anyone/".to_string()));
     }
@@ -574,6 +599,6 @@ mod tests {
     #[test]
     fn parse_disallow_ignores_groups_for_other_agents() {
         let body = "User-agent: SomeOtherBot\nDisallow: /everything/\n";
-        assert!(parse_disallow(body).is_empty());
+        assert!(parse_disallow(body, crate::PRODUCT_TOKEN).is_empty());
     }
 }

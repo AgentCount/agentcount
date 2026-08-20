@@ -1,0 +1,30 @@
+# The Seller Census's I/O half: fetching catalogs, and writing what they said
+# to Postgres. Every rule it applies comes from `crates/sellers`, which has no
+# I/O in it — the same split as `crates/probe` + `crates/checks`.
+
+[package]
+name = "seller-sweeper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The rules. This crate decides nothing on its own.
+sellers = { path = "../sellers" }
+# robots.txt, through the ONE implementation this project has. The Seller
+# Census honours it for every request it makes (METHODOLOGY §10.3), and a
+# second parser would eventually disagree with the first.
+probe = { path = "../probe" }
+
+tokio = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+url = { workspace = true }
+# The catalog snapshot's hash: what makes a seller run reproducible in the
+# absence of a pinned block.
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
