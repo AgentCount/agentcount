@@ -1,0 +1,27 @@
+# The `sellers` crate is the Seller Census's rule layer — METHODOLOGY §10 in
+# Rust. It answers "are these two listings the same seller", "is this a
+# spec-valid 402", and "may we buy this" from facts it is handed.
+
+[package]
+name = "sellers"
+# The SELLER-CENSUS SEMANTICS' own version, stamped onto every seller sweep
+# the way `checks` is stamped onto every census run. 0.1.0 is the method as
+# locked on 2026-08-20 (METHODOLOGY §10), with rung 5 reserved.
+version = "0.1.0"
+edition = "2024"
+
+# PURE, for the same reason `crates/checks` and `crates/payments` are pure.
+# The crux of this instrument is its rules — what counts as one seller, what
+# counts as a valid quote, what we are allowed to pay for — and a rule that
+# can only be exercised against a live catalog and a funded wallet is a rule
+# nobody re-checks. No network, no database, no clock: every function here
+# takes facts and returns a verdict, so `cargo test -p sellers` runs in CI
+# with nothing configured.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Parsing only — `Url` is how a resource URL becomes a normalized host
+# (punycode for IDN, default ports stripped). The same crate `probe` uses for
+# its SSRF guard, and equally free of I/O.
+url = { workspace = true }

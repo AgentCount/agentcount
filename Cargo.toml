@@ -42,6 +42,7 @@ members = [
     "crates/indexer",
     "crates/payments",
     "crates/probe",
+    "crates/sellers",
     "crates/api",
     "crates/sweeper",
 ]

@@ -59,45 +59,55 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch @ 2026-07-31
 
-      - name: crates/checks has no I/O or clock dependency
+      # Every crate that CLAIMS purity in its manifest is held to it here:
+      # `checks` (the seven rungs), `payments` (the attribution rule), and
+      # `sellers` (METHODOLOGY §10's rules). Same argument in all three
+      # cases — the crux of each measurement is its rules, and a rule that
+      # can only be exercised against a network, a database or a clock is a
+      # rule nobody re-checks.
+      - name: the pure crates have no I/O dependency
         run: |
           set -euo pipefail
-          # Transitive dependency tree of the checks crate only.
-          cargo tree -p checks --edges normal --prefix none \
-            | awk '{print $1}' | sort -u > /tmp/checks-deps.txt
-          echo "--- crates/checks depends on ---"
-          cat /tmp/checks-deps.txt
-
           banned='^(reqwest|hyper|sqlx|tokio|tokio-postgres|ureq|curl|surf|isahc|async-std|mio|socket2)$'
-          if grep -Eq "$banned" /tmp/checks-deps.txt; then
-            echo "::error::crates/checks gained an I/O dependency:"
-            grep -E "$banned" /tmp/checks-deps.txt
-            echo "A check must stay re-derivable from an archived run. See CONTRIBUTING.md."
-            exit 1
-          fi
+          for crate in checks payments sellers; do
+            cargo tree -p "$crate" --edges normal --prefix none \
+              | awk '{print $1}' | sort -u > "/tmp/$crate-deps.txt"
+            echo "--- crates/$crate depends on ---"
+            cat "/tmp/$crate-deps.txt"
+            if grep -Eq "$banned" "/tmp/$crate-deps.txt"; then
+              echo "::error::crates/$crate gained an I/O dependency:"
+              grep -E "$banned" "/tmp/$crate-deps.txt"
+              echo "It must stay re-derivable from an archived run. See CONTRIBUTING.md."
+              exit 1
+            fi
+          done
 
-      - name: crates/checks reads no clock
+      - name: the pure crates read no clock
         run: |
           set -euo pipefail
           # `now` is a parameter to every check, never a call. A check that
           # reads the clock returns a different answer tomorrow for the same
           # archived input, which is the same failure as an I/O dependency.
-          if grep -rnE '(SystemTime::now|Instant::now|Utc::now|Local::now)' \
-               crates/checks/src --include='*.rs'; then
-            echo "::error::crates/checks reads the clock; pass `now` in as a parameter instead."
-            exit 1
-          fi
-          echo "no clock reads in crates/checks"
+          for crate in checks payments sellers; do
+            if grep -rnE '(SystemTime::now|Instant::now|Utc::now|Local::now)' \
+                 "crates/$crate/src" --include='*.rs'; then
+              echo "::error::crates/$crate reads the clock; pass \`now\` in as a parameter instead."
+              exit 1
+            fi
+          done
+          echo "no clock reads in the pure crates"
 
-      - name: checks does not reach the filesystem
+      - name: the pure crates do not reach the filesystem
         run: |
           set -euo pipefail
-          if grep -rnE 'std::fs|File::(open|create)|include_str!|env::var' \
-               crates/checks/src --include='*.rs'; then
-            echo "::error::crates/checks touches the filesystem or environment."
-            exit 1
-          fi
-          echo "no filesystem or env access in crates/checks"
+          for crate in checks payments sellers; do
+            if grep -rnE 'std::fs|File::(open|create)|include_str!|env::var' \
+                 "crates/$crate/src" --include='*.rs'; then
+              echo "::error::crates/$crate touches the filesystem or environment."
+              exit 1
+            fi
+          done
+          echo "no filesystem or env access in the pure crates"
 
   # ── Every published download link still downloads ─────────────────────────
   #
