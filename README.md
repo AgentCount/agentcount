@@ -77,6 +77,8 @@ corrupt another.
 | `crates/indexer` | follows registry events per chain |
 | `crates/probe` | HTTP fetching: `robots.txt`, redirects, SSRF guard, per-host caps |
 | `crates/checks` | **the only place a verdict is formed** — pure functions, no I/O |
+| `crates/payments` | the attribution rule and its exclusions — pure |
+| `crates/sellers` | the Seller Census's rules (METHODOLOGY §10) — pure |
 | `crates/sweeper` | runs the ladder over one chain, once, and writes a run |
 | `crates/api` | the JSON API the frontend reads |
 | `migrations/` | sqlx migrations — the schema |
@@ -85,7 +87,8 @@ corrupt another.
 `crates/checks` is deliberately pure: plain data in, a status plus evidence
 out, with no network and no database. That is what makes a verdict
 re-derivable from an archived run without re-reading the chain, and CI enforces
-it as a named job.
+it as a named job — for `crates/payments` and `crates/sellers` too, which make
+the same claim for the same reason.
 
 The frontend that renders `crates/api` lives in
 [`AgentCount/agentcount-web`](https://github.com/AgentCount/agentcount-web).
