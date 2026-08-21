@@ -17,6 +17,8 @@
 //! * [`consistent`] — rung 7: whether the catalog's claim and the endpoint's
 //!   quote agree, field by field.
 //! * [`shop`] — what this census is allowed to pay for (§10.4).
+//! * [`delta`] — what changed between two sweeps (§10.6), with `refused`,
+//!   `error` and `unprobed` outside the headline churn from day one.
 //!
 //! **PURE**, like `crates/checks` and `crates/payments`, and for the same
 //! reason: the crux of this instrument is its rules, and a rule that can
@@ -34,6 +36,7 @@
 
 pub mod catalog;
 pub mod consistent;
+pub mod delta;
 pub mod identity;
 pub mod network;
 pub mod quote;

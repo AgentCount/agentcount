@@ -96,6 +96,12 @@ async fn main() -> Result<()> {
         )
         .await?;
         db.clear_run(run_id).await?;
+        // What this sweep SET OUT to ask. The crawl asks rung 1 only; the
+        // probe pass adds its own when it runs. A rung absent from this list
+        // was never attempted, which is a different fact from attempted and
+        // empty — and it is what stops a later sweep that adds the shopper
+        // from looking like sellers suddenly started delivering.
+        db.record_rungs_attempted(run_id, &[1]).await?;
         Some(db)
     };
 

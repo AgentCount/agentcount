@@ -240,6 +240,16 @@ impl Db {
     }
 }
 
+/// One sweep's metadata — what it swept, with what rules, asking what.
+#[derive(Debug, Clone)]
+pub struct RunMeta {
+    pub network: String,
+    pub checker: String,
+    pub catalogs: Vec<String>,
+    pub rungs_attempted: Option<Vec<i16>>,
+    pub status: String,
+}
+
 /// One seller as stored, with the resources a probe may choose from.
 #[derive(Debug, Clone)]
 pub struct StoredSeller {
@@ -312,6 +322,142 @@ impl Db {
             .get("claims")
             .and_then(|c| serde_json::from_value(c.clone()).ok())
             .unwrap_or_default())
+    }
+
+    /// Which rungs a sweep set out to ask, recorded when it opens so that a
+    /// rung with no rows is legible as "never attempted" rather than as a
+    /// pass that crashed.
+    pub async fn record_rungs_attempted(&self, run_id: Uuid, rungs: &[i16]) -> Result<()> {
+        sqlx::query("UPDATE seller_runs SET rungs_attempted = $2 WHERE run_id = $1")
+            .bind(run_id)
+            .bind(rungs)
+            .execute(&self.pool)
+            .await
+            .context("recording rungs attempted")?;
+        Ok(())
+    }
+
+    /// One sweep's metadata, for the delta's confound columns.
+    pub async fn run_meta(&self, run_id: Uuid) -> Result<RunMeta> {
+        let row = sqlx::query(
+            "SELECT network, seller_checker_version, catalogs, rungs_attempted, status \
+             FROM seller_runs WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("reading run metadata")?;
+        Ok(RunMeta {
+            network: row.get("network"),
+            checker: row.get("seller_checker_version"),
+            catalogs: row.get("catalogs"),
+            rungs_attempted: row.get("rungs_attempted"),
+            status: row.get("status"),
+        })
+    }
+
+    /// The sweep before this one on the same network — the pair the delta
+    /// names, chosen once and then recorded permanently, so "previous" can
+    /// never silently re-bind as later sweeps land.
+    pub async fn previous_run(&self, run_id: Uuid, network: &str) -> Result<Option<Uuid>> {
+        let row = sqlx::query(
+            "SELECT r.run_id FROM seller_runs r \
+             WHERE r.network = $2 AND r.run_id <> $1 \
+               AND r.started_at < (SELECT started_at FROM seller_runs WHERE run_id = $1) \
+             ORDER BY r.started_at DESC LIMIT 1",
+        )
+        .bind(run_id)
+        .bind(network)
+        .fetch_optional(&self.pool)
+        .await
+        .context("finding the previous sweep")?;
+        Ok(row.map(|r| r.get::<Uuid, _>("run_id")))
+    }
+
+    /// Every `(seller, rung) -> status` a sweep recorded — the input the
+    /// delta arithmetic compares.
+    pub async fn rung_statuses(&self, run_id: Uuid) -> Result<sellers::delta::RungStatuses> {
+        let rows = sqlx::query(
+            "SELECT pay_to, host, rung, status FROM seller_check_results WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("reading rung statuses")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    (
+                        sellers::identity::SellerId {
+                            pay_to: r.get("pay_to"),
+                            host: r.get("host"),
+                        },
+                        r.get::<i16, _>("rung"),
+                    ),
+                    r.get::<String, _>("status"),
+                )
+            })
+            .collect())
+    }
+
+    /// Write one sweep's delta, replacing any earlier computation of it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_delta(
+        &self,
+        run_id: Uuid,
+        previous_run_id: Uuid,
+        network: &str,
+        d: &sellers::delta::SellerDelta,
+        before: &RunMeta,
+        after: &RunMeta,
+        confound: &sellers::delta::MethodConfound,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO seller_run_deltas \
+               (run_id, previous_run_id, network, sellers_before, sellers_after, \
+                appeared, disappeared, came_back, went_dark, excluded_refused, \
+                excluded_error, excluded_unprobed, flips, checker_before, checker_after, \
+                catalogs_before, catalogs_after, rungs_before, rungs_after, method_changed) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) \
+             ON CONFLICT (run_id) DO UPDATE SET \
+               previous_run_id = EXCLUDED.previous_run_id, \
+               sellers_before = EXCLUDED.sellers_before, sellers_after = EXCLUDED.sellers_after, \
+               appeared = EXCLUDED.appeared, disappeared = EXCLUDED.disappeared, \
+               came_back = EXCLUDED.came_back, went_dark = EXCLUDED.went_dark, \
+               excluded_refused = EXCLUDED.excluded_refused, \
+               excluded_error = EXCLUDED.excluded_error, \
+               excluded_unprobed = EXCLUDED.excluded_unprobed, \
+               flips = EXCLUDED.flips, checker_before = EXCLUDED.checker_before, \
+               checker_after = EXCLUDED.checker_after, catalogs_before = EXCLUDED.catalogs_before, \
+               catalogs_after = EXCLUDED.catalogs_after, rungs_before = EXCLUDED.rungs_before, \
+               rungs_after = EXCLUDED.rungs_after, method_changed = EXCLUDED.method_changed, \
+               computed_at = now()",
+        )
+        .bind(run_id)
+        .bind(previous_run_id)
+        .bind(network)
+        .bind(d.sellers_before as i32)
+        .bind(d.sellers_after as i32)
+        .bind(d.appeared as i32)
+        .bind(d.disappeared as i32)
+        .bind(i32::try_from(d.came_back).unwrap_or(i32::MAX))
+        .bind(i32::try_from(d.went_dark).unwrap_or(i32::MAX))
+        .bind(i32::try_from(d.excluded_refused).unwrap_or(i32::MAX))
+        .bind(i32::try_from(d.excluded_error).unwrap_or(i32::MAX))
+        .bind(i32::try_from(d.excluded_unprobed).unwrap_or(i32::MAX))
+        .bind(serde_json::to_value(&d.flips)?)
+        .bind(&before.checker)
+        .bind(&after.checker)
+        .bind(&before.catalogs)
+        .bind(&after.catalogs)
+        .bind(before.rungs_attempted.as_deref())
+        .bind(after.rungs_attempted.as_deref())
+        .bind(confound.changed())
+        .execute(&self.pool)
+        .await
+        .context("writing a seller delta")?;
+        Ok(())
     }
 
     /// One rung's answer for one seller.
