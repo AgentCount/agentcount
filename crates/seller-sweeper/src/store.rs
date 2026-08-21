@@ -215,3 +215,86 @@ impl Db {
         Ok(row.get::<i64, _>("n"))
     }
 }
+
+/// One seller as stored, with the resources a probe may choose from.
+#[derive(Debug, Clone)]
+pub struct StoredSeller {
+    pub pay_to: String,
+    pub host: String,
+    pub resources: Vec<String>,
+}
+
+impl Db {
+    /// The most recent seller run for a network, whatever its status — the
+    /// probe pass names the run it is extending rather than guessing, and a
+    /// caller that wants a different one passes its id.
+    pub async fn latest_run(&self, network: &str) -> Result<Option<Uuid>> {
+        let row = sqlx::query(
+            "SELECT run_id FROM seller_runs WHERE network = $1 \
+             ORDER BY started_at DESC LIMIT 1",
+        )
+        .bind(network)
+        .fetch_optional(&self.pool)
+        .await
+        .context("finding the latest seller run")?;
+        Ok(row.map(|r| r.get::<Uuid, _>("run_id")))
+    }
+
+    /// Every seller in a run, ordered so two probe passes visit them in the
+    /// same order — the same determinism the assembly keeps.
+    pub async fn population_for_run(&self, run_id: Uuid) -> Result<Vec<StoredSeller>> {
+        let rows = sqlx::query(
+            "SELECT pay_to, host, resources FROM seller_population \
+             WHERE run_id = $1 ORDER BY host, pay_to",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("reading the population")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| StoredSeller {
+                pay_to: r.get("pay_to"),
+                host: r.get("host"),
+                resources: r.get("resources"),
+            })
+            .collect())
+    }
+
+    /// One rung's answer for one seller.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_check(
+        &self,
+        run_id: Uuid,
+        pay_to: &str,
+        host: &str,
+        rung: i16,
+        name: &str,
+        status: &str,
+        reason: Option<&str>,
+        evidence: &serde_json::Value,
+        checked_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO seller_check_results \
+               (run_id, pay_to, host, rung, name, status, reason, evidence, checked_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (run_id, pay_to, host, rung) DO UPDATE SET \
+               status = EXCLUDED.status, reason = EXCLUDED.reason, \
+               evidence = EXCLUDED.evidence, checked_at = EXCLUDED.checked_at",
+        )
+        .bind(run_id)
+        .bind(pay_to)
+        .bind(host)
+        .bind(rung)
+        .bind(name)
+        .bind(status)
+        .bind(reason)
+        .bind(evidence)
+        .bind(checked_at)
+        .execute(&self.pool)
+        .await
+        .context("writing a seller check result")?;
+        Ok(())
+    }
+}

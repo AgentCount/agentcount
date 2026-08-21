@@ -202,6 +202,122 @@ impl Fetched {
     }
 }
 
+/// One polite GET per seller resource, for rungs 2 and 3.
+///
+/// Separate from [`CatalogFetcher`] because the two talk to different kinds
+/// of server for different reasons: a catalog is one host read in full, a
+/// seller is thousands of hosts read once each. What they share — robots.txt
+/// first, a body cap, a timeout, an identifying User-Agent — they share
+/// through the same crates.
+pub struct SellerProber {
+    http: reqwest::Client,
+    prober: probe::Prober,
+    host_delay: Duration,
+}
+
+/// Pause between two requests to the same seller host. The agent prober's
+/// number (`probe::DEFAULT_HOST_DELAY`), because the shape is the same: many
+/// small hosts, a few very large ones, one request per subject.
+pub const SELLER_HOST_DELAY: Duration = Duration::from_millis(250);
+
+/// The most bytes read from a 402 body. A payment quote is small; anything
+/// larger is not a quote, and this census does not need to keep it to say so.
+pub const MAX_QUOTE_BYTES: usize = 256 * 1024;
+
+impl SellerProber {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .context("building the seller HTTP client")?,
+            prober: probe::Prober::for_robots_only(
+                PRODUCT_TOKEN,
+                "https://agentcount.ai/methodology; contact: census@agentcount.ai",
+            )
+            .context("building the robots.txt client")?,
+            host_delay: SELLER_HOST_DELAY,
+        })
+    }
+
+    /// GET one resource, honouring robots.txt, and return what was observed.
+    ///
+    /// Facts only: the judgement — including the rule that a 402 is a seller
+    /// working rather than a seller declining — belongs to
+    /// `sellers::reachable`.
+    pub async fn probe(&self, resource: &str) -> sellers::reachable::Observed {
+        use sellers::reachable::Observed;
+
+        let Ok(parsed) = url::Url::parse(resource) else {
+            return Observed::ProbeFailed {
+                reason: "unparseable_url".into(),
+            };
+        };
+
+        match self.prober.robots_permits(&parsed).await {
+            probe::RobotsDecision::Allowed => {}
+            probe::RobotsDecision::Disallowed => {
+                return Observed::NotPermitted {
+                    reason: "robots_disallowed".into(),
+                };
+            }
+            probe::RobotsDecision::Unavailable(reason) => {
+                return Observed::NotPermitted {
+                    reason: format!("robots_unavailable: {reason}"),
+                };
+            }
+        }
+
+        // The pause belongs before the request, not after: it bounds the rate
+        // at which this host is ASKED, which is what a host experiences.
+        tokio::time::sleep(self.host_delay).await;
+
+        let response = match self.http.get(resource).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Observed::ProbeFailed {
+                    reason: describe_request_error(&e),
+                };
+            }
+        };
+        let status = response.status().as_u16();
+
+        // The body is only read when it might be a quote. A 200 from a free
+        // endpoint is reachability and nothing else, and downloading somebody
+        // else's product to learn that would be rude and pointless.
+        if status != 402 {
+            return Observed::Response { status, body: None };
+        }
+        match response.bytes().await {
+            Ok(bytes) => {
+                let truncated = &bytes[..bytes.len().min(MAX_QUOTE_BYTES)];
+                Observed::Response {
+                    status,
+                    body: Some(String::from_utf8_lossy(truncated).into_owned()),
+                }
+            }
+            // The status is a fact we have; the body is one we do not. Both
+            // get recorded rather than the whole observation being discarded.
+            Err(_) => Observed::Response { status, body: None },
+        }
+    }
+}
+
+/// A short, stable word for why a request never produced a response — so the
+/// evidence column can be counted rather than read.
+fn describe_request_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "timeout".into()
+    } else if e.is_connect() {
+        "connect_failed".into()
+    } else if e.is_redirect() {
+        "too_many_redirects".into()
+    } else {
+        "request_failed".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
