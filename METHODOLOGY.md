@@ -1335,6 +1335,31 @@ Statuses reuse this document's vocabulary verbatim — `pass`, `fail`,
 needs: **`unprobed`** — we chose not to ask, and the row says why. `error`,
 `refused` and `unprobed` are never publishable as a seller's failure.
 
+An `unprobed` row on rungs 2–3 carries the reason `host_budget`: the seller
+sat past this sweep's per-host probe budget (§10.4). The four purchase-side
+reasons are listed in §10.4; a row never carries a reason from the other
+side's list.
+
+**HTTP 402 is not a refusal in this instrument.** The registration census
+reads 402 as `refused` — an agent's document behind a payment wall is a
+document we were declined (§4). For a seller, a 402 is the product: the
+protocol saying what this costs and where to pay. The statuses that count as
+the origin declining us are therefore **401, 407, 429 and 503** — the
+registration census's list minus the one status this instrument exists to
+receive. Reading them the same way would book every correctly-functioning
+seller as having refused us.
+
+**The probe is a GET, and that is a stated limit on rung 3.** One request
+answers rungs 2 and 3, because asking twice would double this census's
+traffic to every seller for no additional fact. But some resources are
+POST-only — an LLM completions endpoint, for instance — and a GET to one may
+draw a 402 with an empty body where the declared method would have drawn
+full payment requirements. Those sellers are recorded as `fail` with reason
+`no_accepts`, which is true of what this census asked and may understate what
+the seller does. The count is published beside the rate it qualifies, and
+using each catalog's declared method is the stated way to close the gap when
+the population justifies the extra care.
+
 This is not a strict ladder; each rung names its prerequisites.
 
 | # | Rung | Question |

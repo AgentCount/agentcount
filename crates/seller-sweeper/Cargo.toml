@@ -17,6 +17,9 @@ probe = { path = "../probe" }
 
 tokio = { workspace = true }
 reqwest = { workspace = true }
+# Bounded concurrency across hosts: many hosts at once, one request at a
+# time within any single host (METHODOLOGY §10.4's politeness budget).
+futures = { workspace = true }
 sqlx = { workspace = true }
 url = { workspace = true }
 # The catalog snapshot's hash: what makes a seller run reproducible in the

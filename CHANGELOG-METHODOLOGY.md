@@ -20,7 +20,45 @@ Format per entry:
 
 ---
 
-## 2026-08-21 — §10.4's `unprobed` vocabulary is named in full, before first use
+## 2026-08-21 — §10.3 states the 402 rule and names the probe-side `unprobed` reason
+
+**This entry changes no number — the Seller Census has not run.** Both
+additions were implicit in the locked method and are now written down,
+because §10 is locked and the code must not know rules the method does not
+state.
+
+**What changed.**
+
+1. **HTTP 402 is not a refusal in this instrument, and §10.3 now says so.**
+   The registration census reads 402 as `refused` (§4): a document behind a
+   payment wall is one we were declined. For a seller, a 402 is the product —
+   the protocol stating a price and a payee. The decline list here is
+   therefore 401, 407, 429, 503: the registration census's five minus the one
+   status this instrument exists to receive. This was always the intent —
+   rung 3 is *defined* as "returns a spec-valid 402" — but the rule lived
+   only in `crates/sellers::reachable`, and a rule that lives only in code is
+   a rule nobody can check.
+2. **`host_budget` is named** as the `unprobed` reason for rungs 2–3. §10.4
+   already caps probing at 500 sellers per host per sweep; the rows that cap
+   produces needed a word, and the four reasons named in §10.4 are
+   purchase-side. A row never carries a reason from the other side's list.
+3. **The probe's GET-only limit is stated.** The first live probe of twelve
+   sellers found three answering `402` with an empty JSON body; two were
+   verified by hand to do exactly that, and one of those is a POST-only
+   completions endpoint, where a GET may draw an empty challenge the
+   declared method would have filled in. Such sellers are recorded `fail`
+   with reason `no_accepts` — true of what this census asked, possibly an
+   understatement of what the seller does — and §10.3 now says so, with
+   using the catalog's declared method named as the way to close the gap.
+
+**Why it matters.** Reusing the registration census's refusal list unchanged
+would have recorded every correctly-functioning x402 seller as having
+declined the probe — an inverted headline produced entirely by sharing a
+constant between two instruments that mean different things by the same
+status code.
+
+**Measured effect.** None. No seller has been probed and no purchase has been
+made.
 
 **This entry changes no number — the Seller Census has not run.** It is
 recorded anyway, because §10 is locked and a locked rule is not edited

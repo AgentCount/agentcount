@@ -4301,6 +4301,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "futures",
  "probe",
  "reqwest 0.12.28",
  "sellers",
