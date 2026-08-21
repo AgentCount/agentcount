@@ -16,6 +16,8 @@
 //!   the rule that a 402 is a seller working rather than a seller declining.
 //! * [`consistent`] — rung 7: whether the catalog's claim and the endpoint's
 //!   quote agree, field by field.
+//! * [`settled`] — rung 6: whether the chain shows this payee was ever
+//!   actually paid, with this census's own purchases excluded by rule.
 //! * [`shop`] — what this census is allowed to pay for (§10.4).
 //! * [`delta`] — what changed between two sweeps (§10.6), with `refused`,
 //!   `error` and `unprobed` outside the headline churn from day one.
@@ -41,6 +43,7 @@ pub mod identity;
 pub mod network;
 pub mod quote;
 pub mod reachable;
+pub mod settled;
 pub mod shop;
 pub mod sources;
 

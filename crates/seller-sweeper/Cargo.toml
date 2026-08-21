@@ -14,6 +14,10 @@ sellers = { path = "../sellers" }
 # Census honours it for every request it makes (METHODOLOGY §10.3), and a
 # second parser would eventually disagree with the first.
 probe = { path = "../probe" }
+# Rung 6 reads the chain: `Erc20::transfers` is the same scanner the
+# registration census's payment pass uses, so "an incoming transfer" means
+# one thing in this project.
+chain = { path = "../chain" }
 
 tokio = { workspace = true }
 reqwest = { workspace = true }

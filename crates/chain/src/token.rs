@@ -92,7 +92,7 @@ pub struct Erc20 {
 /// Providers cap the number of values in a topic position and disagree about
 /// where. 100 is comfortably under every observed limit and keeps the number of
 /// requests proportional to the target set rather than to the block range.
-const TARGETS_PER_QUERY: usize = 100;
+pub const TARGETS_PER_QUERY: usize = 100;
 
 impl Erc20 {
     pub async fn connect(rpc_url: &str, token_address: &str) -> Result<Self> {
@@ -113,6 +113,18 @@ impl Erc20 {
     /// fallback: a token whose decimals cannot be read cannot have its values
     /// interpreted, and guessing 6 is precisely the mistake this function
     /// exists to prevent.
+    /// The chain's current head.
+    ///
+    /// The mirror of [`crate::registry::Registry::pinned_block`], for
+    /// callers that scan token transfers without holding a registry — the
+    /// Seller Census's rung 6 reads a chain it has no ERC-8004 registry on.
+    /// Pinned ONCE at the start of a scan and recorded on every row it
+    /// writes: a scan whose upper bound moved while it ran would produce
+    /// rows that cannot be reproduced together.
+    pub async fn head_block(&self) -> Result<u64> {
+        Ok(self.provider.get_block_number().await?)
+    }
+
     pub async fn metadata(&self, block: u64) -> Result<TokenMetadata> {
         let c = IErc20::new(self.address, &self.provider);
         let decimals = c
@@ -183,8 +195,34 @@ impl Erc20 {
         from_block: u64,
         to_block: u64,
     ) -> Result<Vec<TransferLog>> {
+        self.transfers_batched(targets, side, from_block, to_block, TARGETS_PER_QUERY)
+            .await
+    }
+
+    /// [`Self::transfers`] with the address batch size chosen by the caller.
+    ///
+    /// The default of [`TARGETS_PER_QUERY`] is conservative, and for the
+    /// registration census's payment pass — a few hundred agent wallets over
+    /// a registry's lifetime — it costs nothing. The Seller Census asks about
+    /// thousands of payees at once, where the batch size decides whether a
+    /// pass takes forty minutes or four hours.
+    ///
+    /// Measured against the production RPC (2026-08-21): **1,000 addresses in
+    /// one filter over a 10,000-block window answers in 1.5 seconds.** The
+    /// provider's documented rule is that a range of 10,000 blocks or fewer
+    /// carries no response-size limit, which is what makes a large address
+    /// list safe — the block range, not the address count, is what the cap
+    /// binds on.
+    pub async fn transfers_batched(
+        &self,
+        targets: &[String],
+        side: Side,
+        from_block: u64,
+        to_block: u64,
+        targets_per_query: usize,
+    ) -> Result<Vec<TransferLog>> {
         let mut out = Vec::new();
-        for chunk in targets.chunks(TARGETS_PER_QUERY) {
+        for chunk in targets.chunks(targets_per_query.max(1)) {
             let topic: Vec<B256> = chunk
                 .iter()
                 .filter_map(|a| a.parse::<Address>().ok())
