@@ -100,8 +100,22 @@ impl Db {
         &self,
         run_id: Uuid,
         population: &Population,
+        claims: &[sellers::consistent::Claim],
         checked_at: DateTime<Utc>,
     ) -> Result<()> {
+        // Claims are indexed by (payee, resource) so rung 1's evidence can
+        // carry each seller's own, and rung 7 can read them back without a
+        // second catalog fetch.
+        let mut claims_by_seller: std::collections::HashMap<
+            (&str, &str),
+            Vec<&sellers::consistent::Claim>,
+        > = std::collections::HashMap::new();
+        for claim in claims {
+            claims_by_seller
+                .entry((claim.pay_to.as_str(), claim.resource.as_str()))
+                .or_default()
+                .push(claim);
+        }
         let mut tx = self.pool.begin().await?;
 
         for seller in &population.sellers {
@@ -126,9 +140,19 @@ impl Db {
             // the population IS the listed, so the answer is always `pass`
             // and the interesting part is which catalogs, and how many
             // resources they named.
+            // The catalog's own claims travel with rung 1, because "what the
+            // catalog said" IS the evidence of being listed — and rung 7
+            // compares exactly that against what the endpoint quotes.
+            let seller_claims: Vec<&sellers::consistent::Claim> = resources
+                .iter()
+                .filter_map(|r| claims_by_seller.get(&(seller.id.pay_to.as_str(), r.as_str())))
+                .flatten()
+                .copied()
+                .collect();
             let evidence = serde_json::json!({
                 "catalogs": catalogs,
                 "resource_count": resources.len(),
+                "claims": seller_claims,
             });
             sqlx::query(
                 "INSERT INTO seller_check_results \
@@ -259,6 +283,35 @@ impl Db {
                 resources: r.get("resources"),
             })
             .collect())
+    }
+
+    /// The catalog claims stored with a seller's rung 1 — what the catalogs
+    /// said this seller charges. Read back by the probe pass so rung 7 can
+    /// compare claim against quote without re-fetching any catalog.
+    pub async fn claims_for(
+        &self,
+        run_id: Uuid,
+        pay_to: &str,
+        host: &str,
+    ) -> Result<Vec<sellers::consistent::Claim>> {
+        let row = sqlx::query(
+            "SELECT evidence FROM seller_check_results \
+             WHERE run_id = $1 AND pay_to = $2 AND host = $3 AND rung = 1",
+        )
+        .bind(run_id)
+        .bind(pay_to)
+        .bind(host)
+        .fetch_optional(&self.pool)
+        .await
+        .context("reading rung 1 evidence")?;
+        let Some(row) = row else {
+            return Ok(Vec::new());
+        };
+        let evidence: serde_json::Value = row.get("evidence");
+        Ok(evidence
+            .get("claims")
+            .and_then(|c| serde_json::from_value(c.clone()).ok())
+            .unwrap_or_default())
     }
 
     /// One rung's answer for one seller.

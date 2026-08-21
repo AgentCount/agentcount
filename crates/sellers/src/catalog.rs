@@ -45,6 +45,15 @@ pub struct Listing {
     /// about OUR coverage; calling it malformed is a false claim about
     /// somebody else's catalog.
     pub network: String,
+    /// What the catalog claimed this resource costs, when it said. Carried
+    /// so rung 7 (`consistent`) can compare the claim against what the
+    /// endpoint actually quotes WITHOUT a second request — the one rung
+    /// this instrument answers from evidence it already holds.
+    ///
+    /// `None` for a catalog that lists a resource without a price. That is a
+    /// fact about the catalog, and it is not the same as claiming zero.
+    pub claimed_amount: Option<u128>,
+    pub claimed_asset: Option<String>,
 }
 
 /// One seller, assembled from every listing that resolved to its identity.
@@ -174,6 +183,8 @@ mod tests {
             pay_to: pay_to.into(),
             resource: resource.into(),
             network: network.into(),
+            claimed_amount: None,
+            claimed_asset: None,
         }
     }
 

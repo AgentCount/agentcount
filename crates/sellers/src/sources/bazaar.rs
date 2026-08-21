@@ -56,7 +56,7 @@ pub fn parse(body: &str) -> Result<Parsed, ParseError> {
         // (payee, network) rather than payee alone: the network decides
         // which encoding the address is read with, and one resource can be
         // sold on more than one chain.
-        let mut payees: Vec<(&str, &str)> = accepts
+        let mut payees: Vec<(&str, &str, Option<u128>, Option<&str>)> = accepts
             .map(|entries| {
                 entries
                     .iter()
@@ -69,7 +69,24 @@ pub fn parse(body: &str) -> Result<Parsed, ParseError> {
                             .or_else(|| e.get("recipient"))
                             .and_then(|p| p.as_str())?;
                         let network = e.get("network").and_then(|n| n.as_str()).unwrap_or("");
-                        Some((pay_to, network))
+                        // The catalog's price CLAIM, for rung 7. `amount` is
+                        // the field the live body carries; `maxAmountRequired`
+                        // is x402 v1's name for the same thing. Quoted as a
+                        // decimal string, since a uint256 does not survive
+                        // JSON's number type.
+                        let amount = e
+                            .get("amount")
+                            .or_else(|| e.get("maxAmountRequired"))
+                            .and_then(|a| match a {
+                                serde_json::Value::String(s) => s.trim().parse::<u128>().ok(),
+                                serde_json::Value::Number(n) => n.as_u128(),
+                                _ => None,
+                            });
+                        let asset = e
+                            .get("asset")
+                            .or_else(|| e.get("currency"))
+                            .and_then(|a| a.as_str());
+                        Some((pay_to, network, amount, asset))
                     })
                     .collect()
             })
@@ -85,12 +102,19 @@ pub fn parse(body: &str) -> Result<Parsed, ParseError> {
             unreadable += 1;
             continue;
         }
-        for (pay_to, network) in payees {
+        for (pay_to, network, amount, asset) in payees {
             listings.push(Listing {
                 catalog: NAME.to_string(),
                 pay_to: pay_to.to_string(),
                 resource: resource.to_string(),
                 network: network.to_string(),
+                claimed_amount: amount,
+                // Normalized like every other address, so a catalog writing
+                // the token checksummed and an endpoint writing it lowercase
+                // do not read as two different tokens in rung 7.
+                claimed_asset: asset.and_then(|a| {
+                    crate::identity::normalize_pay_to(a, crate::identity::Network::Evm).ok()
+                }),
             });
         }
     }
@@ -157,6 +181,32 @@ mod tests {
             {"payTo":"0xaaa","scheme":"exact"},{"payTo":"0xaaa","scheme":"batch-settlement"}]}]}"#;
         let p = parse(body).unwrap();
         assert_eq!(p.listings.len(), 1);
+    }
+
+    #[test]
+    fn the_catalogs_price_claim_is_captured_for_rung_7() {
+        // Rung 7 compares this against what the endpoint quotes, without a
+        // second request. `amount` is the live field name; the asset is
+        // normalized so a checksummed claim and a lowercase quote are not
+        // read as two different tokens.
+        let body = r#"{"items":[{"resource":"https://a.example/x","accepts":[
+            {"payTo":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","network":"eip155:8453",
+             "amount":"3000","asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}]}]}"#;
+        let l = &parse(body).unwrap().listings[0];
+        assert_eq!(l.claimed_amount, Some(3000));
+        assert_eq!(
+            l.claimed_asset.as_deref(),
+            Some("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")
+        );
+    }
+
+    #[test]
+    fn a_listing_with_no_price_claims_nothing_rather_than_zero() {
+        let body = r#"{"items":[{"resource":"https://a.example/x","accepts":[
+            {"payTo":"0xaaa","network":"eip155:8453"}]}]}"#;
+        let l = &parse(body).unwrap().listings[0];
+        assert_eq!(l.claimed_amount, None, "absent is not zero");
+        assert_eq!(l.claimed_asset, None);
     }
 
     #[test]

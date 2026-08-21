@@ -230,8 +230,23 @@ async fn main() -> Result<()> {
         );
     }
 
+    // The catalogs' price claims, kept for rung 7 (`consistent`) — the one
+    // rung answered from evidence already held rather than a new request.
+    let claims: Vec<sellers::consistent::Claim> = scoped
+        .iter()
+        .map(|l| sellers::consistent::Claim {
+            resource: l.resource.clone(),
+            pay_to: sellers::identity::normalize_pay_to(&l.pay_to, Network::Evm)
+                .unwrap_or_else(|_| l.pay_to.clone()),
+            network: l.network.clone(),
+            amount: l.claimed_amount,
+            asset: l.claimed_asset.clone(),
+        })
+        .collect();
+
     if let Some(db) = db {
-        db.write_population(run_id, &population, started).await?;
+        db.write_population(run_id, &population, &claims, started)
+            .await?;
         let stored = db.seller_count(run_id).await?;
         // `finished` only if every catalog was read end to end. Anything
         // else is a smaller population, and a smaller population that reads
