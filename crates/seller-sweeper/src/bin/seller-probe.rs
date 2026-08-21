@@ -98,6 +98,24 @@ async fn main() -> Result<()> {
         if dry_run { " (DRY RUN)" } else { "" }
     );
 
+    // This pass asks rungs 2, 3 and 7 — and NOT rung 4, which spends money
+    // and runs only when the shopper does. Recorded rather than inferred, so
+    // that a sweep which skipped a rung is legible as having skipped it.
+    if !dry_run {
+        let mut attempted = db
+            .run_meta(run_id)
+            .await?
+            .rungs_attempted
+            .unwrap_or_default();
+        for rung in [2i16, 3, 7] {
+            if !attempted.contains(&rung) {
+                attempted.push(rung);
+            }
+        }
+        attempted.sort_unstable();
+        db.record_rungs_attempted(run_id, &attempted).await?;
+    }
+
     let prober = SellerProber::new()?;
     let started = chrono::Utc::now();
 
