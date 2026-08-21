@@ -14,6 +14,8 @@
 //! * [`quote`] — whether a 402 is a quote a buyer can act on (§10.3, rung 3).
 //! * [`reachable`] — rungs 2 and 3 judged from one observation, including
 //!   the rule that a 402 is a seller working rather than a seller declining.
+//! * [`consistent`] — rung 7: whether the catalog's claim and the endpoint's
+//!   quote agree, field by field.
 //! * [`shop`] — what this census is allowed to pay for (§10.4).
 //!
 //! **PURE**, like `crates/checks` and `crates/payments`, and for the same
@@ -31,6 +33,7 @@
 //! falsifiable, a score is not.
 
 pub mod catalog;
+pub mod consistent;
 pub mod identity;
 pub mod network;
 pub mod quote;

@@ -37,6 +37,7 @@ use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use seller_sweeper::fetcher::SellerProber;
 use seller_sweeper::store::{Db, StoredSeller};
+use sellers::consistent;
 use sellers::identity::{Network, SellerId};
 use sellers::reachable::{self, Observed};
 use uuid::Uuid;
@@ -177,6 +178,33 @@ async fn main() -> Result<()> {
                             started,
                         )
                         .await?;
+
+                        // Rung 7 needs no request of its own: both sides
+                        // were already observed. The claim for THE PROBED
+                        // resource is the one compared — a claim about a
+                        // resource nobody asked about has no quote to
+                        // disagree with.
+                        let claims = db.claims_for(run_id, &seller.pay_to, &host).await?;
+                        if let Some(claim) = claims.iter().find(|c| &c.resource == resource) {
+                            let c = consistent::judge(claim, &verdict.requirements);
+                            outcome.count_consistency(&c);
+                            db.write_check(
+                                run_id,
+                                &seller.pay_to,
+                                &host,
+                                7,
+                                "consistent",
+                                c.answer.status.as_str(),
+                                c.answer.reason.as_deref(),
+                                &serde_json::json!({
+                                    "resource": resource,
+                                    "claimed": claim,
+                                    "divergences": c.divergences,
+                                }),
+                                started,
+                            )
+                            .await?;
+                        }
                     }
                 }
                 Ok::<HostOutcome, anyhow::Error>(outcome)
@@ -209,6 +237,15 @@ async fn main() -> Result<()> {
     for (reason, n) in &total.quote_reasons {
         tracing::info!("  quotes reason {reason}: {n}");
     }
+    if !total.consistent.is_empty() {
+        tracing::info!("── rung 7, consistent ──");
+        for (status, n) in &total.consistent {
+            tracing::info!("  {status}: {n}");
+        }
+        for (reason, n) in &total.divergences {
+            tracing::info!("  diverged on {reason}: {n}");
+        }
+    }
     if dry_run {
         tracing::info!("DRY RUN — nothing was written");
     }
@@ -239,6 +276,8 @@ struct HostOutcome {
     reachable: BTreeMap<String, usize>,
     quotes: BTreeMap<String, usize>,
     quote_reasons: BTreeMap<String, usize>,
+    consistent: BTreeMap<String, usize>,
+    divergences: BTreeMap<String, usize>,
     over_budget: usize,
 }
 
@@ -257,6 +296,16 @@ impl HostOutcome {
         }
     }
 
+    fn count_consistency(&mut self, v: &consistent::ConsistencyVerdict) {
+        *self
+            .consistent
+            .entry(v.answer.status.as_str().to_string())
+            .or_insert(0) += 1;
+        for d in &v.divergences {
+            *self.divergences.entry(d.field().to_string()).or_insert(0) += 1;
+        }
+    }
+
     fn merge(&mut self, other: &HostOutcome) {
         for (k, v) in &other.reachable {
             *self.reachable.entry(k.clone()).or_insert(0) += v;
@@ -266,6 +315,12 @@ impl HostOutcome {
         }
         for (k, v) in &other.quote_reasons {
             *self.quote_reasons.entry(k.clone()).or_insert(0) += v;
+        }
+        for (k, v) in &other.consistent {
+            *self.consistent.entry(k.clone()).or_insert(0) += v;
+        }
+        for (k, v) in &other.divergences {
+            *self.divergences.entry(k.clone()).or_insert(0) += v;
         }
         self.over_budget += other.over_budget;
     }
