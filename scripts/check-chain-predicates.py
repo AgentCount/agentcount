@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Fail the build on a per-agent query that names `run_id` but not `chain`.
 
-`check_results`, `agent_snapshots` and `http_archive` are all keyed
-(run_id, chain, agent_id, ...). `chain` sits between `run_id` and `agent_id`
-even though a run has exactly one chain, so a predicate that gives Postgres
-`run_id` and `agent_id` but not `chain` can seek on the leading column only and
-then walks every row the run wrote.
+`agent_snapshots` and `http_archive` are keyed (run_id, chain, agent_id, ...).
+`chain` sits between `run_id` and `agent_id` even though a run has exactly one
+chain, so a predicate that gives Postgres `run_id` and `agent_id` but not
+`chain` can seek on the leading column only and then walks every row the run
+wrote.
+
+`check_results` WAS the third such table and is deliberately no longer checked.
+Migration 0025 replaced its unique key `(run_id, chain, agent_id, rung)` with
+`(run_id, agent_id, rung)`, and no remaining index on it leads with `chain`, so
+a query naming `run_id` and `agent_id` seeks correctly without the column. That
+was the migration's whole purpose — "this removes the reason anyone has to" —
+and continuing to demand the predicate here would fail builds for a query that
+is already optimal, on a rationale that stopped being true on 2026-08-11. If a
+future index on `check_results` leads with `chain` again, add it back.
 
 That is not a small penalty and it is not theoretical. Measured on production
 against the 2026-08 BNB Chain run (251,782 agents, 1.76 million rows):
@@ -30,7 +39,7 @@ import os
 import re
 import sys
 
-TABLES = ("check_results", "agent_snapshots", "http_archive")
+TABLES = ("agent_snapshots", "http_archive")
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "crates")
 
 

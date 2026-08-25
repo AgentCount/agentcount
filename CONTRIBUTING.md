@@ -58,18 +58,28 @@ anything that can move a status is decided here.
   regardless of how it is computed.
 - **Evidence, not assertion.** A new claim needs something a reader can
   re-check attached to it.
-- **Every per-agent query names `chain`.** On `check_results`,
-  `agent_snapshots` and `http_archive`, `chain` is denormalized convenience —
-  `run_id` determines it, verified on production as zero runs spanning two
-  chains and zero rows disagreeing with `runs.chain`. It is **never** a seek
-  key. But it sits between `run_id` and `agent_id` in the index, so a `WHERE`
-  that omits it scans the entire run instead of seeking: 8,915 ms against
-  8.8 ms on a 250,000-agent run. Six queries were written that way, precisely
-  because the column is redundant and leaving it out reads as tidy. The worst
-  of them passed `chain` to an `INSERT` and not to the `DELETE` beside it — it
-  was correct, invisible to every test, and 900× slower per agent. Only
-  measurement caught it, which is why this is a CI job
+- **Every per-agent query names `chain` — on the tables whose key still leads
+  with it.** On `agent_snapshots` and `http_archive`, `chain` is denormalized
+  convenience — `run_id` determines it, verified on production as zero runs
+  spanning two chains and zero rows disagreeing with `runs.chain`. It is
+  **never needed for uniqueness** in a per-run key (though it *is* a leading
+  seek column in two secondary indexes, `idx_snapshots_owner` and
+  `idx_agent_snapshots_minter`, which exist to make owner and minter lookups
+  seek). But it sits between `run_id` and `agent_id` in the per-run key, so a
+  `WHERE` that omits it scans the entire run instead of seeking: 8,915 ms
+  against 8.8 ms on a 250,000-agent run. Six queries were written that way,
+  precisely because the column is redundant and leaving it out reads as tidy.
+  The worst of them passed `chain` to an `INSERT` and not to the `DELETE`
+  beside it — it was correct, invisible to every test, and 900× slower per
+  agent. Only measurement caught it, which is why this is a CI job
   (`scripts/check-chain-predicates.py`) and not a note.
+
+  **`check_results` is no longer one of those tables.** Migration 0025 dropped
+  `chain` from its unique key, which is now `(run_id, agent_id, rung)`, so a
+  query naming `run_id` and `agent_id` seeks correctly without it and the gate
+  no longer asks for it there. That was the point of the migration: it removed
+  the reason anyone had to remember. If a future index on `check_results` ever
+  leads with `chain` again, put the table back in the gate's list.
 - **New dependencies need a reason in the pull request description.** Not a
   high bar, just a stated one.
 
@@ -85,7 +95,14 @@ cargo test --workspace
 python3 scripts/check-chain-predicates.py
 ```
 
-CI runs exactly these, plus the checks-purity and chain-predicates gates.
+CI runs these as the jobs `fmt`, `clippy` and `test` — note it runs
+`cargo fmt --all --check`, which fails on formatting the local command would
+have fixed silently — plus three gates you cannot run as one line here:
+`checks-purity` (the pure crates gain no I/O, clock or filesystem
+dependency), `chain-predicates` (the script above), and `archives-resolve`
+(every download link in `published-runs.json` still downloads, which is a
+network job and can therefore fail for reasons that have nothing to do with
+your change).
 
 ## Reporting a wrong number
 
