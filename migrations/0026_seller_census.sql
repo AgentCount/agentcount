@@ -218,8 +218,8 @@ CREATE TABLE seller_check_results (
     -- The full identity in the key, so a per-seller read SEEKS. The
     -- registration census learned this the expensive way: six queries that
     -- named only the run scanned 1.76 million rows to return 350 (see
-    -- `docs/the-chain-trap` and #45). A seller's identity is two columns, and
-    -- both of them are here.
+    -- CONTRIBUTING.md's "every per-agent query names `chain`" rule, and #45).
+    -- A seller's identity is two columns, and both of them are here.
     PRIMARY KEY (run_id, pay_to, host, rung)
 );
 
