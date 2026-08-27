@@ -20,6 +20,47 @@ Format per entry:
 
 ---
 
+## 2026-08-27 — The Seller Census enumerates every network; only settlement is scoped
+
+**This entry changes no number, because the Seller Census has not run.** It
+is the last moment at which this could be true, which is why it is being
+made now rather than after the first sweep.
+
+**What changed.** §10.5 previously read "Sweep 1 covers Base (USDC) only",
+and the crawler implemented that by discarding every listing that settles
+elsewhere BEFORE assembling the population. Around half the Bazaar's
+listings settle off Base — Solana, BNB Chain, Worldchain, Hyperliquid,
+Stellar, XRPL — so the instrument would have asked its questions of roughly
+half the sellers it claims to measure, and published the result as the x402
+economy.
+
+The scope splits in two:
+
+* **The population is not scoped by network.** Rungs 1, 2, 3 and 7 — listed,
+  reachable, quotes, consistent — are facts about a web endpoint and need no
+  chain. Every seller in every catalog is enumerated and asked them.
+* **Settlement is scoped.** Rung 6 scans Base (USDC) for sweep 1, and a
+  seller that settles elsewhere is `unprobed`, reason
+  `out_of_scope_network`. Rung 4 buys where the shopper holds funds. Neither
+  is ever `fail` for a chain this census did not look at.
+
+Each payee is read under the encoding its own network implies, so a base58
+address is never judged by hex rules. A namespace this census has not
+learned is enumerated with its address kept verbatim and never validated —
+the honest position, since guessing an encoding is what turns a valid payee
+into a recorded `malformed_address` (it did, for 138 of 443 listings, before
+this was caught).
+
+**Why.** The two scopes were conflated because the first rung built that
+needed a chain was the one that also defined the population. They are
+different questions: what this census can OBSERVE, and where it can watch
+money move. Only the second is limited by an RPC endpoint and a wallet.
+
+**Measured effect.** None yet. The first sweep will report both figures —
+the population, and the share of it rung 6 could answer for.
+
+---
+
 ## 2026-08-21 — §10.3 states the 402 rule and names the probe-side `unprobed` reason
 
 **This entry changes no number — the Seller Census has not run.** Both

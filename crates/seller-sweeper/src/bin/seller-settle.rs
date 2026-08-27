@@ -139,7 +139,13 @@ async fn main() -> Result<()> {
     // separate as sellers, but the chain knows only the address), so the
     // chain is asked once per address and the answer is written to every
     // seller that address belongs to.
-    let mut payees: Vec<String> = population.iter().map(|s| s.pay_to.clone()).collect();
+    // Only EVM payees can appear in an EVM token's transfer logs; asking the
+    // chain about a base58 address would be a request with no possible hit.
+    let mut payees: Vec<String> = population
+        .iter()
+        .filter(|s| sellers::identity::encoding_of(&s.pay_to) == sellers::identity::Network::Evm)
+        .map(|s| s.pay_to.clone())
+        .collect();
     payees.sort();
     payees.dedup();
 
@@ -204,8 +210,39 @@ async fn main() -> Result<()> {
     let mut failed = 0usize;
     let mut excluded_ours = 0usize;
     let mut excluded_self = 0usize;
+    let mut out_of_scope = 0usize;
 
     for seller in &population {
+        // A payee this scan CANNOT have found, because it does not settle on
+        // the network being scanned, must not be recorded as unsettled. The
+        // population spans every network (§10.5); this pass covers one, and
+        // the difference between "we looked and found nothing" and "we did
+        // not look here" is the whole reason `unprobed` exists.
+        //
+        // Recovered from the address's own shape, since a seller carries no
+        // network: a non-EVM payee cannot appear in an EVM token's logs.
+        if sellers::identity::encoding_of(&seller.pay_to) != sellers::identity::Network::Evm {
+            out_of_scope += 1;
+            if !dry_run {
+                db.write_check(
+                    run_id,
+                    &seller.pay_to,
+                    &seller.host,
+                    6,
+                    "settled",
+                    "unprobed",
+                    Some("out_of_scope_network"),
+                    &serde_json::json!({
+                        "scanned_network": sellers::network::BASE,
+                        "scanned_token": USDC_BASE,
+                        "note": "this payee does not settle on the scanned network",
+                    }),
+                    started,
+                )
+                .await?;
+            }
+            continue;
+        }
         let found = by_payee
             .get(&seller.pay_to.to_ascii_lowercase())
             .map(Vec::as_slice)
@@ -266,6 +303,13 @@ async fn main() -> Result<()> {
     tracing::info!("── rung 6, settled ──");
     tracing::info!("  pass: {passed}");
     tracing::info!("  fail (no settlement in window): {failed}");
+    if out_of_scope > 0 {
+        tracing::info!(
+            "  unprobed (out_of_scope_network): {out_of_scope} — sellers that do not \
+             settle on the scanned network, which is coverage this pass lacks and \
+             never a statement about them"
+        );
+    }
     if excluded_ours > 0 || excluded_self > 0 {
         tracing::info!(
             "  excluded: {excluded_ours} from our own shopper wallet, \

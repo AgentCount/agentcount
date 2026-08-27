@@ -127,3 +127,45 @@ mod tests {
         assert!(!same("solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp", SOLANA));
     }
 }
+
+/// Which address encoding a network's payees use.
+///
+/// Derived from the network the catalog named, rather than passed in by a
+/// caller who has to remember. That indirection is the whole point: an
+/// earlier version of this instrument took ONE encoding for a whole batch
+/// of listings, which meant reading Solana payees under EVM rules and
+/// recording 138 of 443 perfectly good listings as `malformed_address`.
+/// A listing carries its own network; its encoding follows from that.
+pub fn encoding(raw: &str) -> crate::identity::Network {
+    let canonical = canonical(raw);
+    match canonical.split_once(':').map(|(ns, _)| ns) {
+        Some("eip155") => crate::identity::Network::Evm,
+        Some("solana") => crate::identity::Network::Solana,
+        // Everything else — xrpl, stellar, hyperliquid, and whatever ships
+        // next week. Enumerated, never guessed at. See `Network::Opaque`.
+        _ => crate::identity::Network::Opaque,
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+    use crate::identity::Network;
+
+    #[test]
+    fn the_encoding_follows_the_network_the_catalog_named() {
+        assert_eq!(encoding("base"), Network::Evm);
+        assert_eq!(encoding("eip155:8453"), Network::Evm);
+        assert_eq!(encoding("eip155:56"), Network::Evm, "BNB Chain is EVM too");
+        assert_eq!(encoding("solana"), Network::Solana);
+        assert_eq!(encoding(SOLANA), Network::Solana);
+    }
+
+    #[test]
+    fn an_unknown_network_gets_no_guessed_encoding() {
+        // The chains the live Bazaar actually carries beyond the two above.
+        for raw in ["xrpl:0", "stellar:pubnet", "hyperliquid:mainnet", "wat"] {
+            assert_eq!(encoding(raw), Network::Opaque, "{raw}");
+        }
+    }
+}
