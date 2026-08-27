@@ -31,7 +31,9 @@ pub struct Requirement {
     pub network: String,
     /// Atomic units of `asset`, as quoted. Kept exact — a price is not a
     /// float, and rounding one to buy it would be this census paying a
-    /// number it did not read.
+    /// number it did not read. Crosses JSON as a decimal string for the
+    /// same reason; see [`crate::u128_str`].
+    #[serde(with = "crate::u128_str")]
     pub max_amount_required: u128,
     /// The asset contract, normalized like any other address.
     pub asset: String,
