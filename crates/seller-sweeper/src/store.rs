@@ -118,74 +118,108 @@ impl Db {
         }
         let mut tx = self.pool.begin().await?;
 
-        for seller in &population.sellers {
-            let catalogs: Vec<String> = seller.catalogs.iter().cloned().collect();
-            let resources: Vec<String> = seller.resources.iter().cloned().collect();
+        // ONE round trip per chunk, not per seller. A sweep writes thousands
+        // of sellers and the same number of rung-1 rows; at two statements
+        // each that was ~5,000 round trips through the Cloud SQL proxy for a
+        // single catalog, and it is the population that grows, not the
+        // patience. The rows are sent as one JSON document per chunk and
+        // expanded server-side.
+        const CHUNK: usize = 500;
+        for chunk in population.sellers.chunks(CHUNK) {
+            let rows: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|seller| {
+                    let catalogs: Vec<&String> = seller.catalogs.iter().collect();
+                    let resources: Vec<&String> = seller.resources.iter().collect();
+                    // The catalog's own claims travel with rung 1, because
+                    // "what the catalog said" IS the evidence of being
+                    // listed — and rung 7 compares exactly that against what
+                    // the endpoint quotes.
+                    let seller_claims: Vec<&sellers::consistent::Claim> = resources
+                        .iter()
+                        .filter_map(|r| {
+                            claims_by_seller.get(&(seller.id.pay_to.as_str(), r.as_str()))
+                        })
+                        .flatten()
+                        .copied()
+                        .collect();
+                    serde_json::json!({
+                        "pay_to": seller.id.pay_to,
+                        "host": seller.id.host,
+                        "catalogs": catalogs,
+                        "resources": resources,
+                        "evidence": {
+                            "catalogs": catalogs,
+                            "resource_count": resources.len(),
+                            "claims": seller_claims,
+                        },
+                    })
+                })
+                .collect();
+            let payload = serde_json::Value::Array(rows);
+
             sqlx::query(
                 "INSERT INTO seller_population (run_id, pay_to, host, catalogs, resources) \
-                 VALUES ($1, $2, $3, $4, $5) \
+                 SELECT $1, x.pay_to, x.host, \
+                        ARRAY(SELECT jsonb_array_elements_text(x.catalogs)), \
+                        ARRAY(SELECT jsonb_array_elements_text(x.resources)) \
+                   FROM jsonb_to_recordset($2::jsonb) \
+                        AS x(pay_to text, host text, catalogs jsonb, resources jsonb) \
                  ON CONFLICT (run_id, pay_to, host) DO UPDATE SET \
                    catalogs = EXCLUDED.catalogs, resources = EXCLUDED.resources",
             )
             .bind(run_id)
-            .bind(&seller.id.pay_to)
-            .bind(&seller.id.host)
-            .bind(&catalogs)
-            .bind(&resources)
+            .bind(&payload)
             .execute(&mut *tx)
             .await
-            .context("writing a seller")?;
+            .context("writing a chunk of sellers")?;
 
             // Rung 1 is `listed`, and it is evidence rather than a verdict:
             // the population IS the listed, so the answer is always `pass`
             // and the interesting part is which catalogs, and how many
             // resources they named.
-            // The catalog's own claims travel with rung 1, because "what the
-            // catalog said" IS the evidence of being listed — and rung 7
-            // compares exactly that against what the endpoint quotes.
-            let seller_claims: Vec<&sellers::consistent::Claim> = resources
-                .iter()
-                .filter_map(|r| claims_by_seller.get(&(seller.id.pay_to.as_str(), r.as_str())))
-                .flatten()
-                .copied()
-                .collect();
-            let evidence = serde_json::json!({
-                "catalogs": catalogs,
-                "resource_count": resources.len(),
-                "claims": seller_claims,
-            });
             sqlx::query(
                 "INSERT INTO seller_check_results \
                    (run_id, pay_to, host, rung, name, status, evidence, checked_at) \
-                 VALUES ($1, $2, $3, 1, 'listed', 'pass', $4, $5) \
+                 SELECT $1, x.pay_to, x.host, 1, 'listed', 'pass', x.evidence, $3 \
+                   FROM jsonb_to_recordset($2::jsonb) \
+                        AS x(pay_to text, host text, evidence jsonb) \
                  ON CONFLICT (run_id, pay_to, host, rung) DO UPDATE SET \
                    status = EXCLUDED.status, evidence = EXCLUDED.evidence, \
                    checked_at = EXCLUDED.checked_at",
             )
             .bind(run_id)
-            .bind(&seller.id.pay_to)
-            .bind(&seller.id.host)
-            .bind(&evidence)
+            .bind(&payload)
             .bind(checked_at)
             .execute(&mut *tx)
             .await
-            .context("writing rung 1")?;
+            .context("writing a chunk of rung 1")?;
         }
 
         // §10.2's losslessness, as rows. The catalog's own text, unnormalized.
-        for rejected in &population.rejected {
+        for rejected in population.rejected.chunks(CHUNK) {
+            let rows: Vec<serde_json::Value> = rejected
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "catalog": r.listing.catalog,
+                        "pay_to": r.listing.pay_to,
+                        "resource": r.listing.resource,
+                        "reason": r.reason,
+                    })
+                })
+                .collect();
             sqlx::query(
                 "INSERT INTO seller_rejected_listings (run_id, catalog, pay_to, resource, reason) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                 SELECT $1, x.catalog, x.pay_to, x.resource, x.reason \
+                   FROM jsonb_to_recordset($2::jsonb) \
+                        AS x(catalog text, pay_to text, resource text, reason text)",
             )
             .bind(run_id)
-            .bind(&rejected.listing.catalog)
-            .bind(&rejected.listing.pay_to)
-            .bind(&rejected.listing.resource)
-            .bind(&rejected.reason)
+            .bind(serde_json::Value::Array(rows))
             .execute(&mut *tx)
             .await
-            .context("writing a rejected listing")?;
+            .context("writing rejected listings")?;
         }
 
         tx.commit().await?;
