@@ -162,10 +162,25 @@ async fn main() -> Result<()> {
     // and then halved until it fits, which spends about half its requests
     // learning a limit that is already known and reports nothing while it
     // does so.
-    let mut transfers = Vec::new();
+    // One tally per payee, absorbing each window and DROPPING it. The first
+    // production run pulled 28.5 million transfers to produce six numbers per
+    // payee; holding them all cost 4.7 GB, which this machine had and Cloud
+    // Run does not. The rules doing the absorbing are `sellers::settled`'s,
+    // not a second copy living here.
+    let mut tallies: HashMap<String, settled::Tally> = payees
+        .iter()
+        .map(|p| {
+            (
+                p.to_ascii_lowercase(),
+                settled::Tally::new(p, SHOPPER_WALLET),
+            )
+        })
+        .collect();
+
     let windows = to_block.saturating_sub(from_block).div_ceil(WINDOW_BLOCKS);
     let mut window_start = from_block;
     let mut done = 0u64;
+    let mut seen = 0u64;
     while window_start <= to_block {
         let window_end = (window_start + WINDOW_BLOCKS - 1).min(to_block);
         let found = token
@@ -178,32 +193,30 @@ async fn main() -> Result<()> {
             )
             .await
             .with_context(|| format!("scanning USDC transfers in {window_start}..={window_end}"))?;
-        transfers.extend(found);
+        seen += found.len() as u64;
+        for t in &found {
+            if let Some(tally) = tallies.get_mut(&t.to.to_ascii_lowercase()) {
+                tally.absorb(&Settlement {
+                    from: t.from.clone(),
+                    block: t.block_number,
+                    tx_hash: t.tx_hash.clone(),
+                    value_raw: t.value_raw.clone(),
+                });
+            }
+        }
+        // `found` is dropped here, which is the point.
         done += 1;
         if done.is_multiple_of(50) || window_end == to_block {
-            tracing::info!(
-                "  {done}/{windows} windows, {} transfers so far",
-                transfers.len()
-            );
+            tracing::info!("  {done}/{windows} windows, {seen} transfers absorbed");
         }
         window_start = window_end + 1;
     }
-    tracing::info!("{} incoming transfers found", transfers.len());
+    tracing::info!("{seen} incoming transfers absorbed");
 
-    // Group by payee. `transfers()` returns logs for the whole batch, and
-    // the `to` field is what says whose they are.
-    let mut by_payee: HashMap<String, Vec<Settlement>> = HashMap::new();
-    for t in &transfers {
-        by_payee
-            .entry(t.to.to_ascii_lowercase())
-            .or_default()
-            .push(Settlement {
-                from: t.from.clone(),
-                block: t.block_number,
-                tx_hash: t.tx_hash.clone(),
-                value_raw: t.value_raw.clone(),
-            });
-    }
+    let verdicts: HashMap<String, sellers::settled::SettledVerdict> = tallies
+        .into_iter()
+        .map(|(payee, tally)| (payee, tally.finish()))
+        .collect();
 
     let started = chrono::Utc::now();
     let mut passed = 0usize;
@@ -243,11 +256,10 @@ async fn main() -> Result<()> {
             }
             continue;
         }
-        let found = by_payee
+        let v = verdicts
             .get(&seller.pay_to.to_ascii_lowercase())
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let v = settled::judge(&seller.pay_to, found, SHOPPER_WALLET);
+            .cloned()
+            .unwrap_or_else(|| settled::Tally::new(&seller.pay_to, SHOPPER_WALLET).finish());
         match v.answer.status {
             sellers::SellerStatus::Pass => passed += 1,
             _ => failed += 1,
