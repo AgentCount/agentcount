@@ -12,14 +12,13 @@
 //! which is how fixtures stop being refreshed.
 
 use sellers::catalog::{self, Listing};
-use sellers::identity::Network;
 use sellers::sources::bazaar;
 
 const CAPTURED: &str = include_str!("fixtures/bazaar-resources.json");
 
 fn population() -> catalog::Population {
     let parsed = bazaar::parse(CAPTURED).expect("captured Bazaar body parses");
-    catalog::assemble(&parsed.listings, Network::Evm)
+    catalog::assemble(&parsed.listings)
 }
 
 #[test]
@@ -84,7 +83,7 @@ fn the_population_is_never_larger_than_the_listings_it_came_from() {
     // Dedup can only collapse. A population LARGER than its input would mean
     // assembly invented a seller.
     let parsed = bazaar::parse(CAPTURED).unwrap();
-    let p = catalog::assemble(&parsed.listings, Network::Evm);
+    let p = catalog::assemble(&parsed.listings);
     assert!(p.len() <= parsed.listings.len());
     assert_eq!(
         p.len() + count_collapsed(&parsed.listings),
@@ -96,7 +95,7 @@ fn the_population_is_never_larger_than_the_listings_it_came_from() {
 /// Listings that joined an existing seller or were refused — the difference
 /// between the input rows and the distinct sellers.
 fn count_collapsed(listings: &[Listing]) -> usize {
-    let p = catalog::assemble(listings, Network::Evm);
+    let p = catalog::assemble(listings);
     listings.len() - p.len()
 }
 

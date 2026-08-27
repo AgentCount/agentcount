@@ -1423,9 +1423,38 @@ under pre-registered rules:
 
 ### 10.5 Scope, pinning, change
 
-Sweep 1 covers **Base (USDC)** only. Networks are added the way chains were
-added to the registration census: a stated expansion, dated in the
-changelog, never silently. Catalog snapshots are hashed per sweep; rung 6 is
+**The population is not scoped by network, and settlement is.** These are
+two different scopes and conflating them was a mistake this section used to
+contain.
+
+A seller is a web endpoint. Whether a catalog lists it (rung 1), whether it
+answers (rung 2), whether it returns a spec-valid 402 (rung 3) and whether
+that matches the catalog's claim (rung 7) are facts about the web, and none
+of them needs a chain. **Every seller in every catalog is enumerated and
+asked those questions**, whatever network it settles on — around half the
+listings observed in the Bazaar settle somewhere other than Base, and a
+census that dropped them before asking would have measured the Base slice
+of the x402 economy while calling it the whole.
+
+Two rungs do need a chain, and they scope themselves:
+
+* **Rung 6 (`settled`)** scans **Base (USDC)** for sweep 1. A seller that
+  settles elsewhere is `unprobed`, reason `out_of_scope_network` — never
+  `fail`, because "we did not look on that chain" and "we looked and found
+  nothing" are different claims.
+* **Rung 4 (`delivers`)** buys on the networks the shopper holds funds for,
+  under §10.4's rules, with the same distinction.
+
+Each listing's payee is read under the address encoding ITS OWN network
+implies — hex and lowercased for `eip155:*`, base58 and verbatim for
+`solana:*`, verbatim and unvalidated for a namespace this census has not
+learned. A network whose encoding is unknown is still enumerated; what is
+never done is guessing an encoding, which is how a valid payee becomes a
+recorded `malformed_address`.
+
+Settlement networks are added the way chains were added to the registration
+census: a stated expansion, dated in the changelog, never silently. Catalog
+snapshots are hashed per sweep; rung 6 is
 pinned to a block; rungs 2–4 and 7 are HTTP facts, timestamped not
 block-pinned (§7's honesty applies). Every rate carries its denominator,
 absence is served as absence (404, never zeros), and the delta series ship

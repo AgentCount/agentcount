@@ -35,7 +35,6 @@ use anyhow::{Context, Result};
 use seller_sweeper::fetcher::{CATALOG_PAGE_DELAY, CatalogFetcher, Outcome};
 use seller_sweeper::store::Db;
 use sellers::catalog::{self, Listing};
-use sellers::identity::Network;
 use sellers::sources::bazaar;
 use uuid::Uuid;
 
@@ -183,40 +182,41 @@ async fn main() -> Result<()> {
         tokio::time::sleep(CATALOG_PAGE_DELAY).await;
     }
 
-    // ── Scope first, THEN assemble ──────────────────────────────────────
+    // ── The union: EVERY seller, whatever it settles on ─────────────────
     //
-    // A third of the Bazaar's listings pay to Solana addresses. Read under
-    // EVM rules they come out as `malformed_address` — a false claim about
-    // somebody else's perfectly good listing. They are out of scope for
-    // sweep 1 (§10.5), which is a fact about OUR coverage, and it is
-    // reported as one.
-    let (in_scope, out_of_scope) = catalog::partition_by_scope(&listings, &[network]);
-    if !out_of_scope.is_empty() {
-        let mut by_network: std::collections::BTreeMap<String, usize> = Default::default();
-        for listing in &out_of_scope {
-            *by_network
-                .entry(sellers::network::canonical(&listing.network))
-                .or_insert(0) += 1;
-        }
-        tracing::info!(
-            "{} listings are on networks this sweep does not cover (not malformed — out of scope):",
-            out_of_scope.len()
-        );
-        for (name, count) in &by_network {
-            tracing::info!("  {name}: {count}");
-        }
-    }
-
-    // ── The union, computed by the rules crate ──────────────────────────
-    let scoped: Vec<Listing> = in_scope.into_iter().cloned().collect();
-    let population = catalog::assemble(&scoped, Network::Evm);
+    // The population is deliberately NOT chain-scoped (METHODOLOGY §10.5).
+    // A seller is a web endpoint, and whether it is listed, answers, quotes
+    // a valid 402 and matches its catalog entry are facts that need no chain
+    // at all. Only settlement (rung 6) and buying (rung 4) do, and they
+    // scope themselves. An earlier version filtered here and discarded about
+    // half the Bazaar before asking any of them a question this census can
+    // answer — then called what was left "the x402 economy".
+    let population = catalog::assemble(&listings);
     tracing::info!(
-        "{} listings ({} in scope) → {} sellers ({} rejected)",
+        "{} listings → {} sellers ({} rejected)",
         listings.len(),
-        scoped.len(),
         population.len(),
         population.rejected.len()
     );
+
+    // Where those sellers settle, as coverage rather than as a filter: the
+    // share this sweep can answer rung 6 for, and the share it cannot.
+    let (settleable, elsewhere) = catalog::partition_by_scope(&listings, &[network]);
+    let mut by_network: std::collections::BTreeMap<String, usize> = Default::default();
+    for listing in &elsewhere {
+        *by_network
+            .entry(sellers::network::canonical(&listing.network))
+            .or_insert(0) += 1;
+    }
+    tracing::info!(
+        "settlement coverage: {} listings on {network} (rung 6 answerable), \
+         {} elsewhere (rung 6 unprobed)",
+        settleable.len(),
+        elsewhere.len()
+    );
+    for (name, count) in &by_network {
+        tracing::info!("  {name}: {count}");
+    }
     if !population.rejected.is_empty() {
         let mut by_reason: std::collections::BTreeMap<String, usize> = Default::default();
         for r in &population.rejected {
@@ -238,12 +238,15 @@ async fn main() -> Result<()> {
 
     // The catalogs' price claims, kept for rung 7 (`consistent`) — the one
     // rung answered from evidence already held rather than a new request.
-    let claims: Vec<sellers::consistent::Claim> = scoped
+    let claims: Vec<sellers::consistent::Claim> = listings
         .iter()
         .map(|l| sellers::consistent::Claim {
             resource: l.resource.clone(),
-            pay_to: sellers::identity::normalize_pay_to(&l.pay_to, Network::Evm)
-                .unwrap_or_else(|_| l.pay_to.clone()),
+            pay_to: sellers::identity::normalize_pay_to(
+                &l.pay_to,
+                sellers::network::encoding(&l.network),
+            )
+            .unwrap_or_else(|_| l.pay_to.clone()),
             network: l.network.clone(),
             amount: l.claimed_amount,
             asset: l.claimed_asset.clone(),

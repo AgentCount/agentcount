@@ -38,7 +38,7 @@ use futures::stream::StreamExt;
 use seller_sweeper::fetcher::SellerProber;
 use seller_sweeper::store::{Db, StoredSeller};
 use sellers::consistent;
-use sellers::identity::{Network, SellerId};
+use sellers::identity::SellerId;
 use sellers::reachable::{self, Observed};
 use uuid::Uuid;
 
@@ -160,7 +160,13 @@ async fn main() -> Result<()> {
                         pay_to: seller.pay_to.clone(),
                         host: host.clone(),
                     };
-                    let verdict = reachable::judge(&id, &observed, Network::Evm);
+                    // The encoding this seller's payee was normalized under,
+                    // recovered from the address itself — a seller carries no
+                    // network, by design. A 402 from a Solana seller names a
+                    // base58 payee, and reading it under EVM rules would
+                    // report a working seller as quoting somebody else.
+                    let encoding = sellers::identity::encoding_of(&seller.pay_to);
+                    let verdict = reachable::judge(&id, &observed, encoding);
 
                     outcome.count(&verdict);
                     if !dry_run {

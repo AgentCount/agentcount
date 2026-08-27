@@ -27,13 +27,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Network {
-    /// Base, and any other EVM network the census later enables. Sweep 1 is
-    /// Base/USDC only (METHODOLOGY §10.5); the encoding rule is shared.
+    /// Every `eip155:*` chain. Hex, case-insensitive, so addresses lowercase.
     Evm,
-    /// Reserved for the stated Solana expansion. Present so that the
-    /// case-sensitivity rule is written down before it is needed, rather
-    /// than discovered by lowercasing somebody's address.
+    /// Every `solana:*` chain. Base58, case-SENSITIVE, so addresses do not.
     Solana,
+    /// A network whose address encoding this census does not know — XRPL,
+    /// Stellar, Hyperliquid and whatever ships next.
+    ///
+    /// Such a seller is still ENUMERATED, because whether its endpoint
+    /// answers and quotes is a fact about the x402 economy that needs no
+    /// chain at all. Its address is kept verbatim and used only as half of
+    /// an identity key: this census never claims to have validated it, and
+    /// says so by never marking it settled (rung 6 is `unprobed`, reason
+    /// `out_of_scope_network`). Guessing an encoding would be worse than
+    /// admitting one is unknown — lowercasing a base58 address is how a
+    /// valid payee becomes a malformed one.
+    Opaque,
 }
 
 /// Why a candidate could not become a seller identity. Each variant is a
@@ -92,6 +101,27 @@ impl fmt::Display for SellerId {
     }
 }
 
+/// The encoding an ALREADY-NORMALIZED address was written under.
+///
+/// Used where a seller is read back from storage without the listing that
+/// created it: its identity is `(payTo, host)` and carries no network, but
+/// the payee's own shape says which rule normalized it. A 40-hex-digit
+/// `0x` address came through [`Network::Evm`] and lowercases; anything else
+/// came through a verbatim rule and must be compared verbatim.
+///
+/// This is inference from the value, not a guess about the chain — the two
+/// rules produce distinguishable output, which is what makes it safe.
+pub fn encoding_of(pay_to: &str) -> Network {
+    let hex = pay_to.strip_prefix("0x").unwrap_or("");
+    if hex.len() == 40 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Network::Evm
+    } else {
+        // Solana and Opaque both normalize verbatim, so either compares
+        // correctly; Opaque is the honest label for "not asserted".
+        Network::Opaque
+    }
+}
+
 /// Normalize a payment address for its network, or refuse it.
 pub fn normalize_pay_to(pay_to: &str, network: Network) -> Result<String, IdentityError> {
     let raw = pay_to.trim();
@@ -120,6 +150,15 @@ pub fn normalize_pay_to(pay_to: &str, network: Network) -> Result<String, Identi
             }
             if raw.chars().all(|c| c == '1') {
                 return Err(IdentityError::ZeroAddress);
+            }
+            Ok(raw.to_string())
+        }
+        Network::Opaque => {
+            // No format is asserted, so none is checked beyond "somebody is
+            // named". Verbatim, because case may carry meaning in an
+            // encoding this census has not learned.
+            if raw.is_empty() || raw.len() > 128 {
+                return Err(IdentityError::MalformedAddress);
             }
             Ok(raw.to_string())
         }
@@ -278,6 +317,24 @@ mod tests {
             normalize_host("ipfs://bafy/x"),
             Err(IdentityError::UnsupportedScheme)
         );
+    }
+
+    #[test]
+    fn an_addresss_own_shape_says_which_rule_normalized_it() {
+        // A seller read back from storage has no network on it — its
+        // identity is (payTo, host) — so the comparison rule is recovered
+        // from the value. The two rules produce distinguishable output,
+        // which is what makes this inference rather than guesswork.
+        assert_eq!(
+            encoding_of("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"),
+            Network::Evm
+        );
+        assert_eq!(
+            encoding_of("7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj"),
+            Network::Opaque
+        );
+        // Not 40 hex digits: not an EVM address, whatever it starts with.
+        assert_eq!(encoding_of("0xdeadbeef"), Network::Opaque);
     }
 
     #[test]

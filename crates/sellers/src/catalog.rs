@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::{Network, SellerId};
+use crate::identity::SellerId;
 
 /// One row as a catalog published it, before this census has judged whether
 /// it names a seller at all.
@@ -123,17 +123,28 @@ pub fn partition_by_scope<'a>(
         .partition(|l| in_scope.iter().any(|s| crate::network::same(s, &l.network)))
 }
 
-/// Assemble a population from every catalog's listings.
+/// Assemble a population from every catalog's listings, whatever network
+/// each settles on.
 ///
-/// `network` is the ENCODING to read addresses with, not a filter: callers
-/// pass only listings they have already scoped (see [`partition_by_scope`]),
-/// because assembling a Solana listing under EVM rules mislabels it.
-pub fn assemble(listings: &[Listing], network: Network) -> Population {
+/// **The population is not chain-scoped, and that is the point.** A seller
+/// is a web endpoint; whether it is listed, answers, quotes a valid 402 and
+/// matches its catalog entry are all facts that need no chain at all. Only
+/// settlement (rung 6) and buying (rung 4) do, and those scope themselves.
+/// Scoping the POPULATION by settlement network would have discarded about
+/// half the Bazaar — Solana, BNB Chain, Worldchain, Hyperliquid, Stellar,
+/// XRPL — before asking any of them a question this census can answer, and
+/// then called the remainder "the x402 economy".
+///
+/// Each listing's address encoding is derived from the network IT names
+/// (`network::encoding`), so a Solana payee is never read under EVM rules.
+/// That mislabel is the reason this takes no encoding argument.
+pub fn assemble(listings: &[Listing]) -> Population {
     let mut by_id: BTreeMap<SellerId, Seller> = BTreeMap::new();
     let mut rejected = Vec::new();
 
     for listing in listings {
-        match SellerId::new(&listing.pay_to, &listing.resource, network) {
+        let encoding = crate::network::encoding(&listing.network);
+        match SellerId::new(&listing.pay_to, &listing.resource, encoding) {
             Ok(id) => {
                 let entry = by_id.entry(id.clone()).or_insert_with(|| Seller {
                     id,
@@ -195,13 +206,10 @@ mod tests {
     fn two_catalogs_listing_one_seller_produce_one_seller_with_both_names() {
         // The union index, in miniature: the whole point of enumerating from
         // every catalog is that this collapses to one row carrying both.
-        let p = assemble(
-            &[
-                listing("bazaar", A, "https://api.example.com/weather"),
-                listing("x402scan", A, "https://api.example.com/weather"),
-            ],
-            Network::Evm,
-        );
+        let p = assemble(&[
+            listing("bazaar", A, "https://api.example.com/weather"),
+            listing("x402scan", A, "https://api.example.com/weather"),
+        ]);
         assert_eq!(p.len(), 1);
         assert_eq!(
             p.sellers[0].catalogs.iter().cloned().collect::<Vec<_>>(),
@@ -211,13 +219,10 @@ mod tests {
 
     #[test]
     fn one_catalog_listing_a_seller_twice_is_one_mention() {
-        let p = assemble(
-            &[
-                listing("bazaar", A, "https://api.example.com/weather"),
-                listing("bazaar", A, "https://api.example.com/weather"),
-            ],
-            Network::Evm,
-        );
+        let p = assemble(&[
+            listing("bazaar", A, "https://api.example.com/weather"),
+            listing("bazaar", A, "https://api.example.com/weather"),
+        ]);
         assert_eq!(p.len(), 1);
         assert_eq!(p.sellers[0].catalogs.len(), 1);
         assert_eq!(p.sellers[0].resources.len(), 1);
@@ -225,26 +230,20 @@ mod tests {
 
     #[test]
     fn one_sellers_several_resources_all_hang_off_the_one_identity() {
-        let p = assemble(
-            &[
-                listing("bazaar", A, "https://api.example.com/weather"),
-                listing("bazaar", A, "https://api.example.com/tides"),
-            ],
-            Network::Evm,
-        );
+        let p = assemble(&[
+            listing("bazaar", A, "https://api.example.com/weather"),
+            listing("bazaar", A, "https://api.example.com/tides"),
+        ]);
         assert_eq!(p.len(), 1, "same payTo, same host — one seller");
         assert_eq!(p.sellers[0].resources.len(), 2);
     }
 
     #[test]
     fn the_same_pay_to_on_two_hosts_stays_two_sellers_through_assembly() {
-        let p = assemble(
-            &[
-                listing("bazaar", A, "https://one.example.com/x"),
-                listing("bazaar", A, "https://two.example.com/x"),
-            ],
-            Network::Evm,
-        );
+        let p = assemble(&[
+            listing("bazaar", A, "https://one.example.com/x"),
+            listing("bazaar", A, "https://two.example.com/x"),
+        ]);
         assert_eq!(p.len(), 2);
     }
 
@@ -258,33 +257,82 @@ mod tests {
         let mut backward = forward.clone();
         backward.reverse();
         assert_eq!(
-            assemble(&forward, Network::Evm),
-            assemble(&backward, Network::Evm),
+            assemble(&forward),
+            assemble(&backward),
             "a diff between two sweeps must mean the world changed"
         );
     }
 
     #[test]
     fn a_listing_that_cannot_become_an_identity_is_counted_never_dropped() {
-        let p = assemble(
-            &[
-                listing("bazaar", A, "https://api.example.com/x"),
-                listing("bazaar", "0x0", "https://api.example.com/x"),
-                listing("bazaar", A, "not a url"),
-                listing(
-                    "bazaar",
-                    "0x0000000000000000000000000000000000000000",
-                    "https://api.example.com/x",
-                ),
-            ],
-            Network::Evm,
-        );
+        let p = assemble(&[
+            listing("bazaar", A, "https://api.example.com/x"),
+            listing("bazaar", "0x0", "https://api.example.com/x"),
+            listing("bazaar", A, "not a url"),
+            listing(
+                "bazaar",
+                "0x0000000000000000000000000000000000000000",
+                "https://api.example.com/x",
+            ),
+        ]);
         assert_eq!(p.len(), 1);
         assert_eq!(p.rejected.len(), 3, "{:?}", p.rejected);
         let reasons: Vec<&str> = p.rejected.iter().map(|r| r.reason.as_str()).collect();
         assert!(reasons.contains(&"malformed_address"));
         assert!(reasons.contains(&"malformed_url"));
         assert!(reasons.contains(&"zero_address"));
+    }
+
+    #[test]
+    fn a_population_spans_every_network_because_a_seller_is_an_endpoint() {
+        // THE scope rule, as a test. A seller is a web endpoint; whether it
+        // is listed, answers and quotes needs no chain. Scoping the
+        // population by settlement network discarded about half the Bazaar
+        // before asking it a single question this census can answer, and
+        // then called the remainder "the x402 economy".
+        //
+        // Each address is read under the encoding ITS OWN network implies,
+        // so none of these is malformed and none is dropped.
+        let solana = "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj";
+        let listings = [
+            listing_on("bazaar", A, "https://evm.example/x", crate::network::BASE),
+            listing_on("bazaar", B, "https://bnb.example/x", "eip155:56"),
+            listing_on("bazaar", solana, "https://sol.example/x", "solana"),
+            listing_on(
+                "bazaar",
+                "rLdMH2GnLcx8Sp3z",
+                "https://xrpl.example/x",
+                "xrpl:0",
+            ),
+        ];
+        let p = assemble(&listings);
+        assert_eq!(p.len(), 4, "every network's sellers are counted");
+        assert!(
+            p.rejected.is_empty(),
+            "and none is called malformed: {:?}",
+            p.rejected
+        );
+        // The EVM one lowercases; the Solana one keeps its case; the opaque
+        // one is taken verbatim because no encoding was asserted for it.
+        assert!(p.sellers.iter().any(|s| s.id.pay_to == A.to_lowercase()));
+        assert!(p.sellers.iter().any(|s| s.id.pay_to == solana));
+        assert!(p.sellers.iter().any(|s| s.id.pay_to == "rLdMH2GnLcx8Sp3z"));
+    }
+
+    #[test]
+    fn scope_still_decides_what_is_settled_just_not_who_is_counted() {
+        // `partition_by_scope` survives for rung 6 and the shopper, which do
+        // need a chain. It no longer decides the population.
+        let solana = "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj";
+        let listings = [
+            listing_on("bazaar", A, "https://a.example/x", crate::network::BASE),
+            listing_on("bazaar", solana, "https://b.example/x", "solana"),
+        ];
+        let (settleable, elsewhere) = partition_by_scope(&listings, &[crate::network::BASE]);
+        assert_eq!(settleable.len(), 1);
+        assert_eq!(elsewhere.len(), 1);
+        // ...and both are still sellers.
+        assert_eq!(assemble(&listings).len(), 2);
     }
 
     #[test]
@@ -306,7 +354,7 @@ mod tests {
         assert_eq!(out_of_scope.len(), 1);
 
         let scoped: Vec<Listing> = in_scope.into_iter().cloned().collect();
-        let p = assemble(&scoped, Network::Evm);
+        let p = assemble(&scoped);
         assert_eq!(p.len(), 1);
         assert!(
             p.rejected.is_empty(),
@@ -330,14 +378,11 @@ mod tests {
 
     #[test]
     fn per_catalog_coverage_counts_the_sellers_each_one_knows_about() {
-        let p = assemble(
-            &[
-                listing("bazaar", A, "https://a.example.com/x"),
-                listing("bazaar", B, "https://b.example.com/x"),
-                listing("atlas", A, "https://a.example.com/x"),
-            ],
-            Network::Evm,
-        );
+        let p = assemble(&[
+            listing("bazaar", A, "https://a.example.com/x"),
+            listing("bazaar", B, "https://b.example.com/x"),
+            listing("atlas", A, "https://a.example.com/x"),
+        ]);
         let c = coverage(&p);
         assert_eq!(c["bazaar"], 2);
         assert_eq!(c["atlas"], 1);
