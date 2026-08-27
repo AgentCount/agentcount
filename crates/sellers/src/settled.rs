@@ -84,6 +84,95 @@ pub struct SettledVerdict {
     pub excluded_self: usize,
 }
 
+/// The same rules, applied one transfer at a time.
+///
+/// A sweep's settlement scan reads tens of millions of transfers — 28.5
+/// million on the first production run — to produce six numbers per payee.
+/// Holding them all to do that cost 4.7 GB and would be killed outright on
+/// Cloud Run, so the scan absorbs each window and drops it. This type is
+/// where the absorbing happens, in the crate that owns the rules, because
+/// an incremental copy of the exclusions living in the binary would be a
+/// second implementation of what counts as a payment.
+///
+/// [`judge`] is written in terms of this, so there is exactly one.
+#[derive(Debug, Clone)]
+pub struct Tally {
+    payee: String,
+    ours: String,
+    settlements: usize,
+    payers: std::collections::BTreeSet<String>,
+    first_block: Option<u64>,
+    last_block: Option<u64>,
+    excluded_ours: usize,
+    excluded_self: usize,
+}
+
+impl Tally {
+    /// `shopper_wallet` is the address published in METHODOLOGY §10.4.
+    pub fn new(pay_to: &str, shopper_wallet: &str) -> Self {
+        Self {
+            payee: normalize(pay_to),
+            ours: normalize(shopper_wallet),
+            settlements: 0,
+            payers: std::collections::BTreeSet::new(),
+            first_block: None,
+            last_block: None,
+            excluded_ours: 0,
+            excluded_self: 0,
+        }
+    }
+
+    /// Take one incoming transfer into account, then forget it.
+    pub fn absorb(&mut self, t: &Settlement) {
+        let from = normalize(&t.from);
+        if from == self.ours {
+            // Ours. The wallet was published before the first purchase so
+            // that this exclusion could be made by anyone, including us.
+            self.excluded_ours += 1;
+            return;
+        }
+        if from == self.payee {
+            // A payee paying itself is not a customer.
+            self.excluded_self += 1;
+            return;
+        }
+        self.settlements += 1;
+        self.payers.insert(from);
+        self.first_block = Some(self.first_block.map_or(t.block, |b| b.min(t.block)));
+        self.last_block = Some(self.last_block.map_or(t.block, |b| b.max(t.block)));
+    }
+
+    /// The verdict, from everything absorbed so far.
+    pub fn finish(self) -> SettledVerdict {
+        let answer = if self.settlements == 0 {
+            Answer {
+                status: SellerStatus::Fail,
+                // Precisely what was and was not established: no settlement
+                // in the window this row records, which is not "never paid".
+                reason: Some("no_settlement_in_window".into()),
+            }
+        } else {
+            Answer {
+                status: SellerStatus::Pass,
+                reason: None,
+            }
+        };
+        SettledVerdict {
+            answer,
+            settlements: self.settlements,
+            distinct_payers: self.payers.len(),
+            first_block: self.first_block,
+            last_block: self.last_block,
+            excluded_ours: self.excluded_ours,
+            excluded_self: self.excluded_self,
+        }
+    }
+}
+
+fn normalize(a: &str) -> String {
+    normalize_pay_to(a, Network::Evm).unwrap_or_else(|_| a.trim().to_ascii_lowercase())
+}
+
 /// Judge one payee's incoming transfers.
 ///
 /// `shopper_wallet` is the address published in METHODOLOGY §10.4. It is a
@@ -91,60 +180,11 @@ pub struct SettledVerdict {
 /// census actually spends from and the value it excludes are the same one,
 /// passed from one place.
 pub fn judge(pay_to: &str, transfers: &[Settlement], shopper_wallet: &str) -> SettledVerdict {
-    let norm = |a: &str| {
-        normalize_pay_to(a, Network::Evm).unwrap_or_else(|_| a.trim().to_ascii_lowercase())
-    };
-    let payee = norm(pay_to);
-    let ours = norm(shopper_wallet);
-
-    let mut qualifying: Vec<&Settlement> = Vec::new();
-    let mut excluded_ours = 0usize;
-    let mut excluded_self = 0usize;
+    let mut tally = Tally::new(pay_to, shopper_wallet);
     for t in transfers {
-        let from = norm(&t.from);
-        if from == ours {
-            // Ours. The wallet was published before the first purchase so
-            // that this exclusion could be made by anyone, including us.
-            excluded_ours += 1;
-        } else if from == payee {
-            // A payee paying itself is not a customer. Same rule the
-            // registration census's payment attribution keeps.
-            excluded_self += 1;
-        } else {
-            qualifying.push(t);
-        }
+        tally.absorb(t);
     }
-
-    let mut payers: Vec<String> = qualifying.iter().map(|t| norm(&t.from)).collect();
-    payers.sort_unstable();
-    payers.dedup();
-
-    let first_block = qualifying.iter().map(|t| t.block).min();
-    let last_block = qualifying.iter().map(|t| t.block).max();
-
-    let answer = if qualifying.is_empty() {
-        Answer {
-            status: SellerStatus::Fail,
-            // Precisely what was and was not established: no settlement in
-            // the window this row records, which is not "never paid".
-            reason: Some("no_settlement_in_window".into()),
-        }
-    } else {
-        Answer {
-            status: SellerStatus::Pass,
-            reason: None,
-        }
-    };
-
-    SettledVerdict {
-        answer,
-        settlements: qualifying.len(),
-        distinct_payers: payers.len(),
-        first_block,
-        last_block,
-        excluded_ours,
-        excluded_self,
-    }
+    tally.finish()
 }
 
 #[cfg(test)]
@@ -245,6 +285,44 @@ mod tests {
         assert_eq!(v.first_block, Some(500));
         assert_eq!(v.last_block, Some(900));
         assert_eq!(v.excluded_ours, 1);
+    }
+
+    #[test]
+    fn absorbing_one_at_a_time_gives_exactly_what_judging_all_at_once_does() {
+        // The property the scan's memory fix rests on. If these two ever
+        // disagreed, the instrument would have two definitions of what
+        // counts as a payment and would publish whichever ran that day.
+        let all = [
+            settlement(CUSTOMER, 500),
+            settlement(SHOPPER, 1),
+            settlement(CUSTOMER, 700),
+            settlement(PAYEE, 900),
+            settlement(CUSTOMER2, 300),
+        ];
+        let at_once = judge(PAYEE, &all, SHOPPER);
+
+        let mut tally = Tally::new(PAYEE, SHOPPER);
+        for t in &all {
+            tally.absorb(t);
+        }
+        let streamed = tally.finish();
+
+        assert_eq!(at_once, streamed);
+        // ...and it is the right answer, not merely a consistent one.
+        assert_eq!(streamed.settlements, 3);
+        assert_eq!(streamed.distinct_payers, 2);
+        assert_eq!(streamed.first_block, Some(300));
+        assert_eq!(streamed.last_block, Some(700));
+        assert_eq!(streamed.excluded_ours, 1);
+        assert_eq!(streamed.excluded_self, 1);
+    }
+
+    #[test]
+    fn a_tally_that_absorbed_nothing_is_not_a_settled_seller() {
+        assert_eq!(
+            Tally::new(PAYEE, SHOPPER).finish().answer.status,
+            SellerStatus::Fail
+        );
     }
 
     #[test]
