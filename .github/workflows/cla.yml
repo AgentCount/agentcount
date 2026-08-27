@@ -55,6 +55,14 @@ jobs:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/AgentCount/agentcount/blob/main/CLA.md'
           branch: 'main'
-          allowlist: 'dependabot[bot]'
+          # Maintainers are not asked to sign an agreement WITH THE PROJECT
+          # they run: a CLA grants the project a licence, and the project
+          # cannot meaningfully grant one to itself. Bots have nothing to
+          # grant either. Everyone else signs.
+          #
+          # Kept identical to agentcount-web's list, because a contributor
+          # who signs for one repository and is blocked by the other has
+          # learned that the rule is arbitrary.
+          allowlist: 'dependabot[bot],NemboKid'
           remote-organization-name: 'AgentCount'
           remote-repository-name: 'cla-signatures'
