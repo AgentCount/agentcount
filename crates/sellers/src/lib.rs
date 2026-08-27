@@ -152,3 +152,61 @@ mod tests {
         assert_eq!(SELLER_CHECKER_VERSION, "0.1.0");
     }
 }
+
+/// Serializing a price without narrowing it.
+///
+/// A price in this ecosystem is a uint256. JSON numbers are not: `serde_json`
+/// refuses any integer above `u64::MAX` with "number out of range", and it
+/// does so from inside `json!`, which is a panic in the middle of writing an
+/// evidence row rather than a value anyone can reject cleanly. The first full
+/// sweep died exactly there, after crawling all 148 catalog pages — one of
+/// 33,254 listings names a price above 2^64.
+///
+/// So prices cross the JSON boundary as decimal STRINGS, which is what
+/// `payments.value_raw` does in the registration census and for the same
+/// stated reason: the value is never narrowed to fit a format. Reading
+/// accepts a string or a number, so rows written either way stay readable.
+pub mod u128_str {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub fn serialize<S: Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&v.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) => s.trim().parse().map_err(D::Error::custom),
+            serde_json::Value::Number(n) => n
+                .as_u128()
+                .ok_or_else(|| D::Error::custom("not a non-negative integer")),
+            other => Err(D::Error::custom(format!("expected a price, got {other}"))),
+        }
+    }
+
+    /// The same, for a price a catalog may simply not have stated. `None` is
+    /// "no price given", which is never the same as a price of zero.
+    pub mod option {
+        use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+        pub fn serialize<S: Serializer>(v: &Option<u128>, s: S) -> Result<S::Ok, S::Error> {
+            match v {
+                Some(v) => s.serialize_str(&v.to_string()),
+                None => s.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u128>, D::Error> {
+            match Option::<serde_json::Value>::deserialize(d)? {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(s)) => {
+                    s.trim().parse().map(Some).map_err(D::Error::custom)
+                }
+                Some(serde_json::Value::Number(n)) => n
+                    .as_u128()
+                    .map(Some)
+                    .ok_or_else(|| D::Error::custom("not a non-negative integer")),
+                Some(other) => Err(D::Error::custom(format!("expected a price, got {other}"))),
+            }
+        }
+    }
+}

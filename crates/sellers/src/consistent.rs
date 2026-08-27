@@ -45,6 +45,11 @@ pub struct Claim {
     /// Atomic units, as the catalog wrote them. `None` when the catalog
     /// listed the resource without a price — which is itself a fact, and not
     /// the same as claiming zero.
+    ///
+    /// Crosses JSON as a decimal string: a uint256 does not fit a JSON
+    /// number, and `serde_json` panics rather than rounding. See
+    /// [`crate::u128_str`].
+    #[serde(default, with = "crate::u128_str::option")]
     pub amount: Option<u128>,
     pub asset: Option<String>,
 }
@@ -309,5 +314,74 @@ mod tests {
         assert_eq!(v.answer.status, SellerStatus::Unprobed);
         assert_eq!(v.answer.reason.as_deref(), Some("nothing_claimed"));
         assert!(!v.answer.status.is_about_the_seller());
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+    use crate::quote::Requirement;
+
+    /// A price is a uint256. JSON numbers are not, and `serde_json` refuses
+    /// any integer above `u64::MAX` with "number out of range" — which is a
+    /// PANIC at the `json!` that builds an evidence row, not a rejected
+    /// value. The first full sweep died on it after crawling all 148 pages:
+    /// somewhere among 33,254 listings, one names a price larger than 2^64.
+    ///
+    /// So amounts serialize as decimal STRINGS, exactly as
+    /// `payments.value_raw` is a NUMERIC-shaped string for the same reason:
+    /// a price is never narrowed to fit a format.
+    #[test]
+    fn a_price_larger_than_u64_survives_serialization() {
+        let huge = u128::from(u64::MAX) + 1;
+        let claim = Claim {
+            resource: "https://a.example/x".into(),
+            pay_to: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            network: "eip155:8453".into(),
+            amount: Some(huge),
+            asset: Some("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913".into()),
+        };
+        let json = serde_json::to_value(&claim).expect("a uint256 price must serialize");
+        assert_eq!(json["amount"], serde_json::json!(huge.to_string()));
+
+        // ...and comes back exactly, because a price that survives a round
+        // trip approximately is a different price.
+        let back: Claim = serde_json::from_value(json).unwrap();
+        assert_eq!(back.amount, Some(huge));
+    }
+
+    #[test]
+    fn a_quoted_requirement_survives_the_same_way() {
+        let huge = u128::MAX;
+        let req = Requirement {
+            scheme: "exact".into(),
+            network: "eip155:8453".into(),
+            max_amount_required: huge,
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913".into(),
+            pay_to: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            resource: None,
+        };
+        let json = serde_json::to_value(&req).expect("a uint256 quote must serialize");
+        assert_eq!(
+            json["max_amount_required"],
+            serde_json::json!(huge.to_string())
+        );
+        let back: Requirement = serde_json::from_value(json).unwrap();
+        assert_eq!(back.max_amount_required, huge);
+    }
+
+    #[test]
+    fn an_amount_stored_as_a_json_number_still_reads_back() {
+        // Rows written before this change carry numbers; they must not
+        // become unreadable.
+        let json = serde_json::json!({
+            "resource": "https://a.example/x",
+            "pay_to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "network": "eip155:8453",
+            "amount": 3000,
+            "asset": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        });
+        let claim: Claim = serde_json::from_value(json).unwrap();
+        assert_eq!(claim.amount, Some(3000));
     }
 }
