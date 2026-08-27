@@ -390,13 +390,23 @@ impl Db {
         })
     }
 
-    /// The sweep before this one on the same network — the pair the delta
-    /// names, chosen once and then recorded permanently, so "previous" can
-    /// never silently re-bind as later sweeps land.
+    /// The previous **finished** sweep on the same network — the pair the
+    /// delta names, chosen once and then recorded permanently, so "previous"
+    /// can never silently re-bind as later sweeps land.
+    ///
+    /// `status = 'finished'` is the whole correctness of this query, not a
+    /// tidying detail. A failed sweep stored whatever it managed before it
+    /// stopped — often nothing — so comparing against one manufactures
+    /// churn out of our own outage: the first production delta, written
+    /// against a crashed crawl, reported 2,387 sellers as having APPEARED
+    /// when they had simply never been counted. That is the same shape as
+    /// the 19,983 and the 4,479 incidents in §9, arriving through a third
+    /// door, and the fix is the same one the registration census already
+    /// states: a delta compares against the previous FINISHED run.
     pub async fn previous_run(&self, run_id: Uuid, network: &str) -> Result<Option<Uuid>> {
         let row = sqlx::query(
             "SELECT r.run_id FROM seller_runs r \
-             WHERE r.network = $2 AND r.run_id <> $1 \
+             WHERE r.network = $2 AND r.run_id <> $1 AND r.status = 'finished' \
                AND r.started_at < (SELECT started_at FROM seller_runs WHERE run_id = $1) \
              ORDER BY r.started_at DESC LIMIT 1",
         )
