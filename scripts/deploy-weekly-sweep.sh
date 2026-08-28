@@ -29,10 +29,16 @@
 # What it creates
 # ─────────────────────────────────────────────────────────────────────────────
 #
-#   Artifact Registry image   built from Dockerfile.sweep (one image, both jobs)
-#   Cloud Run Job             agentcount-sweep      — ten chains, Monday 06:00 UTC
-#   Cloud Run Job             agentcount-sweep-bsc  — BNB Chain, Tuesday 06:00 UTC
+#   Artifact Registry image   built from Dockerfile.sweep (one image, all jobs)
+#   Cloud Run Job             agentcount-sweep       — nine chains, Monday 06:00 UTC
+#   Cloud Run Job             agentcount-sweep-bsc   — BNB Chain,   Tuesday 06:00 UTC
+#   Cloud Run Job             agentcount-sweep-base  — Base,        Wednesday 06:00 UTC
+#   Cloud Run Job             agentcount-sellers     — the Seller Census (§10),
+#                                                      Thursday 06:00 UTC
 #   Cloud Scheduler jobs      one per Cloud Run job
+#
+# Four days rather than one, because a chain that runs long must only ever be
+# able to fail itself. See the BNB Chain note below, and Base's beside it.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Why BNB Chain has a job of its own
@@ -151,7 +157,7 @@ RPC_URL_BASE=rpc-url-base:latest,\
 RPC_URL_BSC=rpc-url-bsc:latest,\
 RPC_URL_MAINNET=rpc-url-mainnet:latest,\
 RPC_URL_CELO=rpc-url-celo:latest" \
-    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet base bsc}${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet}${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
     --task-timeout 24h \
     --max-retries 0 \
     --memory 2Gi --cpu 2 \
@@ -169,6 +175,51 @@ gcloud run jobs deploy agentcount-sweep-bsc \
     --task-timeout 24h \
     --max-retries 0 \
     --memory 8Gi --cpu 4 \
+    --parallelism 1 --tasks 1
+
+# Base, its own job and its own day, for the reason BNB Chain got one.
+#
+# Base blew the 24-hour task timeout on 2026-08-24 and again the week before,
+# both times from RPC timeouts on its own endpoint rather than from its size —
+# 67,951 agents against BSC's 300,552. Both times it had to be finished by
+# hand with SWEEP_RESUME, and both times it took the other nine chains' job
+# down with it: a run that dies at the cap leaves a `running` row, no
+# heartbeat, and a week's census that says `failed` while nine chains are
+# actually complete.
+#
+# Alone, it gets the full 24-hour window for one chain and cannot fail
+# anything but itself. Wednesday rather than Monday so a slow Base cannot
+# collide with BNB Chain's Tuesday.
+gcloud run jobs deploy agentcount-sweep-base \
+    --project "$PROJECT" --region "$REGION" \
+    --image "$IMAGE" \
+    --set-cloudsql-instances "$INSTANCE" \
+    --set-secrets "DATABASE_URL=agentcount-db-url:latest,RPC_URL_BASE=rpc-url-base:latest" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=base${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
+    --task-timeout 24h \
+    --max-retries 0 \
+    --memory 2Gi --cpu 2 \
+    --parallelism 1 --tasks 1
+
+# The Seller Census (METHODOLOGY §10), same image, different entrypoint.
+#
+# It reads other people's catalogs and probes thousands of other people's
+# endpoints, so it is bounded by politeness rather than by chain throughput:
+# the first full sweep took about two hours end to end. Thursday keeps its
+# Base RPC scan off the day Base's own chain sweep runs, so the two cannot
+# contend for the same endpoint's quota.
+#
+# `--command seller-sweep` rather than a second image: one release, one copy
+# of the rules crate. See Dockerfile.sweep.
+gcloud run jobs deploy agentcount-sellers \
+    --project "$PROJECT" --region "$REGION" \
+    --image "$IMAGE" \
+    --command seller-sweep \
+    --set-cloudsql-instances "$INSTANCE" \
+    --set-secrets "DATABASE_URL=agentcount-db-url:latest,RPC_URL_BASE=rpc-url-base:latest" \
+    --task-timeout 6h \
+    --max-retries 0 \
+    --memory 2Gi --cpu 2 \
     --parallelism 1 --tasks 1
 
 echo "==> 4/4 the schedules"
@@ -192,7 +243,7 @@ SCHED_SA="agentcount-scheduler@${PROJECT}.iam.gserviceaccount.com"
 gcloud iam service-accounts describe "$SCHED_SA" --project "$PROJECT" >/dev/null 2>&1 \
     || gcloud iam service-accounts create agentcount-scheduler \
          --display-name="Triggers the weekly AgentCount census" --project "$PROJECT"
-for job in agentcount-sweep agentcount-sweep-bsc; do
+for job in agentcount-sweep agentcount-sweep-bsc agentcount-sweep-base agentcount-sellers; do
     gcloud run jobs add-iam-policy-binding "$job" \
         --region "$REGION" --project "$PROJECT" \
         --member "serviceAccount:$SCHED_SA" --role roles/run.invoker --quiet >/dev/null
@@ -213,6 +264,24 @@ gcloud scheduler jobs create http agentcount-weekly-sweep-bsc \
     --http-method POST \
     --oauth-service-account-email "$SCHED_SA" \
     2>/dev/null || echo "(bsc scheduler job already exists — use \`update\` to change it)"
+
+# Base on Wednesday, alone.
+gcloud scheduler jobs create http agentcount-weekly-sweep-base \
+    --project "$PROJECT" --location "$SCHED_LOCATION" \
+    --schedule "0 6 * * 3" --time-zone "Etc/UTC" \
+    --uri "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/agentcount-sweep-base:run" \
+    --http-method POST \
+    --oauth-service-account-email "$SCHED_SA" \
+    2>/dev/null || echo "(base scheduler job already exists — use \`update\` to change it)"
+
+# The Seller Census on Thursday.
+gcloud scheduler jobs create http agentcount-weekly-sellers \
+    --project "$PROJECT" --location "$SCHED_LOCATION" \
+    --schedule "0 6 * * 4" --time-zone "Etc/UTC" \
+    --uri "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/agentcount-sellers:run" \
+    --http-method POST \
+    --oauth-service-account-email "$SCHED_SA" \
+    2>/dev/null || echo "(sellers scheduler job already exists — use \`update\` to change it)"
 
 cat <<'NOTES'
 
