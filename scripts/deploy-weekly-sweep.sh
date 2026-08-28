@@ -128,6 +128,37 @@ steps:
           *"checker_commit=${COMMIT}") echo "stamp verified" ;;
           *) echo "FATAL: expected checker_commit=${COMMIT}"; exit 1 ;;
         esac
+        # The Seller Census half of the image, asked the same question. The
+        # failure this guards against is a binary that is missing or built for
+        # the wrong architecture: the job deploys cleanly, and nothing notices
+        # until 06:00 on a Thursday.
+        #
+        # The test is EXIT STATUS, not message text. POSIX gives the shell 127
+        # for a command it could not find and 126 for one it could not
+        # execute; any other status came from the binary, which means the
+        # loader ran it. These four have no --version and no --help, so they
+        # are run bare and answer "DATABASE_URL must be set" — an
+        # application-level complaint, and proof of exactly what is being
+        # tested.
+        #
+        # Reading the message instead fails in both directions, and did: a
+        # blacklist of loader strings matched the "environment variable not
+        # found" inside that healthy complaint and failed a good image, while
+        # the loader writes its own refusals to the CALLER's stderr, so a
+        # shell that did not capture them would have passed a missing binary.
+        # The status is set either way.
+        for b in seller-crawl seller-probe seller-settle seller-delta; do
+          out="\$(\$b 2>&1)"; rc=\$?
+          case "\$rc" in
+            127) echo "FATAL: \$b is not in the image"; exit 1 ;;
+            126) echo "FATAL: \$b could not execute (wrong architecture?): \$out"; exit 1 ;;
+            *) echo "  \$b executes (exit \$rc)" ;;
+          esac
+        done
+        # rung 4 spends money and has no binary yet; when seller-shop exists it
+        # joins the loop above, Dockerfile.sweep, and seller-sweep.sh together.
+        test -x /usr/local/bin/seller-sweep || { echo "FATAL: seller-sweep missing"; exit 1; }
+        echo "seller binaries verified"
 images: ['${IMAGE}']
 EOF
 
