@@ -104,6 +104,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/runs/{id}/findings", get(routes::findings::get))
         .route("/api/runs/{id}/delta", get(routes::deltas::get))
         .route("/api/agents/{chain}/{id}", get(routes::agents::get_one))
+        // The Seller Census (METHODOLOGY §10). `/api/seller-runs`, not
+        // `/api/runs?instrument=`: a caller must not be able to ask one URL
+        // for "the runs" and get two different populations depending on a
+        // parameter it forgot to send. See `routes::sellers`.
+        .route("/api/seller-runs", get(routes::sellers::list_runs))
+        .route("/api/seller-runs/{id}/rates", get(routes::sellers::rates))
         // The two endpoints that serve rows belonging to NO run: agents the
         // chain has that no census has checked yet. Separate paths, and a
         // response shape that shares almost nothing with a census result, so
