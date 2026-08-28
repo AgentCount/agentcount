@@ -241,31 +241,54 @@ impl SellerProber {
         })
     }
 
-    /// GET one resource, honouring robots.txt, and return what was observed.
+    /// Ask one resource, honouring robots.txt, and return what was observed
+    /// together with the method that produced it.
     ///
     /// Facts only: the judgement — including the rule that a 402 is a seller
     /// working rather than a seller declining — belongs to
     /// `sellers::reachable`.
-    pub async fn probe(&self, resource: &str) -> sellers::reachable::Observed {
+    ///
+    /// ## Why a GET can become a POST
+    ///
+    /// The first full sweep recorded 217 sellers as failing to quote with
+    /// reason `http_405`. That was OUR question being wrong, not their
+    /// answer: those resources are POST-only, and a GET is the one verb they
+    /// refuse. RFC 9110 §15.5.6 requires a 405 to carry an `Allow` header
+    /// naming what it does accept, and the ones observed do — `Allow: POST`.
+    ///
+    /// So a 405 is retried ONCE with the method the origin itself named,
+    /// which is better than reading the catalog's declaration: the server is
+    /// authoritative about its own verbs and a catalog can be stale. The
+    /// escalation is deliberately narrow:
+    ///
+    /// * only when the origin returned 405, so no endpoint that answers a
+    ///   GET is ever sent anything else;
+    /// * only to POST, never PUT/PATCH/DELETE — those name mutations, and an
+    ///   unpaid request to a seller that has mis-implemented payment must not
+    ///   be capable of destroying anything;
+    /// * with an empty JSON body, carrying no instructions of ours;
+    /// * once, after the host's own pause, so this costs one extra request
+    ///   at the endpoints that asked for it and none anywhere else.
+    pub async fn probe(&self, resource: &str) -> Probed {
         use sellers::reachable::Observed;
 
         let Ok(parsed) = url::Url::parse(resource) else {
-            return Observed::ProbeFailed {
+            return Probed::get(Observed::ProbeFailed {
                 reason: "unparseable_url".into(),
-            };
+            });
         };
 
         match self.prober.robots_permits(&parsed).await {
             probe::RobotsDecision::Allowed => {}
             probe::RobotsDecision::Disallowed => {
-                return Observed::NotPermitted {
+                return Probed::get(Observed::NotPermitted {
                     reason: "robots_disallowed".into(),
-                };
+                });
             }
             probe::RobotsDecision::Unavailable(reason) => {
-                return Observed::NotPermitted {
+                return Probed::get(Observed::NotPermitted {
                     reason: format!("robots_unavailable: {reason}"),
-                };
+                });
             }
         }
 
@@ -276,31 +299,131 @@ impl SellerProber {
         let response = match self.http.get(resource).send().await {
             Ok(r) => r,
             Err(e) => {
-                return Observed::ProbeFailed {
+                return Probed::get(Observed::ProbeFailed {
                     reason: describe_request_error(&e),
-                };
+                });
             }
         };
         let status = response.status().as_u16();
+
+        // The origin says our verb is wrong and names the right one.
+        if status == 405 {
+            let allow = response
+                .headers()
+                .get(reqwest::header::ALLOW)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            if allow_permits_post(&allow) {
+                tokio::time::sleep(self.host_delay).await;
+                return self.post_once(resource, &allow).await;
+            }
+            // 405 without a usable Allow: recorded as it stands, with what
+            // the origin did say, so "we asked wrong" stays countable.
+            return Probed {
+                observed: Observed::Response { status, body: None },
+                method: "GET",
+                allow: (!allow.is_empty()).then_some(allow),
+            };
+        }
 
         // The body is only read when it might be a quote. A 200 from a free
         // endpoint is reachability and nothing else, and downloading somebody
         // else's product to learn that would be rude and pointless.
         if status != 402 {
-            return Observed::Response { status, body: None };
+            return Probed::get(Observed::Response { status, body: None });
         }
-        match response.bytes().await {
-            Ok(bytes) => {
-                let truncated = &bytes[..bytes.len().min(MAX_QUOTE_BYTES)];
-                Observed::Response {
-                    status,
-                    body: Some(String::from_utf8_lossy(truncated).into_owned()),
-                }
+        Probed::get(read_quote(response, status).await)
+    }
+
+    /// The single retry a 405 earns, with the verb the origin named.
+    async fn post_once(&self, resource: &str, allow: &str) -> Probed {
+        use sellers::reachable::Observed;
+        let response = match self
+            .http
+            .post(resource)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body("{}")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Probed {
+                    observed: Observed::ProbeFailed {
+                        reason: describe_request_error(&e),
+                    },
+                    method: "POST",
+                    allow: Some(allow.to_string()),
+                };
             }
-            // The status is a fact we have; the body is one we do not. Both
-            // get recorded rather than the whole observation being discarded.
-            Err(_) => Observed::Response { status, body: None },
+        };
+        let status = response.status().as_u16();
+        let observed = if status == 402 {
+            read_quote(response, status).await
+        } else {
+            Observed::Response { status, body: None }
+        };
+        Probed {
+            observed,
+            method: "POST",
+            allow: Some(allow.to_string()),
         }
+    }
+}
+
+/// What was observed, and the verb that observed it.
+///
+/// The method is recorded on every row because it is part of the question:
+/// "does not quote, asked with GET" and "does not quote, asked with the verb
+/// it named" are different findings, and the first sweep could not tell them
+/// apart.
+#[derive(Debug, Clone)]
+pub struct Probed {
+    pub observed: sellers::reachable::Observed,
+    pub method: &'static str,
+    /// The origin's own `Allow` header, when it sent one with a 405.
+    pub allow: Option<String>,
+}
+
+impl Probed {
+    fn get(observed: sellers::reachable::Observed) -> Self {
+        Self {
+            observed,
+            method: "GET",
+            allow: None,
+        }
+    }
+}
+
+/// Whether a 405's `Allow` header names POST.
+///
+/// RFC 9110 §15.5.6 requires the header on a 405 and defines it as a
+/// comma-separated list of methods. Only POST is honoured — PUT, PATCH and
+/// DELETE name mutations, and an unpaid request to a seller that has
+/// mis-implemented its payment wall must not be able to destroy anything.
+pub fn allow_permits_post(allow: &str) -> bool {
+    allow
+        .split(',')
+        .map(|m| m.trim())
+        .any(|m| m.eq_ignore_ascii_case("POST"))
+}
+
+/// Read a 402's body, capped. Shared by both verbs so a quote means the same
+/// thing however it was asked for.
+async fn read_quote(response: reqwest::Response, status: u16) -> sellers::reachable::Observed {
+    use sellers::reachable::Observed;
+    match response.bytes().await {
+        Ok(bytes) => {
+            let truncated = &bytes[..bytes.len().min(MAX_QUOTE_BYTES)];
+            Observed::Response {
+                status,
+                body: Some(String::from_utf8_lossy(truncated).into_owned()),
+            }
+        }
+        // The status is a fact we have; the body is one we do not. Both get
+        // recorded rather than the whole observation being discarded.
+        Err(_) => Observed::Response { status, body: None },
     }
 }
 
@@ -342,6 +465,33 @@ mod tests {
         assert_eq!(Outcome::Fetched.as_str(), "fetched");
         assert_eq!(Outcome::Refused.as_str(), "refused");
         assert_eq!(Outcome::Error.as_str(), "error");
+    }
+
+    #[test]
+    fn a_405_naming_post_earns_exactly_one_retry() {
+        // RFC 9110 §15.5.6 requires the header, and the endpoints that
+        // produced 217 `http_405` rows in the first sweep send `Allow: POST`.
+        assert!(allow_permits_post("POST"));
+        assert!(allow_permits_post("GET, POST, OPTIONS"));
+        assert!(allow_permits_post("post"), "method names are case-insensitive");
+        assert!(allow_permits_post(" OPTIONS , POST "));
+    }
+
+    #[test]
+    fn a_405_naming_only_mutations_earns_nothing() {
+        // PUT, PATCH and DELETE name changes to somebody else's state. An
+        // unpaid request to a seller that has mis-implemented its payment
+        // wall must not be capable of destroying anything, so this census
+        // does not try them — it records the 405 and what was allowed.
+        for allow in ["PUT", "DELETE", "PATCH", "PUT, DELETE", "OPTIONS", ""] {
+            assert!(!allow_permits_post(allow), "{allow:?} must not be retried");
+        }
+    }
+
+    #[test]
+    fn a_method_name_that_merely_contains_post_is_not_post() {
+        assert!(!allow_permits_post("POSTAL"));
+        assert!(!allow_permits_post("REPOST"));
     }
 
     #[test]
