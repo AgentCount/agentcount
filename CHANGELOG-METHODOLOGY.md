@@ -20,7 +20,37 @@ Format per entry:
 
 ---
 
-## 2026-08-27 — The Seller Census enumerates every network; only settlement is scoped
+## 2026-08-28 — The probe escalates a 405 to the method the origin names
+
+**This entry changes no published number** — the Seller Census's first sweep
+is stored but nothing from it has been published. It changes what the next
+sweep will measure, and it exists because the first one measured our own
+question and would have reported it as the sellers' behaviour.
+
+**What changed.** §10.3 said the probe is a GET and stated the consequence
+as a limitation: a POST-only resource refuses a GET, and the seller is
+recorded as failing to quote. The first sweep put a number on that — **217
+of 1,486 quote failures, roughly one in seven, were `http_405`** — which is
+too large a share of a headline rate to leave as a footnote.
+
+A 405 is now retried once with the method the origin itself names in its
+`Allow` header (RFC 9110 §15.5.6 requires one). That is better evidence than
+the catalog's declared method: the server is authoritative about its own
+verbs, and a catalog can be stale. Only POST is honoured — `PUT`, `PATCH`
+and `DELETE` name mutations, and an unpaid request to a seller that has
+mis-implemented its payment wall must not be able to destroy anything. Every
+row now records the verb that produced it.
+
+**What it does NOT do.** Verified against the two endpoints found returning
+405 with `Allow: POST`: both answer 402 to the retry, and both return an
+empty body. Their rows move from `http_405` to `no_accepts` — from "we asked
+wrong" to "they state no price". That is the point. The correction is to
+attribution, not to the pass rate, and a fix that had raised the pass rate
+without changing what was true would have been the wrong fix.
+
+**Measured effect.** None on any published figure. The 217 rows from the
+first sweep stand as they were recorded, with the verb that produced them
+now on every row for the next one.
 
 **This entry changes no number, because the Seller Census has not run.** It
 is the last moment at which this could be true, which is why it is being

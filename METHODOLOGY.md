@@ -1349,16 +1349,33 @@ registration census's list minus the one status this instrument exists to
 receive. Reading them the same way would book every correctly-functioning
 seller as having refused us.
 
-**The probe is a GET, and that is a stated limit on rung 3.** One request
-answers rungs 2 and 3, because asking twice would double this census's
-traffic to every seller for no additional fact. But some resources are
-POST-only — an LLM completions endpoint, for instance — and a GET to one may
-draw a 402 with an empty body where the declared method would have drawn
-full payment requirements. Those sellers are recorded as `fail` with reason
-`no_accepts`, which is true of what this census asked and may understate what
-the seller does. The count is published beside the rate it qualifies, and
-using each catalog's declared method is the stated way to close the gap when
-the population justifies the extra care.
+**The probe asks with GET, and escalates only when the origin says to.**
+One request answers rungs 2 and 3, because asking twice would double this
+census's traffic to every seller for no additional fact.
+
+Some resources are POST-only, and a GET to one is refused with 405. The
+first sweep recorded 217 sellers that way — as failing to quote, when in
+fact the question was wrong. RFC 9110 §15.5.6 requires a 405 to carry an
+`Allow` header naming the methods the resource does accept, and the observed
+ones do. So a 405 is retried **once**, with the verb the origin itself
+named, which is better evidence than a catalog's declaration: the server is
+authoritative about its own methods and a catalog can be stale.
+
+The escalation is deliberately narrow, and the narrowness is the method:
+
+* only after a 405, so no endpoint that answers a GET is ever sent anything
+  else;
+* only to POST — `PUT`, `PATCH` and `DELETE` name mutations, and an unpaid
+  request to a seller that has mis-implemented its payment wall must not be
+  able to destroy anything. A 405 allowing only those is recorded as it
+  stands, with what the origin said;
+* with an empty JSON body, carrying no instructions of ours;
+* once, after that host's own pause.
+
+**Every row records the verb that produced it.** "Does not quote, asked with
+GET" and "does not quote, asked with the method it named" are different
+findings, and a rate that cannot tell them apart is not one this census
+publishes.
 
 This is not a strict ladder; each rung names its prerequisites.
 

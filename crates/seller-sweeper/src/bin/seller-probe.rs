@@ -155,7 +155,8 @@ async fn main() -> Result<()> {
                     let Some(resource) = seller.resources.first() else {
                         continue;
                     };
-                    let observed = prober.probe(resource).await;
+                    let probed = prober.probe(resource).await;
+                    let observed = &probed.observed;
                     let id = SellerId {
                         pay_to: seller.pay_to.clone(),
                         host: host.clone(),
@@ -166,13 +167,18 @@ async fn main() -> Result<()> {
                     // base58 payee, and reading it under EVM rules would
                     // report a working seller as quoting somebody else.
                     let encoding = sellers::identity::encoding_of(&seller.pay_to);
-                    let verdict = reachable::judge(&id, &observed, encoding);
+                    let verdict = reachable::judge(&id, observed, encoding);
 
                     outcome.count(&verdict);
                     if !dry_run {
                         let evidence = serde_json::json!({
                             "resource": resource,
-                            "observed": describe(&observed),
+                            // The verb matters: "does not quote, asked with
+                            // GET" and "does not quote, asked with the verb
+                            // it named" are different findings.
+                            "method": probed.method,
+                            "allow": probed.allow,
+                            "observed": describe(observed),
                         });
                         db.write_check(
                             run_id,
@@ -188,6 +194,7 @@ async fn main() -> Result<()> {
                         .await?;
                         let quote_evidence = serde_json::json!({
                             "resource": resource,
+                            "method": probed.method,
                             "requirements": verdict.requirements,
                         });
                         db.write_check(
