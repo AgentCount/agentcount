@@ -473,7 +473,10 @@ mod tests {
         // produced 217 `http_405` rows in the first sweep send `Allow: POST`.
         assert!(allow_permits_post("POST"));
         assert!(allow_permits_post("GET, POST, OPTIONS"));
-        assert!(allow_permits_post("post"), "method names are case-insensitive");
+        assert!(
+            allow_permits_post("post"),
+            "method names are case-insensitive"
+        );
         assert!(allow_permits_post(" OPTIONS , POST "));
     }
 
