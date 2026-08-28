@@ -65,8 +65,10 @@ COPY crates/indexer/Cargo.toml crates/indexer/
 COPY crates/payments/Cargo.toml crates/payments/
 COPY crates/probe/Cargo.toml crates/probe/
 COPY crates/sweeper/Cargo.toml crates/sweeper/
+COPY crates/sellers/Cargo.toml crates/sellers/
+COPY crates/seller-sweeper/Cargo.toml crates/seller-sweeper/
 RUN set -eux; \
-    for c in api chain checks indexer payments probe sweeper; do \
+    for c in api chain checks indexer payments probe sweeper sellers seller-sweeper; do \
         mkdir -p "crates/$c/src"; \
         echo 'fn main() {}' > "crates/$c/src/main.rs"; \
         echo '' > "crates/$c/src/lib.rs"; \
@@ -75,7 +77,11 @@ RUN set -eux; \
     for b in liveness delta findings export-run heartbeat payments tail; do \
         echo 'fn main() {}' > "crates/sweeper/src/bin/$b.rs"; \
     done; \
-    cargo build --release -p sweeper || true
+    mkdir -p crates/seller-sweeper/src/bin; \
+    for b in seller-crawl seller-probe seller-settle seller-delta; do \
+        echo 'fn main() {}' > "crates/seller-sweeper/src/bin/$b.rs"; \
+    done; \
+    cargo build --release -p sweeper -p seller-sweeper || true
 
 COPY crates crates
 COPY scripts scripts
@@ -84,7 +90,7 @@ COPY scripts scripts
 # and the job would "succeed" every week having done nothing.
 RUN set -eux; \
     find crates -name '*.rs' -exec touch {} +; \
-    cargo build --release -p sweeper; \
+    cargo build --release -p sweeper -p seller-sweeper; \
     strip target/release/sweeper target/release/liveness target/release/delta \
           target/release/findings target/release/export-run target/release/heartbeat \
           target/release/payments target/release/tail
@@ -126,11 +132,24 @@ COPY --from=build /src/target/release/export-run /usr/local/bin/export-run
 COPY --from=build /src/target/release/heartbeat /usr/local/bin/heartbeat
 COPY --from=build /src/target/release/payments /usr/local/bin/payments
 COPY --from=build /src/target/release/tail /usr/local/bin/tail
+# The Seller Census (METHODOLOGY §10). One image for both instruments,
+# because they share a database, a release and a deploy — and because two
+# images would mean two versions of the same rules crate in production, which
+# is how a delta ends up comparing runs judged differently.
+#
+# `seller-shop` is deliberately ABSENT: rung 4 spends money, and the binary
+# does not exist yet. When it does, it joins this list and `seller-sweep.sh`
+# in the same change.
+COPY --from=build /src/target/release/seller-crawl /usr/local/bin/seller-crawl
+COPY --from=build /src/target/release/seller-probe /usr/local/bin/seller-probe
+COPY --from=build /src/target/release/seller-settle /usr/local/bin/seller-settle
+COPY --from=build /src/target/release/seller-delta /usr/local/bin/seller-delta
 COPY scripts/ /opt/agentcount/scripts/
 # `chmod` in a RUN rather than `COPY --chmod`, which needs BuildKit — Cloud
 # Build's docker builder does not enable it, and the build fails outright.
 RUN chmod 755 /opt/agentcount/scripts/*.sh \
-    && ln -s /opt/agentcount/scripts/weekly-sweep.sh /usr/local/bin/weekly-sweep
+    && ln -s /opt/agentcount/scripts/weekly-sweep.sh /usr/local/bin/weekly-sweep \
+    && ln -s /opt/agentcount/scripts/seller-sweep.sh /usr/local/bin/seller-sweep
 
 # `publish-run.sh` is invoked as `./scripts/publish-run.sh` and writes
 # `published-runs.json` and `data/` relative to the working directory, so the
