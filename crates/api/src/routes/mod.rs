@@ -14,6 +14,11 @@
 //!   * [`search`] — one `q` across several caller-named runs, grouped per
 //!     run. The only endpoint that touches more than one run, and it still
 //!     never blends their rows.
+//!   * [`sellers`] — the OTHER instrument (METHODOLOGY §10): the seller runs
+//!     and their per-rung counts. Deliberately its own URLs and its own
+//!     types rather than a `network` switch on the four modules above —
+//!     these are different populations, and the one mistake that would
+//!     discredit both censuses is a figure that blends them.
 //!   * [`tail`] — the one module that serves rows belonging to NO run: agents
 //!     the chain has that no census has checked yet. Its response shape shares
 //!     almost nothing with a census result, on purpose — read its module doc
@@ -41,6 +46,7 @@ pub mod methodology;
 pub mod rates;
 pub mod runs;
 pub mod search;
+pub mod sellers;
 pub mod spot_check;
 pub mod subscribe;
 pub mod tail;
