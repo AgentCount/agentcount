@@ -165,16 +165,42 @@ EOF
 gcloud builds submit --project "$PROJECT" --region "$REGION" \
     --config="$BUILD_CONFIG" .
 
+CHAINS="${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet}"
+
+# The secret list is DERIVED from the chain list, never written out beside it.
+#
+# It used to be written out beside it, and on 2026-08-28 the two disagreed:
+# the job swept nine chains and carried four RPC secrets, because the list had
+# been typed when the sweep read four chains and nobody re-typed it when the
+# rota widened. The job then ran every Monday, skipped seven of its nine chains
+# with `RPC_URL_OP is not set`, exited 1 after publishing the two it could do,
+# and left those seven chains fifteen days stale before anyone noticed. The
+# pre-flight below passed the whole time, because it checked the same stale
+# list.
+#
+# A chain in `SWEEP_CHAINS` now implies its secret by construction, so the two
+# cannot drift again: `op` implies `RPC_URL_OP=rpc-url-op:latest`.
+secrets_for() {
+    local out="DATABASE_URL=agentcount-db-url:latest"
+    local chain upper
+    for chain in $1; do
+        upper=$(printf %s "$chain" | tr '[:lower:]' '[:upper:]')
+        out="$out,RPC_URL_${upper}=rpc-url-${chain}:latest"
+    done
+    printf %s "$out"
+}
+
 echo "==> 2/4 secrets"
 # Create these once, by hand, and never through this script — a secret written
 # by a script is a secret that was on a command line:
 #
 #   printf %s "$RPC" | gcloud secrets create rpc-url-base --data-file=- --project "$PROJECT"
 #
-# The script only checks they exist, so a missing one fails here rather than
-# at 06:00 on a Monday.
-for s in rpc-url-base rpc-url-bsc rpc-url-mainnet rpc-url-celo agentcount-db-url; do
-    gcloud secrets describe "$s" --project "$PROJECT" >/dev/null \
+# Checked against the chains actually being deployed — every chain in every
+# job — so a missing one fails here rather than at 06:00 on a Monday. Checking
+# a hand-written list instead is what let the drift above go unseen.
+for s in agentcount-db-url $(for c in $CHAINS bsc base; do echo "rpc-url-$c"; done | sort -u); do
+    gcloud secrets describe "$s" --project "$PROJECT" >/dev/null 2>&1 \
         || { echo "missing secret: $s — create it by hand, see above"; exit 1; }
 done
 
@@ -183,12 +209,8 @@ gcloud run jobs deploy agentcount-sweep \
     --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
     --set-cloudsql-instances "$INSTANCE" \
-    --set-secrets "DATABASE_URL=agentcount-db-url:latest,\
-RPC_URL_BASE=rpc-url-base:latest,\
-RPC_URL_BSC=rpc-url-bsc:latest,\
-RPC_URL_MAINNET=rpc-url-mainnet:latest,\
-RPC_URL_CELO=rpc-url-celo:latest" \
-    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet}${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
+    --set-secrets "$(secrets_for "$CHAINS")" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=${CHAINS}${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
     --task-timeout 24h \
     --max-retries 0 \
     --memory 2Gi --cpu 2 \
@@ -201,7 +223,7 @@ gcloud run jobs deploy agentcount-sweep-bsc \
     --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
     --set-cloudsql-instances "$INSTANCE" \
-    --set-secrets "DATABASE_URL=agentcount-db-url:latest,RPC_URL_BSC=rpc-url-bsc:latest" \
+    --set-secrets "$(secrets_for bsc)" \
     --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=bsc${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
     --task-timeout 24h \
     --max-retries 0 \
@@ -225,7 +247,7 @@ gcloud run jobs deploy agentcount-sweep-base \
     --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
     --set-cloudsql-instances "$INSTANCE" \
-    --set-secrets "DATABASE_URL=agentcount-db-url:latest,RPC_URL_BASE=rpc-url-base:latest" \
+    --set-secrets "$(secrets_for base)" \
     --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=base${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
     --task-timeout 24h \
     --max-retries 0 \
@@ -247,7 +269,7 @@ gcloud run jobs deploy agentcount-sellers \
     --image "$IMAGE" \
     --command seller-sweep \
     --set-cloudsql-instances "$INSTANCE" \
-    --set-secrets "DATABASE_URL=agentcount-db-url:latest,RPC_URL_BASE=rpc-url-base:latest" \
+    --set-secrets "$(secrets_for base)" \
     --task-timeout 6h \
     --max-retries 0 \
     --memory 2Gi --cpu 2 \
