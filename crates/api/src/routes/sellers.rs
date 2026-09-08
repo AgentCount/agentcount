@@ -116,6 +116,24 @@ pub struct RungRates {
     /// rather than the operator. `None` for rungs that were attempted.
     pub reserved: Option<&'static str>,
     pub counts: Vec<StatusCount>,
+    /// Sellers this rung actually judged: `pass + fail`, and nothing else.
+    ///
+    /// The denominator of [`percent`](Self::percent), and the whole reason
+    /// this API computes the rate rather than leaving it to a caller.
+    /// METHODOLOGY §10.3 is explicit that `error`, `refused` and `unprobed`
+    /// are never publishable as a seller's failure: `error` is OURS, `refused`
+    /// is an origin declining us, and `unprobed` is a question we chose not to
+    /// ask. `skipped` is a prerequisite that did not pass. Divide by the
+    /// population instead of by this and every one of those becomes a seller
+    /// failing, which is the exact mistake that booked 4,477 of our own
+    /// timeouts as agents going dark in the registration census.
+    pub judged: i64,
+    /// Passes among the judged.
+    pub passed: i64,
+    /// `passed / judged`, as a percentage, computed here so no consumer
+    /// divides. `None` when nothing was judged — a rate over nobody is
+    /// undefined, not 0%.
+    pub percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -186,19 +204,33 @@ const LADDER: &[(i16, &str, Option<&str>)] = &[
 fn assemble_rungs(attempted: Option<&[i16]>, counted: &[(i16, String, i64)]) -> Vec<RungRates> {
     LADDER
         .iter()
-        .map(|&(rung, name, reserved)| RungRates {
-            rung,
-            name,
-            attempted: attempted.map(|asked| asked.contains(&rung)),
-            reserved,
-            counts: counted
+        .map(|&(rung, name, reserved)| {
+            let counts: Vec<StatusCount> = counted
                 .iter()
                 .filter(|(r, _, _)| *r == rung)
                 .map(|(_, status, count)| StatusCount {
                     status: status.clone(),
                     count: *count,
                 })
-                .collect(),
+                .collect();
+            let of = |want: &str| {
+                counts
+                    .iter()
+                    .find(|c| c.status == want)
+                    .map_or(0, |c| c.count)
+            };
+            let passed = of("pass");
+            let judged = passed + of("fail");
+            RungRates {
+                rung,
+                name,
+                attempted: attempted.map(|asked| asked.contains(&rung)),
+                reserved,
+                counts,
+                judged,
+                passed,
+                percent: (judged > 0).then(|| (passed as f64) * 100.0 / (judged as f64)),
+            }
         })
         .collect()
 }
@@ -337,5 +369,46 @@ mod tests {
         let numbers: Vec<i16> = rungs.iter().map(|r| r.rung).collect();
         assert_eq!(numbers, vec![1, 2, 3, 4, 6, 7]);
         assert!(!numbers.contains(&5));
+    }
+
+    /// The statuses METHODOLOGY §10.3 forbids publishing as a seller's
+    /// failure must not reach the denominator. A census that divides by the
+    /// population turns its own timeouts, the origins that declined it and
+    /// the questions it chose not to ask into other people's failures.
+    #[test]
+    fn our_own_failures_never_enter_a_seller_rate() {
+        let counted = vec![
+            (2i16, "pass".to_string(), 2244i64),
+            (2, "refused".to_string(), 138),
+            (2, "error".to_string(), 3),
+            (6, "pass".to_string(), 1651),
+            (6, "fail".to_string(), 86),
+            (6, "unprobed".to_string(), 650),
+        ];
+        let rungs = assemble_rungs(Some(&[1, 2, 3, 6, 7]), &counted);
+
+        // Nothing FAILED rung 2 — 138 origins declined us and 3 were our own
+        // errors — so every seller it judged, it passed.
+        let reachable = rung(&rungs, 2);
+        assert_eq!(reachable.judged, 2244);
+        assert_eq!(reachable.percent, Some(100.0));
+
+        // Rung 6's 650 unprobed settle on a chain this sweep did not scan.
+        // Counting them as failures would report 69% instead of 95%.
+        let settled = rung(&rungs, 6);
+        assert_eq!(settled.judged, 1737);
+        assert_eq!(settled.passed, 1651);
+        let pct = settled.percent.expect("judged > 0");
+        assert!((pct - 95.048).abs() < 0.01, "got {pct}");
+    }
+
+    /// A rate over nobody is undefined, not 0%.
+    #[test]
+    fn a_rung_that_judged_nobody_has_no_percentage() {
+        let rungs = assemble_rungs(Some(&[1, 2, 3, 6, 7]), &[]);
+        for r in &rungs {
+            assert_eq!(r.percent, None, "rung {} invented a rate", r.rung);
+            assert_eq!(r.judged, 0);
+        }
     }
 }
