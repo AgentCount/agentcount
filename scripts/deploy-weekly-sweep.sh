@@ -147,7 +147,7 @@ steps:
         # the loader writes its own refusals to the CALLER's stderr, so a
         # shell that did not capture them would have passed a missing binary.
         # The status is set either way.
-        for b in seller-crawl seller-probe seller-settle seller-delta; do
+        for b in seller-crawl seller-probe seller-settle seller-delta seller-heartbeat; do
           out="\$(\$b 2>&1)"; rc=\$?
           case "\$rc" in
             127) echo "FATAL: \$b is not in the image"; exit 1 ;;
