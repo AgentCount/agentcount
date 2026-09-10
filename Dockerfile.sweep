@@ -78,7 +78,7 @@ RUN set -eux; \
         echo 'fn main() {}' > "crates/sweeper/src/bin/$b.rs"; \
     done; \
     mkdir -p crates/seller-sweeper/src/bin; \
-    for b in seller-crawl seller-probe seller-settle seller-delta; do \
+    for b in seller-crawl seller-probe seller-settle seller-delta seller-heartbeat; do \
         echo 'fn main() {}' > "crates/seller-sweeper/src/bin/$b.rs"; \
     done; \
     cargo build --release -p sweeper -p seller-sweeper || true
@@ -144,6 +144,7 @@ COPY --from=build /src/target/release/seller-crawl /usr/local/bin/seller-crawl
 COPY --from=build /src/target/release/seller-probe /usr/local/bin/seller-probe
 COPY --from=build /src/target/release/seller-settle /usr/local/bin/seller-settle
 COPY --from=build /src/target/release/seller-delta /usr/local/bin/seller-delta
+COPY --from=build /src/target/release/seller-heartbeat /usr/local/bin/seller-heartbeat
 COPY scripts/ /opt/agentcount/scripts/
 # `chmod` in a RUN rather than `COPY --chmod`, which needs BuildKit — Cloud
 # Build's docker builder does not enable it, and the build fails outright.
