@@ -58,4 +58,13 @@ echo "════════════════════════�
 seller-delta
 
 echo
+echo "═══════════════════════════════════════════ sellers: heartbeat"
+# Last, and only after everything above stored its rows — the same order
+# weekly-sweep.sh keeps. It pings SELLER_HEARTBEAT_URL, a DIFFERENT monitor
+# from the registration census's: a healthy Thursday must never be able to
+# vouch for a Monday that did not run, which is exactly how the nine-chain
+# job stayed broken for two weeks while Base and BSC kept the alarm fed.
+seller-heartbeat || { echo "!!! seller-heartbeat declined to ping — the seller census is NOT healthy"; exit 1; }
+
+echo
 echo "Done. Rung 4 was not attempted; see this script's header."
