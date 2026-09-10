@@ -147,7 +147,7 @@ steps:
         # the loader writes its own refusals to the CALLER's stderr, so a
         # shell that did not capture them would have passed a missing binary.
         # The status is set either way.
-        for b in seller-crawl seller-probe seller-settle seller-delta; do
+        for b in seller-crawl seller-probe seller-settle seller-delta seller-heartbeat; do
           out="\$(\$b 2>&1)"; rc=\$?
           case "\$rc" in
             127) echo "FATAL: \$b is not in the image"; exit 1 ;;
@@ -264,12 +264,28 @@ gcloud run jobs deploy agentcount-sweep-base \
 #
 # `--command seller-sweep` rather than a second image: one release, one copy
 # of the rules crate. See Dockerfile.sweep.
+# SELLER_HEARTBEAT_URL, and the fact that it is not HEARTBEAT_URL is the whole
+# point: this instrument gets its own monitor. Pointing both at one check would
+# let a healthy Thursday vouch for a Monday that never ran — which is exactly
+# how the nine-chain job stayed broken for a fortnight while the Base and BSC
+# jobs kept the alarm fed (see the 2026-09-08 note in `secrets_for`).
+#
+# Built as an array so an unset URL passes NO flag at all. Writing
+# `--set-env-vars "${SELLER_HEARTBEAT_URL:+...}"` instead hands gcloud an empty
+# string, which is not the same as silence.
+sellers_env=()
+if [ -n "${SELLER_HEARTBEAT_URL:-}" ]; then
+    sellers_env=(--set-env-vars "SELLER_HEARTBEAT_URL=$SELLER_HEARTBEAT_URL")
+else
+    echo "    (SELLER_HEARTBEAT_URL unset — the Thursday sweep will run but page nobody)"
+fi
 gcloud run jobs deploy agentcount-sellers \
     --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
     --command seller-sweep \
     --set-cloudsql-instances "$INSTANCE" \
     --set-secrets "$(secrets_for base)" \
+    "${sellers_env[@]}" \
     --task-timeout 6h \
     --max-retries 0 \
     --memory 2Gi --cpu 2 \
