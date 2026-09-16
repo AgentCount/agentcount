@@ -57,6 +57,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
+use std::sync::atomic::{AtomicI64, Ordering};
 use uuid::Uuid;
 
 /// How many `ownerOf`/`tokenURI` pairs to read at once. Conservative: a public
@@ -137,6 +138,112 @@ fn startup_grace_secs() -> u64 {
         .unwrap_or_else(|| DEFAULT_STARTUP_GRACE_SECS.max(stall_timeout_secs()))
 }
 
+/// The window a sweep must finish inside.
+///
+/// 24 hours because that is the Cloud Run Jobs MAXIMUM task timeout — not a
+/// setting, a ceiling. A run that will not finish inside it does not get
+/// killed at the end having done most of the work; it gets killed at the end
+/// having done most of the work AND holding a `running` row nobody looked at
+/// until the next morning.
+const DEFAULT_DEADLINE_SECS: u64 = 86_400;
+
+/// How long throughput is observed before it may be judged.
+///
+/// Long enough that a slow opening — a cold RPC endpoint, a burst of retries,
+/// the minter pre-pass finishing late — cannot condemn a run that then settles
+/// into a healthy rate.
+const DEFAULT_THROUGHPUT_SAMPLE_SECS: u64 = 1_800;
+
+/// How long the verdict must hold before the run is abandoned.
+///
+/// Throughput is not steady: `PER_HOST_CAP` is 2, so a stretch of agents
+/// sharing one host crawls while the rest of the population flies. Ten
+/// continuous minutes of "this cannot finish" separates that from a genuine
+/// collapse, and the sample window above means the rate being judged is
+/// already an average over half an hour.
+const DEFAULT_THROUGHPUT_CONFIRM_SECS: u64 = 600;
+
+/// What the observed rate implies about finishing.
+///
+/// Computed from the rows actually written, which is the only progress signal
+/// that cannot lie: it is the same count the stall watchdog reads, and it is
+/// what a resume would start from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Projection {
+    agents_per_min: f64,
+    remaining: i64,
+    /// Total seconds this run would take, start to finish, at the observed
+    /// rate — elapsed so far plus the projected remainder.
+    projected_total_secs: f64,
+}
+
+impl Projection {
+    fn misses(&self, deadline: std::time::Duration) -> bool {
+        self.projected_total_secs > deadline.as_secs_f64()
+    }
+}
+
+/// Project when this run finishes, or `None` when there is not yet enough to
+/// say.
+///
+/// ## Why this exists beside the stall watchdog rather than inside it
+///
+/// The stall watchdog asks "did anything happen recently?", and on 2026-09-16
+/// the Base sweep answered yes for four hours while writing two agents a
+/// minute — thirty-four times too slow to finish, and never once silent for
+/// the fifteen minutes that would have tripped it. It was alive and hopeless
+/// at the same time, and a liveness check cannot tell those apart. So this
+/// asks the other question: at the rate actually observed, does this run land
+/// inside its window?
+///
+/// `None` rather than a guess whenever the answer would be noise: before the
+/// target is known, before the sample window has elapsed, or when nothing has
+/// been written yet — that last case belongs to the stall watchdog, which
+/// already has a startup grace sized for it.
+fn project_finish(
+    target: i64,
+    swept: i64,
+    swept_at_sample_start: i64,
+    sample: std::time::Duration,
+    run_elapsed: std::time::Duration,
+    min_sample: std::time::Duration,
+) -> Option<Projection> {
+    if target <= 0 || sample < min_sample {
+        return None;
+    }
+    let written = swept - swept_at_sample_start;
+    let secs = sample.as_secs_f64();
+    if written <= 0 || secs <= 0.0 {
+        // Writing nothing at all is a stall, not a slow rate. Saying so here
+        // would divide by zero and would also step on the watchdog that owns
+        // that case.
+        return None;
+    }
+    let per_sec = written as f64 / secs;
+    let remaining = (target - swept).max(0);
+    Some(Projection {
+        agents_per_min: per_sec * 60.0,
+        remaining,
+        projected_total_secs: run_elapsed.as_secs_f64() + remaining as f64 / per_sec,
+    })
+}
+
+fn deadline_secs() -> u64 {
+    std::env::var("SWEEP_DEADLINE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n: &u64| n > 0)
+        .unwrap_or(DEFAULT_DEADLINE_SECS)
+}
+
+fn throughput_sample_secs() -> u64 {
+    std::env::var("SWEEP_THROUGHPUT_SAMPLE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n: &u64| n > 0)
+        .unwrap_or(DEFAULT_THROUGHPUT_SAMPLE_SECS)
+}
+
 fn stall_timeout_secs() -> u64 {
     std::env::var("SWEEP_STALL_TIMEOUT_SECS")
         .ok()
@@ -201,17 +308,84 @@ fn minter_budget_within(stall_secs: u64) -> std::time::Duration {
 /// Exiting is the point — returning an error would be neater, but the main
 /// task is by definition wedged on something that is not coming back, so
 /// there is nobody left to return to.
-fn spawn_stall_watchdog(db: store::Db, run_id: Uuid) {
+/// Both watchdogs: one for a sweep that has stopped, one for a sweep that is
+/// moving too slowly to finish. See [`project_finish`] for why the second is
+/// not a special case of the first.
+///
+/// `target` is written by the sweep once enumeration is done — 0 until then,
+/// which is also how the throughput check knows to stay quiet. The watchdog
+/// starts before enumeration on purpose: the startup grace exists to cover
+/// exactly that stretch.
+fn spawn_stall_watchdog(db: store::Db, run_id: Uuid, target: std::sync::Arc<AtomicI64>) {
     let timeout = std::time::Duration::from_secs(stall_timeout_secs());
     let startup = std::time::Duration::from_secs(startup_grace_secs());
+    let deadline = std::time::Duration::from_secs(deadline_secs());
+    let min_sample = std::time::Duration::from_secs(throughput_sample_secs());
+    let confirm = std::time::Duration::from_secs(DEFAULT_THROUGHPUT_CONFIRM_SECS);
     let poll = std::time::Duration::from_secs(30).min(timeout / 4);
     tokio::spawn(async move {
         let mut last_count: i64 = -1;
         let mut last_change = std::time::Instant::now();
+        let run_started = std::time::Instant::now();
+        // The throughput sample opens at the first row, not at the first poll:
+        // everything before that is enumeration, which writes nothing and would
+        // drag the average down to a rate the sweep never actually ran at.
+        let mut sample: Option<(std::time::Instant, i64)> = None;
+        let mut hopeless_since: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(poll).await;
             match db.swept_count(run_id).await {
                 Ok(n) => {
+                    if n > 0 && sample.is_none() {
+                        sample = Some((std::time::Instant::now(), n));
+                    }
+                    // Alive but too slow to land. Checked before the liveness
+                    // branch below, because a run in this state keeps resetting
+                    // that branch's timer and would otherwise never be judged.
+                    if let Some((sample_start, sample_count)) = sample {
+                        let projection = project_finish(
+                            target.load(Ordering::Relaxed),
+                            n,
+                            sample_count,
+                            sample_start.elapsed(),
+                            run_started.elapsed(),
+                            min_sample,
+                        );
+                        match projection {
+                            Some(p) if p.misses(deadline) => {
+                                let since =
+                                    *hopeless_since.get_or_insert_with(std::time::Instant::now);
+                                if since.elapsed() >= confirm {
+                                    let reason = format!(
+                                        "cannot finish in time: {:.1} agents/min observed, \
+                                         {} of {} remaining, projected {:.1}h against a {:.0}h \
+                                         window",
+                                        p.agents_per_min,
+                                        p.remaining,
+                                        target.load(Ordering::Relaxed),
+                                        p.projected_total_secs / 3600.0,
+                                        deadline.as_secs_f64() / 3600.0,
+                                    );
+                                    tracing::error!(
+                                        "run {run_id} TOO SLOW: {reason}. Stopping now rather \
+                                         than burning the rest of the window — the rows already \
+                                         written are kept, and `SWEEP_RESUME={run_id}` continues \
+                                         from them at the same pinned block."
+                                    );
+                                    if let Err(e) = db.fail_run(run_id, "stalled", &reason).await {
+                                        tracing::error!(
+                                            "could not even mark the run stalled: {e:#}"
+                                        );
+                                    }
+                                    std::process::exit(75); // EX_TEMPFAIL: retryable
+                                }
+                            }
+                            // Recovered, or not yet judgeable. Either way the
+                            // clock restarts: only a CONTINUOUS stretch of
+                            // hopelessness counts.
+                            _ => hopeless_since = None,
+                        }
+                    }
                     if n != last_count {
                         last_count = n;
                         last_change = std::time::Instant::now();
@@ -621,7 +795,10 @@ async fn sweep() -> Result<()> {
     // reported rather than sat through, and an error ends with the run marked
     // `failed` rather than left looking like it is still going.
     let _ = CURRENT_RUN.set((db.clone(), run_id));
-    spawn_stall_watchdog(db.clone(), run_id);
+    // 0 means "not enumerated yet", which keeps the throughput watchdog quiet
+    // until there is a target to measure against.
+    let sweep_target = std::sync::Arc::new(AtomicI64::new(0));
+    spawn_stall_watchdog(db.clone(), run_id, sweep_target.clone());
 
     let mut ids = registry.enumerate_agent_ids(pinned).await?;
     let discovered = ids.len();
@@ -634,6 +811,10 @@ async fn sweep() -> Result<()> {
     // just gets filtered), which is what keeps the swept/unreadable math at
     // the end honest without having to remember a prior session's counts.
     let planned = ids.len();
+    // What the throughput watchdog measures against: every agent this run is
+    // responsible for, including the ones a resume already has. `swept_count`
+    // counts the same population, so the two agree.
+    sweep_target.store(planned as i64, Ordering::Relaxed);
     ids.retain(|id| !already_swept.contains(id));
     let remaining = ids.len();
     tracing::info!(
@@ -1216,6 +1397,103 @@ mod tests {
     //! database or RPC endpoint: `assemble_ladder` is pure once its inputs
     //! (already-computed `CheckResult`s and an `Option<Value>` document) are
     //! in hand.
+
+    use std::time::Duration;
+
+    /// THE regression. On 2026-09-16 the Base sweep wrote 1,973 agents of
+    /// 87,699 and kept writing about two a minute for four hours. The stall
+    /// watchdog saw progress every poll and never fired; the run would have
+    /// burned its whole 24-hour window to sweep roughly 2% of the chain.
+    #[test]
+    fn a_sweep_that_is_alive_but_far_too_slow_is_caught() {
+        let half_hour = Duration::from_secs(1_800);
+        // 1,500 -> 1,973 over thirty minutes: 15.8 agents/min.
+        let p = project_finish(
+            87_699,
+            1_973,
+            1_500,
+            half_hour,
+            Duration::from_secs(5_400),
+            half_hour,
+        )
+        .expect("judgeable: target known, sample elapsed, rows written");
+        assert!(p.agents_per_min < 20.0, "got {:.1}/min", p.agents_per_min);
+        assert_eq!(p.remaining, 85_726);
+        assert!(
+            p.misses(Duration::from_secs(86_400)),
+            "projected {:.1}h must miss a 24h window",
+            p.projected_total_secs / 3600.0
+        );
+    }
+
+    /// ...and a sweep that IS going to make it must never be touched. Base on
+    /// 2026-09-02 swept 84,092 agents in 20h40m — about 68 a minute, which is
+    /// tight against the window but lands, and killing it would have destroyed
+    /// a good run.
+    #[test]
+    fn a_healthy_sweep_is_left_alone() {
+        let hour = Duration::from_secs(3_600);
+        // 68/min sustained for an hour, one hour into the run.
+        let p = project_finish(84_092, 4_080, 0, hour, hour, Duration::from_secs(1_800))
+            .expect("judgeable");
+        assert!(
+            (p.agents_per_min - 68.0).abs() < 0.1,
+            "got {:.1}",
+            p.agents_per_min
+        );
+        assert!(
+            !p.misses(Duration::from_secs(86_400)),
+            "projected {:.1}h fits a 24h window and must not be killed",
+            p.projected_total_secs / 3600.0
+        );
+    }
+
+    /// The slow tail the per-host cap creates is legitimate and must survive.
+    /// One agent per second is the rate an observed sweep ran at while a single
+    /// host held 974 of them.
+    #[test]
+    fn the_per_host_slow_tail_is_not_a_failure() {
+        let p = project_finish(
+            12_000,
+            9_000,
+            7_200,
+            Duration::from_secs(1_800),
+            Duration::from_secs(7_200),
+            Duration::from_secs(1_800),
+        )
+        .expect("judgeable");
+        assert!(
+            (p.agents_per_min - 60.0).abs() < 0.1,
+            "got {:.1}",
+            p.agents_per_min
+        );
+        assert!(!p.misses(Duration::from_secs(86_400)));
+    }
+
+    /// Three states where a projection would be a guess, and silence is the
+    /// honest answer. The last one belongs to the stall watchdog, which has a
+    /// startup grace sized for it — projecting here would divide by zero.
+    #[test]
+    fn it_declines_to_judge_what_it_cannot_yet_see() {
+        let sample = Duration::from_secs(1_800);
+        let min = Duration::from_secs(1_800);
+        let run = Duration::from_secs(3_600);
+        assert_eq!(
+            project_finish(0, 500, 0, sample, run, min),
+            None,
+            "target unknown"
+        );
+        assert_eq!(
+            project_finish(87_699, 500, 0, Duration::from_secs(60), run, min),
+            None,
+            "sample shorter than the minimum"
+        );
+        assert_eq!(
+            project_finish(87_699, 500, 500, sample, run, min),
+            None,
+            "nothing written"
+        );
+    }
 
     /// The startup grace must never be shorter than the running stall window.
     ///
