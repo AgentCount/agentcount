@@ -104,6 +104,59 @@ dependency), `chain-predicates` (the script above), and `archives-resolve`
 network job and can therefore fail for reasons that have nothing to do with
 your change).
 
+## Before you ship a change to the sweep
+
+The checks above tell you the code compiles and its tests pass. They cannot
+tell you the census will still run, because the census fails in ways a test
+suite does not reach: a job with the wrong secrets, an image carrying a stale
+script, a watchdog measuring the wrong phase. Every one of those has happened,
+each was found a week later by a missed sweep, and each is cheap to catch
+here.
+
+**Ask the big chain, not the convenient one.** BNB Chain spends about 47
+minutes enumerating and resolving minters before it writes its first agent;
+Optimism writes its first in seconds. Anything timing-sensitive that was only
+tried against a small chain has not been tried. A bounded run is enough:
+
+```sh
+SWEEP_MAX_AGENTS=300 sweeper bsc      # the slow-start case
+SWEEP_MAX_AGENTS=300 sweeper op       # the ordinary case
+```
+
+**Anything that destroys work reports before it acts.** A watchdog, a cut-off,
+a pruner: ship it with `SWEEP_WATCHDOG_OBSERVE=1`, let one full cycle run
+across every chain, read what it says it would have done, and only then give
+it teeth. The throughput watchdog skipped this step and killed a healthy
+350,000-agent sweep on its first live run.
+
+**Verify the thing, not a proxy for it.** The pre-flight that checked "the
+five secrets this script names" passed for a fortnight while the job swept
+nine chains and had four of them. The image check that asked "does each binary
+execute" would have passed on an image whose entrypoint script was a month
+old. Assert what you actually depend on.
+
+**Merged is not shipped.** Nothing rebuilds the sweep image. A merged pull
+request changes production only after:
+
+```sh
+gcloud builds submit --config <cloudbuild.yaml> .   # rebuilds sweep:latest
+```
+
+The jobs carry `sweep:latest` as a tag rather than a digest, so they pick the
+new image up at their next execution — but until that build runs, main and
+production disagree. Every run stamps `checker_commit`; compare it against
+`origin/main` when in doubt.
+
+**A wedged sweep is resumable, and resuming beats restarting.** A cut run
+keeps its rows and continues at the same pinned block: Base's resume on
+2026-09-16 swept 6,405 agents instead of 87,699. `weekly-sweep.sh` now does
+this by itself for runs under 48 hours old, once. If you are doing it by hand:
+
+```sh
+gcloud run jobs execute agentcount-sweep --update-env-vars \
+  "SWEEP_RESUME=<run_id>,SWEEP_CHAINS=<chain>"
+```
+
 ## Reporting a wrong number
 
 If a published figure is wrong, an issue with the run id, the agent id and what
