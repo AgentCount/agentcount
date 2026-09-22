@@ -190,6 +190,61 @@ where
 /// Retries and backoff are useless against that, because there is no `Err` for
 /// them to fire on. Only a timeout converts silence into a failure the rest of
 /// the machinery can see.
+/// The budget for ONE agent's own calls, as opposed to the bulk ones.
+///
+/// `snapshot()` runs twice per agent, and it used to inherit the generous
+/// budget below: 45 seconds a try, eight retries, exponential backoff — about
+/// eight minutes per call and sixteen per agent, worst case. The sweep reads
+/// agents three at a time (`RPC_CONCURRENCY`), so three unlucky agents can
+/// hold every slot for a quarter of an hour while the other 350,000 wait.
+///
+/// That is not a hypothesis. On 2026-09-22 mainnet swept 1,000 agents in 38
+/// seconds and the next 500 in 27 minutes, with the database idle and a
+/// handful of timeouts in the log. Base did 2 agents a minute, Arbitrum 1.6,
+/// BNB Chain 3.5 — every "wedge" in six weeks of sweeps has this shape.
+///
+/// An agent that cannot be read is a recorded outcome, not a reason to stop:
+/// the run carries an `unreadable` count for exactly this. So a per-agent
+/// call gets a short leash — three attempts over about fifteen seconds each —
+/// and the sweep moves on. Bulk calls (enumeration, the registration scan)
+/// keep the long budget, because they happen once and losing one costs the
+/// whole run rather than one row.
+const AGENT_CALL_TIMEOUT_SECS: u64 = 15;
+const AGENT_CALL_RETRIES: u32 = 2;
+
+fn agent_call_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(
+        std::env::var("AGENT_CALL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n: &u64| n > 0)
+            .unwrap_or(AGENT_CALL_TIMEOUT_SECS),
+    )
+}
+
+fn agent_call_retries() -> u32 {
+    std::env::var("AGENT_CALL_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(AGENT_CALL_RETRIES)
+}
+
+/// `retry_throttled`, on the short leash a single agent gets.
+async fn retry_throttled_agent<T, E, F, Fut>(f: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    retry_throttled_with(
+        agent_call_retries(),
+        THROTTLE_BACKOFF_BASE_MS,
+        agent_call_timeout(),
+        f,
+    )
+    .await
+}
+
 const RPC_CALL_TIMEOUT_SECS: u64 = 45;
 
 fn rpc_call_timeout() -> std::time::Duration {
@@ -448,12 +503,12 @@ impl Registry {
         // directly) — wrapping it in an `async` block turns it into a plain
         // `Future` so it satisfies `retry_throttled`'s bound, exactly as
         // `.await`-ing it inline would have.
-        let owner = retry_throttled(|| async {
+        let owner = retry_throttled_agent(|| async {
             c.ownerOf(token_id).block(BlockId::from(block)).call().await
         })
         .await
         .with_context(|| format!("ownerOf({agent_id})"))?;
-        let agent_uri = retry_throttled(|| async {
+        let agent_uri = retry_throttled_agent(|| async {
             c.tokenURI(token_id)
                 .block(BlockId::from(block))
                 .call()
@@ -664,6 +719,37 @@ pub struct Registration {
 
 #[cfg(test)]
 mod tests {
+
+    /// One unreadable agent must not be able to hold a concurrency slot for
+    /// minutes. Three slots is the whole sweep (`RPC_CONCURRENCY` is 3), so an
+    /// agent's worst case is the sweep's worst case.
+    ///
+    /// Before the short leash: 45s x 9 attempts plus backoff, twice per agent
+    /// — about sixteen minutes. mainnet swept 1,000 agents in 38 seconds and
+    /// the next 500 in 27 minutes on 2026-09-22 because of it.
+    #[test]
+    fn one_bad_agent_cannot_stall_the_sweep() {
+        let per_call = |timeout_s: u64, retries: u32| -> u64 {
+            let attempts = u64::from(retries) + 1;
+            let backoff_ms: u64 = (0..retries).map(|a| THROTTLE_BACKOFF_BASE_MS << a).sum();
+            attempts * timeout_s + backoff_ms / 1000
+        };
+        // Two calls per agent: ownerOf and tokenURI.
+        let agent_worst = 2 * per_call(AGENT_CALL_TIMEOUT_SECS, AGENT_CALL_RETRIES);
+        let bulk_worst = 2 * per_call(RPC_CALL_TIMEOUT_SECS, MAX_THROTTLE_RETRIES);
+
+        assert!(
+            agent_worst <= 120,
+            "one agent may cost at most 2 minutes, costs {agent_worst}s"
+        );
+        assert!(
+            bulk_worst > 8 * agent_worst,
+            "the bulk budget ({bulk_worst}s) must stay far more generous than \
+             the per-agent one ({agent_worst}s) — losing an enumeration costs \
+             the whole run, losing an agent costs one row"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 

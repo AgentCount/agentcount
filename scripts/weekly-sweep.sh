@@ -190,6 +190,45 @@ for chain in $CHAINS; do
     export SWEEP_DEADLINE_SECS
     echo "── $chain: budget $((SWEEP_DEADLINE_SECS / 60))m of $((remaining / 60))m left, $chains_left chain(s) to go"
 
+    # ── Finish what the last run started, before starting a new one ─────────
+    #
+    # A sweep that was cut — by the task timeout, by the stall watchdog, by the
+    # throughput watchdog — leaves a run with its rows intact and its status
+    # `running` or `stalled`. Resuming it continues at the SAME pinned block
+    # and sweeps only what is missing: on 2026-09-16 Base had 79,269 of 85,674
+    # already done, so the resume was 6,405 agents rather than 87,699.
+    #
+    # Until now that required a person. It has been done by hand five times in
+    # six weeks — Base twice, mainnet, and the two BNB Chain incidents — and
+    # each time the census sat broken until someone noticed. The remedy was
+    # never the hard part; noticing was.
+    #
+    # Bounded deliberately:
+    #   * only runs younger than RESUME_MAX_AGE_HOURS (default 48). An older
+    #     one belongs to a previous week and would publish a stale block as
+    #     this week's census.
+    #   * only runs that actually wrote something. A run with no rows has
+    #     nothing to continue and is usually a chain that could not start at
+    #     all, which a resume would simply repeat.
+    #   * once. If the resumed run is cut again it is left alone, because a
+    #     chain that cannot finish twice needs a human, not a third attempt.
+    #     The watchdogs decide that inside one window; this decides across
+    #     them.
+    unset SWEEP_RESUME
+    resume_id=$(psql "$DATABASE_URL" -tAc \
+        "SELECT r.run_id FROM runs r
+          WHERE r.chain = '$chain'
+            AND r.status IN ('running','stalled')
+            AND r.started_at > now() - interval '${RESUME_MAX_AGE_HOURS:-48} hours'
+            AND EXISTS (SELECT 1 FROM agent_snapshots s WHERE s.run_id = r.run_id)
+          ORDER BY r.started_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$resume_id" ]; then
+        swept=$(psql "$DATABASE_URL" -tAc \
+            "SELECT count(*) FROM agent_snapshots WHERE run_id = '$resume_id'" 2>/dev/null | tr -d '[:space:]')
+        echo "── $chain: resuming $resume_id (${swept:-?} agents already swept) rather than starting fresh"
+        export SWEEP_RESUME="$resume_id"
+    fi
+
     rpc_var="RPC_URL_$(echo "$chain" | tr '[:lower:]' '[:upper:]')"
     if [ -z "${!rpc_var:-}" ]; then
         echo "!!! $chain: $rpc_var is not set — skipping this chain"
