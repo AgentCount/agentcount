@@ -850,10 +850,6 @@ async fn sweep() -> Result<()> {
     // just gets filtered), which is what keeps the swept/unreadable math at
     // the end honest without having to remember a prior session's counts.
     let planned = ids.len();
-    // What the throughput watchdog measures against: every agent this run is
-    // responsible for, including the ones a resume already has. `swept_count`
-    // counts the same population, so the two agree.
-    sweep_target.store(planned as i64, Ordering::Relaxed);
     ids.retain(|id| !already_swept.contains(id));
     let remaining = ids.len();
     tracing::info!(
@@ -1001,6 +997,22 @@ async fn sweep() -> Result<()> {
     }
     let registrations = &registrations;
     let minters = &minters;
+
+    // The throughput watchdog opens for business HERE, and not one line
+    // earlier. It measures the rate from the first row written, which is only
+    // representative once this — the per-agent sweep — is what is running.
+    //
+    // Set after enumeration instead, it judged the minter pre-pass. BNB Chain
+    // spends about 47 minutes resolving minters across ~350,000 registrations
+    // while a trickle of rows lands, and on 2026-09-22 the watchdog measured
+    // that trickle at 3.5 agents/min, projected 49 days, and killed the run
+    // six minutes before a healthy sweep of the same chain writes its first
+    // 500 agents and then accelerates a hundredfold. It would have done that
+    // every Tuesday.
+    //
+    // A watchdog that judges the wrong phase is worse than no watchdog: it
+    // destroys the runs it cannot measure and reports them as too slow.
+    sweep_target.store(planned as i64, Ordering::Relaxed);
 
     let mut stream = stream::iter(ids)
         .map(|id| {
@@ -1496,6 +1508,51 @@ mod tests {
         assert!(
             p.misses(Duration::from_secs(86_400)),
             "projected {:.1}h must miss a 24h window",
+            p.projected_total_secs / 3600.0
+        );
+    }
+
+    /// THE false positive. BNB Chain spends ~47 minutes resolving minters
+    /// across ~350,000 registrations before the per-agent sweep starts, and a
+    /// trickle of rows lands during it. On 2026-09-22 the watchdog measured
+    /// that trickle — 182 rows, 3.5 agents/min — projected 49 days, and killed
+    /// a run that would have finished in 15h46m, six minutes before a healthy
+    /// sweep of the same chain writes its first 500 agents.
+    ///
+    /// The guard is the target: it is published only when the per-agent phase
+    /// begins, so there is nothing to project against while the pre-pass runs.
+    /// A watchdog that judges the wrong phase destroys the runs it cannot
+    /// measure and reports them as too slow.
+    #[test]
+    fn the_minter_pre_pass_is_never_judged_as_sweep_throughput() {
+        let sample = Duration::from_secs(2_400); // 40 minutes of pre-pass
+        let min = Duration::from_secs(1_800);
+        // Target still 0: the per-agent phase has not started.
+        assert_eq!(
+            project_finish(0, 182, 0, sample, Duration::from_secs(3_180), min),
+            None,
+            "a run still in its pre-pass must not be judged at all"
+        );
+        // ...and once the sweep really is running at BNB Chain's true rate,
+        // the same population is judged fine. 350,379 agents in 15h46m is
+        // about 370/min.
+        let p = project_finish(
+            355_882,
+            22_200,
+            0,
+            Duration::from_secs(3_600),
+            Duration::from_secs(6_420),
+            min,
+        )
+        .expect("judgeable once the phase has started");
+        assert!(
+            (p.agents_per_min - 370.0).abs() < 1.0,
+            "got {:.1}",
+            p.agents_per_min
+        );
+        assert!(
+            !p.misses(Duration::from_secs(86_400)),
+            "BNB Chain at its real rate finishes in {:.1}h and must not be killed",
             p.projected_total_secs / 3600.0
         );
     }
