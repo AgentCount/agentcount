@@ -141,8 +141,55 @@ if [ -n "${SWEEP_REJUDGE:-}" ]; then
     exit 0
 fi
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The window is shared. Divide it.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The sweeper's throughput watchdog asks "will this CHAIN finish inside its
+# deadline?", and until now every chain was handed the same 24-hour default —
+# a full window each, when there is only one window between all of them.
+#
+# On 2026-09-21 that cost a census. Arbitrum, 1,499 agents, ran at about
+# 1.6 agents a minute and took 16 hours 24 minutes. Its own projection was
+# fine: sixteen hours is comfortably inside twenty-four. But it left seven
+# hours for the six chains behind it, and mainnet — the largest of them — was
+# still sweeping when the job hit the cap. One chain's honest, slow, non-
+# failing run starved the rest.
+#
+# So each chain is given what is actually left, divided by the chains still
+# waiting. Arbitrum would have had about three hours and twenty minutes,
+# been stopped at roughly forty minutes with its rows kept and its run marked
+# resumable, and the job would have gone on with fifteen hours to spare.
+#
+# An even split rather than one weighted by population, because the counts are
+# not known until each chain is enumerated — and the failure this prevents is
+# one chain taking ALL of it, which an even split already prevents.
+JOB_START=$(date +%s)
+# Slightly under the Cloud Run task timeout: the last chain's publish, the
+# index upload and the heartbeat all happen after the final sweep returns, and
+# a budget equal to the cap would leave nothing for them.
+JOB_BUDGET_SECS="${SWEEP_JOB_BUDGET_SECS:-84600}"   # 23h30m of a 24h cap
+chains_total=$(echo "$CHAINS" | wc -w | tr -d ' ')
+chains_done=0
+
 failed=""
 for chain in $CHAINS; do
+    # What this chain may have: the time left, split between it and everything
+    # still queued behind it. Exported for `sweeper`, whose watchdog compares
+    # its projected finish against it (see DEFAULT_DEADLINE_SECS).
+    elapsed=$(( $(date +%s) - JOB_START ))
+    remaining=$(( JOB_BUDGET_SECS - elapsed ))
+    chains_left=$(( chains_total - chains_done ))
+    chains_done=$(( chains_done + 1 ))
+    if [ "$remaining" -le 0 ] || [ "$chains_left" -le 0 ]; then
+        echo "!!! $chain: no time left in the job budget — skipping"
+        failed="$failed $chain(no-budget)"
+        continue
+    fi
+    SWEEP_DEADLINE_SECS=$(( remaining / chains_left ))
+    export SWEEP_DEADLINE_SECS
+    echo "── $chain: budget $((SWEEP_DEADLINE_SECS / 60))m of $((remaining / 60))m left, $chains_left chain(s) to go"
+
     rpc_var="RPC_URL_$(echo "$chain" | tr '[:lower:]' '[:upper:]')"
     if [ -z "${!rpc_var:-}" ]; then
         echo "!!! $chain: $rpc_var is not set — skipping this chain"
