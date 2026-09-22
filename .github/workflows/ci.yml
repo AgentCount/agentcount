@@ -134,21 +134,47 @@ jobs:
           [ -n "$host" ] || { echo "::error::no archive host found in DATA.md"; exit 1; }
           echo "host: $host"
 
+          # `|| true`, and it is load-bearing. `code=$(curl ...)` under `set -e`
+          # aborts the whole step the moment curl itself exits non-zero — which
+          # is what happened on 2026-09-22, when a `Recv failure: Connection
+          # reset by peer` two-thirds of the way through the list killed the
+          # step with exit 35. The `fail=1` accounting below never ran, and an
+          # unrelated pull request got a red `archives-resolve` that read as
+          # "a published archive is missing" when every archive it had managed
+          # to check returned 200.
+          #
+          # `--retry-all-errors` because plain `--retry` does not cover
+          # connection-level failures, which are exactly the ones seen here:
+          # this step fires ~150 HEAD requests at one host in a few seconds,
+          # and the reset looked like throttling rather than anything wrong
+          # with the bucket.
           fail=0
+          unreachable=0
           while read -r run; do
             for ext in .tar.zst .tar.zst.sha256; do
               url="${host}${run}${ext}"
-              code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 2 --max-time 30 -I "$url")
-              if [ "$code" = "200" ]; then
-                echo "  200  $run$ext"
-              else
-                echo "::error::$code for $url"
-                fail=1
-              fi
+              code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          --retry 5 --retry-all-errors --retry-delay 2 \
+                          --max-time 30 -I "$url" || true)
+              case "$code" in
+                200)
+                  echo "  200  $run$ext" ;;
+                000|"")
+                  # curl never got an answer. Still a failure — an archive this
+                  # check cannot reach is not an archive it has verified — but
+                  # reported as what it is, so nobody hunts for a missing file
+                  # that is sitting right there.
+                  echo "::error::could not reach $url (network failure after retries)"
+                  unreachable=1 ;;
+                *)
+                  echo "::error::$code for $url"
+                  fail=1 ;;
+              esac
             done
           done < <(python3 -c "import json;[print(r['run_id']) for r in json.load(open('published-runs.json'))]")
 
           [ "$fail" -eq 0 ] || { echo "::error::a published archive URL does not resolve"; exit 1; }
+          [ "$unreachable" -eq 0 ] || { echo "::error::the archive host could not be reached; this is a network failure, not a missing archive"; exit 1; }
 
   # ── No per-agent query may omit `chain` ───────────────────────────────────
   #
