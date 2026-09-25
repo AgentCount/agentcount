@@ -172,6 +172,18 @@ JOB_BUDGET_SECS="${SWEEP_JOB_BUDGET_SECS:-84600}"   # 23h30m of a 24h cap
 chains_total=$(echo "$CHAINS" | wc -w | tr -d ' ')
 chains_done=0
 
+# An explicit SWEEP_RESUME belongs to the caller, and the loop below unsets
+# the variable on every iteration — so it is captured here, once, before that
+# can happen.
+#
+# Without this the auto-resume added alongside it silently disabled the manual
+# remedy that CONTRIBUTING.md documents: on 2026-09-25 a mainnet resume of a
+# 74-hour-old run was discarded, because auto-resume only considers runs under
+# 48 hours and the unset had already thrown the caller's answer away. The
+# sweep started from zero and nobody would have noticed except for the line
+# that said "0 already swept".
+OPERATOR_RESUME="${SWEEP_RESUME:-}"
+
 failed=""
 for chain in $CHAINS; do
     # What this chain may have: the time left, split between it and everything
@@ -215,7 +227,20 @@ for chain in $CHAINS; do
     #     The watchdogs decide that inside one window; this decides across
     #     them.
     unset SWEEP_RESUME
-    resume_id=$(psql "$DATABASE_URL" -tAc \
+    resume_id=""
+    if [ -n "$OPERATOR_RESUME" ]; then
+        # Only for the chain it actually belongs to. `SWEEP_CHAINS` may name
+        # several, and one run id cannot be the answer for all of them — the
+        # sweeper loads the chain from the run and would happily sweep the
+        # same one nine times.
+        resume_chain=$(psql "$DATABASE_URL" -tAc \
+            "SELECT chain FROM runs WHERE run_id = '$OPERATOR_RESUME'" 2>/dev/null | tr -d '[:space:]')
+        if [ "$resume_chain" = "$chain" ]; then
+            resume_id="$OPERATOR_RESUME"
+            echo "── $chain: resuming $resume_id (SWEEP_RESUME, supplied by the caller)"
+        fi
+    fi
+    [ -n "$resume_id" ] || resume_id=$(psql "$DATABASE_URL" -tAc \
         "SELECT r.run_id FROM runs r
           WHERE r.chain = '$chain'
             AND r.status IN ('running','stalled')
