@@ -228,6 +228,27 @@ fn project_finish(
     })
 }
 
+/// Whether the watchdogs may act, or only report what they would have done.
+///
+/// A watchdog destroys work, so it should spend a cycle saying what it WOULD
+/// destroy before it is allowed to. #94's throughput watchdog shipped able to
+/// act on its first run: on Base-sized chains it was right, and on BNB Chain
+/// it measured the 47-minute minter pre-pass, projected 49 days from a
+/// trickle of rows, and killed a sweep six minutes before the phase it was
+/// measuring produces anything — a run that had finished in 15h46m the week
+/// before. In observe mode that costs a log line; live it cost a week of BNB
+/// Chain.
+///
+/// The rule: a new or retuned watchdog runs one full cycle with
+/// `SWEEP_WATCHDOG_OBSERVE=1`, and its logs are read, before it is trusted to
+/// stop anything.
+fn watchdog_observe_only() -> bool {
+    matches!(
+        std::env::var("SWEEP_WATCHDOG_OBSERVE").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
 fn deadline_secs() -> u64 {
     std::env::var("SWEEP_DEADLINE_SECS")
         .ok()
@@ -323,6 +344,10 @@ fn spawn_stall_watchdog(db: store::Db, run_id: Uuid, target: std::sync::Arc<Atom
     let min_sample = std::time::Duration::from_secs(throughput_sample_secs());
     let confirm = std::time::Duration::from_secs(DEFAULT_THROUGHPUT_CONFIRM_SECS);
     let poll = std::time::Duration::from_secs(30).min(timeout / 4);
+    let observe = watchdog_observe_only();
+    if observe {
+        tracing::warn!("watchdogs are in OBSERVE ONLY mode — nothing will be stopped");
+    }
     tokio::spawn(async move {
         let mut last_count: i64 = -1;
         let mut last_change = std::time::Instant::now();
@@ -372,6 +397,20 @@ fn spawn_stall_watchdog(db: store::Db, run_id: Uuid, target: std::sync::Arc<Atom
                                          written are kept, and `SWEEP_RESUME={run_id}` continues \
                                          from them at the same pinned block."
                                     );
+                                    if observe {
+                                        tracing::warn!(
+                                            "OBSERVE ONLY: would have stopped run {run_id}: {reason}"
+                                        );
+                                        hopeless_since = None;
+                                        continue;
+                                    }
+                                    if observe {
+                                        tracing::warn!(
+                                            "OBSERVE ONLY: would have stopped run {run_id}: {reason}"
+                                        );
+                                        last_change = std::time::Instant::now();
+                                        continue;
+                                    }
                                     if let Err(e) = db.fail_run(run_id, "stalled", &reason).await {
                                         tracing::error!(
                                             "could not even mark the run stalled: {e:#}"
@@ -1399,6 +1438,41 @@ mod tests {
     //! in hand.
 
     use std::time::Duration;
+
+    /// A watchdog must be able to run without teeth.
+    ///
+    /// The rule #94 taught: anything that destroys work reports for one cycle
+    /// before it acts. This flag is the only thing between a mis-calibrated
+    /// watchdog and a week of lost sweeps, so it is asserted rather than
+    /// assumed — including that an unrecognised value does NOT quietly disarm
+    /// it, and that unset means the watchdog has teeth.
+    #[test]
+    fn observe_mode_is_explicit_and_fails_closed() {
+        let cases = [
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some("0"), false),
+            (Some("yes"), false),
+            (Some(""), false),
+            (None, false),
+        ];
+        for (value, expected) in cases {
+            // SAFETY: single-threaded test, read through the same accessor
+            // production uses.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var("SWEEP_WATCHDOG_OBSERVE", v),
+                    None => std::env::remove_var("SWEEP_WATCHDOG_OBSERVE"),
+                }
+            }
+            assert_eq!(
+                watchdog_observe_only(),
+                expected,
+                "SWEEP_WATCHDOG_OBSERVE={value:?} should give observe={expected}"
+            );
+        }
+        unsafe { std::env::remove_var("SWEEP_WATCHDOG_OBSERVE") };
+    }
 
     /// THE regression. On 2026-09-16 the Base sweep wrote 1,973 agents of
     /// 87,699 and kept writing about two a minute for four hours. The stall
