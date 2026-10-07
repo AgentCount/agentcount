@@ -1406,7 +1406,38 @@ async fn sweep() -> Result<()> {
     // Cumulative across every session this run has had, per the invariant
     // documented above the loop.
     let total_swept = already_swept.len() + swept;
-    db.close_run(run_id, total_swept as i32, finished).await?;
+    // A truncated sweep is not a census, and must never be able to look like
+    // one.
+    //
+    // `SWEEP_MAX_AGENTS` is a debugging convenience: it reads the first N ids
+    // and stops. On 2026-10-07 it was pointed at the production Base job to
+    // time a sample, and the run it produced was closed `finished` with
+    // agent_count=2,013 against a chain of 98,347 — then exported, archived,
+    // and added to the public index, where it became the newest finished run
+    // for Base and therefore the one every published figure would have used.
+    // It had to be retracted by hand from the bucket, the index and the
+    // database.
+    //
+    // Nothing in the pipeline could have caught it: the archive resolved, the
+    // checksum matched, the manifest was internally consistent. It was a
+    // perfectly well-formed record of the wrong thing.
+    //
+    // So the flag now closes the run as `stalled` instead. The rows are kept
+    // and remain resumable, the reason says what happened, and
+    // `weekly-sweep.sh` — which publishes `status = 'finished'` — cannot see
+    // it. A partial sweep stays a partial sweep all the way down.
+    match max_agents {
+        Some(n) if n < discovered => {
+            let reason = format!(
+                "partial by request: SWEEP_MAX_AGENTS={n} of {discovered} agents on \
+                 {chain_name}. Not a census and never published; resume or re-run \
+                 without the cap for a complete one."
+            );
+            tracing::warn!("run {run_id} closed PARTIAL: {reason}");
+            db.fail_run(run_id, "stalled", &reason).await?;
+        }
+        _ => db.close_run(run_id, total_swept as i32, finished).await?,
+    }
     // Rewrite the manifest so the downloadable artefact matches the rows.
     export::write_manifest(&manifest(
         Some(total_swept),
@@ -1484,6 +1515,37 @@ mod tests {
             );
         }
         unsafe { std::env::remove_var("SWEEP_WATCHDOG_OBSERVE") };
+    }
+
+    /// A capped sweep must never be closeable as a census.
+    ///
+    /// On 2026-10-07 `SWEEP_MAX_AGENTS=2000` was pointed at the production
+    /// Base job. The run closed `finished` with agent_count 2,013 against a
+    /// chain of 98,347, was exported, archived and added to the public index,
+    /// and became the newest finished run for Base — the one every published
+    /// figure would have used. Nothing downstream could catch it: the archive
+    /// resolved, the checksum matched, the manifest was consistent. It was a
+    /// well-formed record of the wrong thing.
+    ///
+    /// The rule is therefore arithmetic rather than vigilance: a cap below the
+    /// discovered population closes the run partial.
+    #[test]
+    fn a_capped_sweep_is_never_a_census() {
+        // (cap, discovered, may_be_published)
+        let cases = [
+            (Some(2_000usize), 98_347usize, false), // the incident
+            (Some(1), 2, false),
+            (Some(98_347), 98_347, true), // cap equals the population: complete
+            (Some(200_000), 98_347, true), // cap above it: nothing truncated
+            (None, 98_347, true),         // no cap at all
+        ];
+        for (cap, discovered, publishable) in cases {
+            let partial = matches!(cap, Some(n) if n < discovered);
+            assert_eq!(
+                !partial, publishable,
+                "cap={cap:?} of {discovered} should be publishable={publishable}"
+            );
+        }
     }
 
     /// THE regression. On 2026-09-16 the Base sweep wrote 1,973 agents of
