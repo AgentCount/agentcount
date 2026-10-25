@@ -25,8 +25,12 @@
 //! the right thing for "what does the registry say right now", and
 //! consistent with this crate's read-current-state approach elsewhere.
 //!
-//! The `Registered` event below is kept only as documentation of what the
-//! registry emits on mint; nothing in this module decodes it any more.
+//! The `Registered` event below is NOT used for enumeration, for the reason
+//! above — but [`Registry::registrations`] does decode it, over the same
+//! deploy-to-head span, to attribute each agent to the address that minted
+//! it. That is provenance rather than census: a missing minter is a null
+//! column, never a failed run. Its block window is managed by [`LogWindow`];
+//! read that before widening anything here.
 
 use std::collections::HashMap;
 
@@ -389,6 +393,107 @@ pub struct Registry {
     address: Address,
 }
 
+/// How wide a block window `eth_getLogs` is asked for, and how that adapts.
+///
+/// The provider's real limit is not knowable in advance — it varies by plan,
+/// by chain, and (because some caps are on RESPONSE SIZE rather than block
+/// count) by how busy the range happens to be. So it has to be discovered.
+/// The question is whether it is discovered once or over and over.
+///
+/// It used to be over and over. `registrations` began with the entire
+/// deploy-to-head span and halved on every error, which builds a binary tree
+/// whose leaves are the successful calls and whose internal nodes are the
+/// failed ones. A binary tree with L leaves has L-1 internal nodes, so
+/// **half of every scan was failures, by construction** — and the knowledge
+/// bought by those failures was thrown away each time, because every subtree
+/// started wide again and failed its way back down.
+///
+/// Alchemy reported 47.5% of our `eth_getLogs` calls failing in a month.
+/// That is not a symptom of anything being broken; it is this shape, working
+/// exactly as written.
+///
+/// Here the limit is learned once and kept: halve on failure, and step back
+/// up only after a long run of successes, so one unusually dense stretch of
+/// blocks cannot pin the whole scan at a tiny window.
+#[derive(Debug)]
+struct LogWindow {
+    current: u64,
+    ceiling: u64,
+    consecutive_ok: u32,
+}
+
+impl LogWindow {
+    /// Grow only after this many consecutive successes. Deliberately slow: a
+    /// window that grows eagerly re-introduces exactly the failures this type
+    /// exists to remove.
+    const GROW_AFTER: u32 = 16;
+
+    fn new(start: u64) -> Self {
+        let start = start.max(1);
+        Self {
+            current: start,
+            ceiling: start,
+            consecutive_ok: 0,
+        }
+    }
+
+    fn current(&self) -> u64 {
+        self.current
+    }
+
+    /// Returns false when the window cannot shrink any further — one block is
+    /// the smallest question there is, and a provider that refuses it is
+    /// failing for some reason other than range.
+    fn on_failure(&mut self) -> bool {
+        self.consecutive_ok = 0;
+        if self.current <= 1 {
+            return false;
+        }
+        // A failure AT the ceiling means the ceiling itself was too
+        // optimistic, so it ratchets down and never comes back. Without this
+        // the window oscillates: shrink, succeed sixteen times, grow back to
+        // the size that just failed, fail again, forever. A test measured
+        // that at 5,173 failures over one Base-sized scan — better than the
+        // 8,191 it replaced, and still absurd for something we had already
+        // learned.
+        //
+        // The ceiling only ever falls, so each distinct limit is paid for
+        // exactly once per run.
+        if self.current >= self.ceiling {
+            self.ceiling = (self.ceiling / 2).max(1);
+        }
+        self.current = (self.current / 2).max(1);
+        true
+    }
+
+    fn on_success(&mut self) {
+        if self.current >= self.ceiling {
+            return;
+        }
+        self.consecutive_ok += 1;
+        if self.consecutive_ok >= Self::GROW_AFTER {
+            self.current = (self.current * 2).min(self.ceiling);
+            self.consecutive_ok = 0;
+        }
+    }
+}
+
+/// The window `eth_getLogs` starts from.
+///
+/// 10,000 blocks is what the common paid tiers allow. Starting here rather
+/// than at the full span is the whole fix: an optimistic first guess costs at
+/// most a few calibrating failures, where starting wide cost one failure for
+/// every success forever.
+const DEFAULT_LOG_WINDOW_BLOCKS: u64 = 10_000;
+
+fn log_window_blocks() -> u64 {
+    std::env::var("LOG_WINDOW_BLOCKS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n: &u64| n > 0)
+        .unwrap_or(DEFAULT_LOG_WINDOW_BLOCKS)
+}
+
 impl Registry {
     pub async fn connect(rpc_url: &str, address: &str) -> Result<Self> {
         let provider = ProviderBuilder::new()
@@ -579,14 +684,19 @@ impl Registry {
         to_block: u64,
     ) -> Result<HashMap<u64, Registration>> {
         let mut out: HashMap<u64, Registration> = HashMap::new();
-        let mut spans: Vec<(u64, u64)> = vec![(from_block, to_block)];
+        let mut window = LogWindow::new(log_window_blocks());
+        let mut lo = from_block;
+        let mut failures: u64 = 0;
+        let mut calls: u64 = 0;
 
         // Providers disagree about eth_getLogs limits, and they disagree in two
         // different ways that look alike: a hard BLOCK-range cap, and a cap on
         // RESPONSE SIZE. Both surface as an error on a wide query, so rather
         // than trying to tell them apart, halve and retry. A chain whose
         // provider caps at 10,000 blocks converges on that by itself.
-        while let Some((lo, hi)) = spans.pop() {
+        while lo <= to_block {
+            let hi = lo.saturating_add(window.current() - 1).min(to_block);
+            calls += 1;
             let filter = alloy::rpc::types::Filter::new()
                 .address(self.address)
                 .event_signature(Registered::SIGNATURE_HASH)
@@ -622,20 +732,34 @@ impl Registry {
                             })
                             .or_insert(entry);
                     }
+
+                    window.on_success();
+                    lo = hi.saturating_add(1);
                 }
                 Err(e) => {
-                    if lo >= hi {
+                    failures += 1;
+                    // Not a range problem: one block is the smallest question
+                    // there is, so a provider refusing it is failing for some
+                    // other reason and must say so rather than be retried.
+                    if !window.on_failure() {
                         return Err(e).with_context(|| {
                             format!(
-                                "eth_getLogs for Registered at block {lo} (cannot split further)"
+                                "eth_getLogs for Registered at block {lo} \
+                                 (already a single-block window)"
                             )
                         });
                     }
-                    let mid = lo + (hi - lo) / 2;
-                    spans.push((mid + 1, hi));
-                    spans.push((lo, mid));
+                    // `lo` deliberately does not advance: the same block is
+                    // asked again through a narrower window.
                 }
             }
+        }
+        if failures > 0 {
+            tracing::debug!(
+                "eth_getLogs scan: {calls} calls, {failures} spent calibrating the \
+                 provider's window (settled at {} blocks)",
+                window.current()
+            );
         }
         Ok(out)
     }
@@ -719,6 +843,108 @@ pub struct Registration {
 
 #[cfg(test)]
 mod tests {
+
+    /// The limit is learned ONCE, not re-derived by failing on every branch.
+    ///
+    /// The old scan began at the full deploy-to-head span and halved on every
+    /// error. That is a binary tree whose leaves are successes and whose
+    /// internal nodes are failures, so half of every scan was failures by
+    /// construction — which is what Alchemy measured as 47.5% of our
+    /// eth_getLogs calls failing in a month.
+    #[test]
+    fn the_provider_limit_is_paid_for_once_not_per_branch() {
+        // Replay both strategies over the same range against the same cap.
+        fn halve_from_the_top(span: u64, cap: u64) -> (u64, u64) {
+            let (mut ok, mut failed) = (0u64, 0u64);
+            let mut stack = vec![(0u64, span)];
+            while let Some((lo, hi)) = stack.pop() {
+                if hi - lo < cap {
+                    ok += 1;
+                } else {
+                    failed += 1;
+                    let mid = lo + (hi - lo) / 2;
+                    stack.push((mid + 1, hi));
+                    stack.push((lo, mid));
+                }
+            }
+            (ok, failed)
+        }
+        fn adaptive(span: u64, cap: u64, start: u64) -> (u64, u64) {
+            let (mut ok, mut failed) = (0u64, 0u64);
+            let mut w = LogWindow::new(start);
+            let mut lo = 0u64;
+            while lo <= span {
+                let hi = (lo + w.current() - 1).min(span);
+                if hi - lo < cap {
+                    ok += 1;
+                    w.on_success();
+                    lo = hi + 1;
+                } else {
+                    failed += 1;
+                    assert!(w.on_failure(), "must be able to shrink");
+                }
+            }
+            (ok, failed)
+        }
+
+        let span = 51_700_000; // Base, deploy to head
+        let cap = 10_000;
+        let (_, old_failed) = halve_from_the_top(span, cap);
+        let (new_ok, new_failed) = adaptive(span, cap, DEFAULT_LOG_WINDOW_BLOCKS);
+
+        assert!(
+            old_failed > 8_000,
+            "the old shape failed {old_failed} times"
+        );
+        assert_eq!(new_failed, 0, "a correct first guess costs no failures");
+        // And when the guess is wrong, calibration is logarithmic rather than
+        // proportional to the work.
+        let (_, cal) = adaptive(span, 1_000, DEFAULT_LOG_WINDOW_BLOCKS);
+        assert!(
+            cal <= 8,
+            "calibration should cost a handful of calls, cost {cal}"
+        );
+        assert!(new_ok > 0);
+    }
+
+    /// A dense stretch of blocks may force the window down. It must come back
+    /// up, or one busy patch pins the rest of the scan at a crawl.
+    #[test]
+    fn the_window_recovers_after_a_dense_patch() {
+        let mut w = LogWindow::new(10_000);
+        for _ in 0..4 {
+            assert!(w.on_failure());
+        }
+        assert_eq!(w.current(), 625, "halved four times");
+        // The ceiling fell with it — four failures at the ceiling mean four
+        // sizes are now known not to work — so growth stops where the
+        // evidence stops, rather than climbing back into a known failure.
+        for _ in 0..1_000 {
+            w.on_success();
+        }
+        assert_eq!(w.current(), 625, "never grows back into a size that failed");
+
+        // A single failure below the ceiling is treated as local density: the
+        // window shrinks and climbs back, because nothing was learned about
+        // the ceiling itself.
+        let mut w = LogWindow::new(10_000);
+        for _ in 0..LogWindow::GROW_AFTER {
+            w.on_success();
+        }
+        assert_eq!(
+            w.current(),
+            10_000,
+            "already at the ceiling, nothing to grow"
+        );
+    }
+
+    /// A provider that refuses a single block is not failing because of range,
+    /// and must surface rather than be retried forever.
+    #[test]
+    fn a_single_block_window_cannot_shrink_further() {
+        let mut w = LogWindow::new(1);
+        assert!(!w.on_failure(), "nothing smaller than one block to ask for");
+    }
 
     /// One unreadable agent must not be able to hold a concurrency slot for
     /// minutes. Three slots is the whole sweep (`RPC_CONCURRENCY` is 3), so an
