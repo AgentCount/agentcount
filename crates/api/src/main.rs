@@ -110,6 +110,8 @@ async fn main() -> anyhow::Result<()> {
         // parameter it forgot to send. See `routes::sellers`.
         .route("/api/seller-runs", get(routes::sellers::list_runs))
         .route("/api/seller-runs/{id}/rates", get(routes::sellers::rates))
+        .route("/api/seller-runs/{id}/delta", get(routes::sellers::delta))
+        .route("/api/seller-deltas", get(routes::sellers::list_deltas))
         // The two endpoints that serve rows belonging to NO run: agents the
         // chain has that no census has checked yet. Separate paths, and a
         // response shape that shares almost nothing with a census result, so
