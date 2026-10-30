@@ -33,6 +33,7 @@
 #   Cloud Run Job             agentcount-sweep       — nine chains, Monday 06:00 UTC
 #   Cloud Run Job             agentcount-sweep-bsc   — BNB Chain,   Tuesday 06:00 UTC
 #   Cloud Run Job             agentcount-sweep-base  — Base,        Wednesday 06:00 UTC
+#   Cloud Run Job             agentcount-sweep-heavy — mainnet + billions, Friday
 #   Cloud Run Job             agentcount-sellers     — the Seller Census (§10),
 #                                                      Thursday 06:00 UTC
 #   Cloud Scheduler jobs      one per Cloud Run job
@@ -165,7 +166,22 @@ EOF
 gcloud builds submit --project "$PROJECT" --region "$REGION" \
     --config="$BUILD_CONFIG" .
 
-CHAINS="${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth billions mainnet}"
+# The seven small chains. mainnet and billions used to sit at the end of this
+# list and paid for it: on 2026-10-19 the first seven swept and published
+# while those two never started, leaving them 18 days stale beside seven
+# chains that were three days old. Dividing the window between nine chains
+# (see `weekly-sweep.sh`) stopped one chain starving the rest; it did not
+# create more hours, and nine chains do not fit in twenty-four of them.
+#
+# So the two largest move to Friday, the way BNB Chain and Base already have
+# days of their own. Seven small chains in one window is comfortable; nine
+# with two big ones at the back was not.
+CHAINS="${SWEEP_CHAINS:-op polygon arbitrum gnosis celo xlayer megaeth}"
+
+# Ethereum mainnet (~52,000 agents) and Billions (~26,000), Friday.
+# Together they are about the size of Base, which has had its own day since
+# August.
+CHAINS_HEAVY="${SWEEP_CHAINS_HEAVY:-mainnet billions}"
 
 # The secret list is DERIVED from the chain list, never written out beside it.
 #
@@ -199,7 +215,7 @@ echo "==> 2/4 secrets"
 # Checked against the chains actually being deployed — every chain in every
 # job — so a missing one fails here rather than at 06:00 on a Monday. Checking
 # a hand-written list instead is what let the drift above go unseen.
-for s in agentcount-db-url $(for c in $CHAINS bsc base; do echo "rpc-url-$c"; done | sort -u); do
+for s in agentcount-db-url $(for c in $CHAINS $CHAINS_HEAVY bsc base; do echo "rpc-url-$c"; done | sort -u); do
     gcloud secrets describe "$s" --project "$PROJECT" >/dev/null 2>&1 \
         || { echo "missing secret: $s — create it by hand, see above"; exit 1; }
 done
@@ -279,6 +295,21 @@ if [ -n "${SELLER_HEARTBEAT_URL:-}" ]; then
 else
     echo "    (SELLER_HEARTBEAT_URL unset — the Thursday sweep will run but page nobody)"
 fi
+# The two heaviest non-Base chains, Friday. Same shape as the Base job: its
+# own window, its own secrets, and only the chains it is meant to sweep — a
+# job that cannot reach the others cannot accidentally sweep them if
+# SWEEP_CHAINS is ever mistyped.
+gcloud run jobs deploy agentcount-sweep-heavy \
+    --project "$PROJECT" --region "$REGION" \
+    --image "$IMAGE" \
+    --set-cloudsql-instances "$INSTANCE" \
+    --set-secrets "$(secrets_for "$CHAINS_HEAVY")" \
+    --set-env-vars "DATA_BUCKET=gs://agentcount-data,SWEEP_CHAINS=${CHAINS_HEAVY}${HEARTBEAT_URL:+,HEARTBEAT_URL=$HEARTBEAT_URL}" \
+    --task-timeout 24h \
+    --max-retries 0 \
+    --memory 2Gi --cpu 2 \
+    --parallelism 1 --tasks 1
+
 gcloud run jobs deploy agentcount-sellers \
     --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
@@ -312,7 +343,7 @@ SCHED_SA="agentcount-scheduler@${PROJECT}.iam.gserviceaccount.com"
 gcloud iam service-accounts describe "$SCHED_SA" --project "$PROJECT" >/dev/null 2>&1 \
     || gcloud iam service-accounts create agentcount-scheduler \
          --display-name="Triggers the weekly AgentCount census" --project "$PROJECT"
-for job in agentcount-sweep agentcount-sweep-bsc agentcount-sweep-base agentcount-sellers; do
+for job in agentcount-sweep agentcount-sweep-bsc agentcount-sweep-base agentcount-sweep-heavy agentcount-sellers; do
     gcloud run jobs add-iam-policy-binding "$job" \
         --region "$REGION" --project "$PROJECT" \
         --member "serviceAccount:$SCHED_SA" --role roles/run.invoker --quiet >/dev/null
@@ -344,6 +375,14 @@ gcloud scheduler jobs create http agentcount-weekly-sweep-base \
     2>/dev/null || echo "(base scheduler job already exists — use \`update\` to change it)"
 
 # The Seller Census on Thursday.
+gcloud scheduler jobs create http agentcount-weekly-sweep-heavy \
+    --project "$PROJECT" --location "$SCHED_LOCATION" \
+    --schedule "0 6 * * 5" --time-zone "Etc/UTC" \
+    --uri "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/agentcount-sweep-heavy:run" \
+    --http-method POST \
+    --oauth-service-account-email "$SCHED_SA" \
+    2>/dev/null || echo "(heavy scheduler job already exists — use \`update\` to change it)"
+
 gcloud scheduler jobs create http agentcount-weekly-sellers \
     --project "$PROJECT" --location "$SCHED_LOCATION" \
     --schedule "0 6 * * 4" --time-zone "Etc/UTC" \
