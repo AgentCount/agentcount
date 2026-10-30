@@ -86,6 +86,87 @@ pub async fn list_runs(State(state): State<AppState>) -> ApiResult<Json<Vec<Sell
     Ok(Json(rows))
 }
 
+/// One week of the Seller Census, against the week before it.
+///
+/// The figure this instrument has that a one-off scrape can never produce.
+/// A snapshot says 3,983 sellers advertise paid resources; only a sequence
+/// says roughly a tenth of them are different from last week's, which is a
+/// claim about the shape of the market rather than its size.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct SellerDeltaRow {
+    pub run_id: Uuid,
+    pub previous_run_id: Uuid,
+    pub network: String,
+    pub sellers_before: i32,
+    pub sellers_after: i32,
+    pub appeared: i32,
+    pub disappeared: i32,
+    pub came_back: i32,
+    /// Sellers that stopped answering — NOT the same as `disappeared`, which
+    /// is a seller the catalogs stopped listing. One is a business that went
+    /// away; the other is a business we stopped being told about.
+    pub went_dark: i32,
+    /// Excluded from churn and published beside it, never folded in.
+    /// `refused` is an origin declining us, `error` is ours, `unprobed` is a
+    /// question this sweep chose not to ask. A seller we could not reach is
+    /// not a seller that left (METHODOLOGY §10.3).
+    pub excluded_refused: i32,
+    pub excluded_error: i32,
+    pub excluded_unprobed: i32,
+    /// True when the method itself moved between the two runs — a catalog
+    /// added, a rung attempted that was not before. Churn across a method
+    /// change is not churn in the world, and a reader has to be told which
+    /// they are looking at.
+    pub method_changed: bool,
+    pub checker_before: String,
+    pub checker_after: String,
+    pub computed_at: DateTime<Utc>,
+}
+
+/// `GET /api/seller-runs/{id}/delta` — what changed since the previous
+/// finished run.
+///
+/// 404 when there is none, which is the honest answer for a first
+/// observation: "nothing changed" and "there was nothing to compare against"
+/// are different claims and this API must not blur them.
+pub async fn delta(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+) -> ApiResult<Json<SellerDeltaRow>> {
+    let row = sqlx::query_as::<_, SellerDeltaRow>(
+        "SELECT run_id, previous_run_id, network, sellers_before, sellers_after, \
+                appeared, disappeared, came_back, went_dark, excluded_refused, \
+                excluded_error, excluded_unprobed, method_changed, \
+                checker_before, checker_after, computed_at \
+           FROM seller_run_deltas WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    Ok(Json(row))
+}
+
+/// `GET /api/seller-deltas` — every week, oldest first.
+///
+/// The series, not a point. A caller charting churn should not have to walk
+/// the run list and make one request per week to assemble what is already
+/// one table.
+pub async fn list_deltas(State(state): State<AppState>) -> ApiResult<Json<Vec<SellerDeltaRow>>> {
+    let rows = sqlx::query_as::<_, SellerDeltaRow>(
+        "SELECT d.run_id, d.previous_run_id, d.network, d.sellers_before, \
+                d.sellers_after, d.appeared, d.disappeared, d.came_back, d.went_dark, \
+                d.excluded_refused, d.excluded_error, d.excluded_unprobed, \
+                d.method_changed, d.checker_before, d.checker_after, d.computed_at \
+           FROM seller_run_deltas d \
+           JOIN seller_runs r ON r.run_id = d.run_id \
+           ORDER BY r.started_at",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(rows))
+}
+
 /// One status's count within one rung.
 #[derive(Debug, Serialize)]
 pub struct StatusCount {
